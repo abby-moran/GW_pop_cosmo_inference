@@ -32,7 +32,8 @@ sensitivity_path = f"{os.path.dirname(__file__)}/sensitivity_files"
 
 ASD_FILES = {"CE": f"{sensitivity_path}/LIGO-P1600143-v18-CE-ASD.txt",
             "aplus": f"{sensitivity_path}/AplusDesign.txt",
-            "aligo": f"{sensitivity_path}/aligo_O4high.txt"}
+            "aligo": f"{sensitivity_path}/aligo_O4high.txt",
+            'o3_PSD': f"{sensitivity_path}/H1_o3_PSD.txt"}
 
 
 #SENSITIVITIES = {'aligo': lalsim.SimNoisePSDaLIGODesignSensitivityP1200087,
@@ -63,10 +64,11 @@ def compute_snrs(d, detectors=['H1'], sensitivity='aligo', fmin=20.0, fmax=2048.
     
     snrs = []
     #fs = jnp.linspace(fmin, fmax, int(2*fmax))
-    if sensitivity==1:
-        sensitivity='aligo'
     freqs, sens = np.loadtxt(ASD_FILES[sensitivity], unpack=True)
-    psd = sens**2 #assuming ASD here
+    if sensitivity=='o3_PSD':
+        psd=sens
+    else:
+        psd = sens**2 #assuming ASD here
         
     for _, r in tqdm(d.iterrows(), total=len(d)):
         # unpack source params
@@ -131,7 +133,7 @@ def compute_optimal_SNR(h, psd, fs):
 
 
 # JAX BATCHED VERSION?
-def compute_snrs_batch(df, detectors=['H1'], sensitivity='aligo', fmin=20.0, fmax=2048.0, f_ref=20.0):
+def compute_snrs_batch(df, detectors=['H1'], sensitivity='aligo', fmin=20.0, fmax=2048.0, deltaf=.25, f_ref=20.0):
     """
     Fully JAX-native SNR computation for a batch of GW events.
     df: pandas.DataFrame with columns m1,q,z,s1x,s1y,s1z,s2x,s2y,s2z,dL,iota,psi,ra,dec
@@ -154,6 +156,7 @@ def compute_snrs_batch(df, detectors=['H1'], sensitivity='aligo', fmin=20.0, fma
     psi = jnp.array(df["psi"])
     ra = jnp.array(df["ra"])
     dec = jnp.array(df["dec"])
+    gps_time = jnp.array(df["gps_time"])
 
     # Derived quantities
     m2 = m1 * q
@@ -163,31 +166,31 @@ def compute_snrs_batch(df, detectors=['H1'], sensitivity='aligo', fmin=20.0, fma
     a2 = jnp.sqrt(s2x**2 + s2y**2 + s2z**2)
     nevents=len(np.array(df["m1"]))
 
-    # Precompute Nfft per event on CPU (concrete integers)
-    Nffts = np.array([compute_Nfft(m1d[i], m2d[i], a1[i], a2[i], fmin, fmax) for i in range(nevents)])
-    Nfft_max = int(Nffts.max())
+    df_val = float(deltaf)
+    fs = np.arange(0, fmax + df_val, df_val)
+    valid = (fs >= fmin) & (fs <= fmax)
+    freq_common = jnp.array(fs[valid])
+    df_jax = freq_common[1] - freq_common[0]
 
-    # Precompute a fixed common frequency array once
-    freq_full = np.linspace(0, fmax, Nfft_max, endpoint=False)
-    freq_common = jnp.array(freq_full[(freq_full >= fmin)])
-
-    # Load PSD
+    # Load PSD and create interpolation
     freqs_psd, sens = np.loadtxt(ASD_FILES[sensitivity], unpack=True)
-    psd = jnp.array(sens**2)
-    freqs_psd = jnp.array(freqs_psd)
+    if sensitivity == 'o3_PSD':
+        psd = sens
+    else:
+        psd = sens**2  # assuming ASD if not labeled PSD
+    psd_interp = interp1d(freqs_psd, psd, bounds_error=False, fill_value="extrapolate")
+
 
     # Precompute detector responses
     def precompute_detectors():
         dets = {}
         for det in detectors:
-            if det==1:
-                det='H1'
             det_obj = lal.cached_detector_by_prefix[det]
-            gmst = lal.GreenwichMeanSiderealTime(0.0)
             Fp_list, Fc_list, dt_list = [], [], []
             for i in range(nevents):
+                gmst = lal.GreenwichMeanSiderealTime(lal.LIGOTimeGPS(float(gps_time[i])))%(2*np.pi)
                 Fp, Fc = lal.ComputeDetAMResponse(det_obj.response, float(ra[i]), float(dec[i]), float(psi[i]), float(gmst))
-                dt = lal.TimeDelayFromEarthCenter(det_obj.location, float(ra[i]), float(dec[i]), 0.0)
+                dt = lal.TimeDelayFromEarthCenter(det_obj.location, float(ra[i]), float(dec[i]), float(gps_time[i]))
                 Fp_list.append(Fp)
                 Fc_list.append(Fc)
                 dt_list.append(dt)
@@ -198,47 +201,44 @@ def compute_snrs_batch(df, detectors=['H1'], sensitivity='aligo', fmin=20.0, fma
 
     # Convert to ripple parameters
     def convert_single(i):
-        p = {"mass_1": m1d[i], "mass_2": m2d[i], "s1_z": s1z[i], "s2_z": s2z[i], "luminosity_distance": dL[i], "phase_c": 0.0, "cos_iota": jnp.cos(iota[i]), "ra": ra[i], 
-             "sin_dec": jnp.sin(dec[i]), "psi": psi[i], "t_c": 0.0, "s1_x": s1x[i], "s1_y": s1y[i], "s2_x": s2x[i], "s2_y": s2y[i]} 
-        p['chirp_mass'], p['eta'] = ms_to_Mc_eta(jnp.asarray((p['mass_1'], p['mass_2']))) #detector frame 
+        p = {"mass_1": m1d[i], "mass_2": m2d[i], "s1_z": s1z[i], "s2_z": s2z[i], "luminosity_distance": dL[i], "iota": iota[i], 
+             "psi": psi[i], "t_c": 0.0, "s1_x": s1x[i], "s1_y": s1y[i], "s2_x": s2x[i], "s2_y": s2y[i]} 
+        p['chirp_mass'], eta = ms_to_Mc_eta(jnp.asarray((p['mass_1'], p['mass_2']))) #detector frame 
+        eta = jnp.where(eta >= 0.249, 0.249, eta)
+        p['eta']=eta
         p['mass_ratio'] = p['mass_2'] / p['mass_1']
-        p_rip = convert_to_ripple_params(p)
-        theta = jnp.array([p_rip['M_c'], p_rip['eta'], 0.0, 0.0, p_rip['d_L'], p_rip['t_c'], p_rip['psi'], p_rip['iota']]) #spins dont matter here 
+        theta = jnp.array([p['chirp_mass'], p['eta'], p['s1_z'],p['s2_z'], p['luminosity_distance'], p['t_c'], p['psi'], p['iota']]) #spins dont matter here 
         # just take the z component, or the total magnitude 
         return theta
 
     theta_ripple = jax.vmap(convert_single)(np.arange(nevents))
-
+    
     # SNR computation using mask multiplication (no boolean indexing)
-    def snr_single(theta, Nfft_i, event_idx):
-        mask = (jnp.arange(freq_common.shape[0]) < Nfft_i).astype(jnp.float32)
+    def snr_single(theta, event_idx):
         hp, hc = IMRPhenomD.gen_IMRPhenomD_hphc(freq_common, theta, f_ref)
-        hp = hp * mask
-        hc = hc * mask
-
         sn_det = []
+        psd_vals = jnp.array(psd_interp(np.array(freq_common)))
+        psd_safe = jnp.where(psd_vals > 0.0, psd_vals, jnp.inf)
+
         for det in detectors:
             Fp_arr, Fc_arr, dt_arr = det_objs[det]
-            Fp_i = Fp_arr[event_idx]
-            Fc_i = Fc_arr[event_idx]
-            dt_i = dt_arr[event_idx]
+            Fp_i, Fc_i, dt_i = Fp_arr[event_idx], Fc_arr[event_idx], dt_arr[event_idx]
+            # Detector projection and phase shift
             h_fd = (Fp_i * hp + Fc_i * hc) * jnp.exp(2j * jnp.pi * freq_common * dt_i)
-            psd_vals = jnp.interp(freq_common, freqs_psd, psd)
-            psd_masked = psd_vals * mask + (1.0 - mask)
-            integrand = (jnp.abs(h_fd)**2) / psd_masked
-            df = freq_common[1] - freq_common[0]
-            sn_det.append(jnp.sqrt(4 * jnp.sum(integrand) * df))
+            integrand = (jnp.abs(h_fd)**2) / psd_safe 
+            #df = freq_common[1] - freq_common[0] 
+            sn_det.append(jnp.sqrt(4 * jnp.sum(integrand) * df_jax)) 
         return jnp.sqrt(jnp.sum(jnp.array(sn_det)**2))
 
-    snr_fn = jax.vmap(snr_single, in_axes=(0, 0, 0))
-    snrs = snr_fn(theta_ripple, jnp.array(Nffts), jnp.arange(nevents))
+    snr_fn = jax.vmap(snr_single, in_axes=(0, 0))
+    snrs = snr_fn(theta_ripple, jnp.arange(nevents))
 
     return snrs
 
-def compute_Nfft(m1, m2, a1, a2, fmin, fmax):
-    # Use LAL to get chirp time bound
-    T = max(4, next_pow_2(lalsim.SimInspiralChirpTimeBound(float(fmin), float(m1*lal.MSUN_SI), float(m2*lal.MSUN_SI), float(a1), float(a2))))
-    return int(T * 2 * fmax)
+#def compute_Nfft(m1, m2, a1, a2, fmin, fmax):
+#    # Use LAL to get chirp time bound
+#    T = max(4, next_pow_2(lalsim.SimInspiralChirpTimeBound(float(fmin), float(m1*lal.MSUN_SI), float(m2*lal.MSUN_SI), float(a1), float(a2))))
+#    return int(T * 2 * fmax)
 
 
 def compute_snrs_old(d, detectors = ['H1', 'L1'], sensitivity = 'aligo', fmin = 20, fmax = 2048, psdstart = 20):

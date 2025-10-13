@@ -291,7 +291,8 @@ def load_jax64(arr):
     return np.array(arr, dtype=np.float64)
 
     
-def sel_samples_mock(file, nsamp=None, desired_pop_wt=None, SNR=1, rng=None, detectors=['H1','L1'], sensitivity='aligo', batch_num=400):
+def sel_samples_mock(file, nsamp=None, desired_pop_wt=None, SNR=1, rng=None, detectors=['H1','L1'], sensitivity='aligo', batch_num=400, 
+                     SNR_load=False, SNR_file='LIGO_SNR.txt', SNR_write=True):
     """Return `(m1, q, z, pdraw, nsel)` to estimate selection effects. Can choose our detector and SNR threshold here to provide more flexbility to generate selection samples for a variety of mock cataglogues
     
     :param file: The injection file.
@@ -344,7 +345,7 @@ def sel_samples_mock(file, nsamp=None, desired_pop_wt=None, SNR=1, rng=None, det
             'z': zs_sel,
             'dL': load_jax64(f['injections/distance']) / 1e3,
             'm1d': load_jax64(f['injections/mass1']),
-            'ra':  load_jax64(f['injections/right_ascension']),
+            'ra':  load_jax64(f['injections/right_ascension']), #ra in rad here
             'dec': load_jax64(f['injections/declination']),
             'psi': load_jax64(f['injections/polarization']),
             'gmst': load_jax64(f['injections/gps_time']),
@@ -356,7 +357,6 @@ def sel_samples_mock(file, nsamp=None, desired_pop_wt=None, SNR=1, rng=None, det
             's2z': load_jax64(f['injections/spin2z']),
             'iota': load_jax64(f['injections/inclination']),
             'pdraw_mqz': pdraw_sel}
-
         #snr_list = []    
         
         #SNR_comp=jnp.asarray(fisher_snrs.compute_snrs_batch(df.iloc[0:100], detectors=detectors, sensitivity=sensitivity))
@@ -367,27 +367,32 @@ def sel_samples_mock(file, nsamp=None, desired_pop_wt=None, SNR=1, rng=None, det
         num_left = n_events
         tot_num = n_events
         num_loops=int(np.trunc(n_events/batch_num)+1)
-        """
-        for i in range(num_loops):
-            start=int(tot_num - num_left)
-            stop=int(tot_num - num_left + batch_num)
-            if num_left > batch_num:
-                df_here = {k: v[start:stop] for k, v in df.items()}
-            else:
-                df_here = {k: v[start:] for k, v in df.items()}
-            SNR_batch = fisher_snrs.compute_snrs_batch(df_here, detectors=detectors, sensitivity=sensitivity)
-            #SNR_batch = jax.device_get(SNR_batch)  # move to CPU to free GPU
-            SNR_batch.block_until_ready()
+        if SNR_load:
+            snr_net = np.loadtxt(SNR_file) #np.sqrt(np.sum(SNR_comp**2, axis=0))  # sum across detectors
 
-            SNR_comp[start:stop]= SNR_batch
-            del df_here, SNR_batch
-            #jax.devices()[0].synchronize_all_streams()
-            if i% 10 ==0:
-                print("batch done, num left: ", num_left)
-            num_left -= batch_num
-        """
-        #np.savetxt('LIGO_SNR.txt', SNR_comp)
-        snr_net = np.loadtxt('LIGO_SNR.txt') #np.sqrt(np.sum(SNR_comp**2, axis=0))  # sum across detectors
+        else:
+            for i in range(num_loops):
+                start=int(tot_num - num_left)
+                stop=int(tot_num - num_left + batch_num)
+                if num_left > batch_num:
+                    df_here = {k: v[start:stop] for k, v in df.items()}
+                else:
+                    df_here = {k: v[start:] for k, v in df.items()}
+                SNR_batch = fisher_snrs.compute_snrs_batch(df_here, detectors=detectors, sensitivity=sensitivity)
+                #SNR_batch = jax.device_get(SNR_batch)  # move to CPU to free GPU
+                SNR_batch.block_until_ready()
+    
+                SNR_comp[start:stop]= SNR_batch
+                del df_here, SNR_batch
+                #jax.devices()[0].synchronize_all_streams()
+                if i% 10 ==0:
+                    print("batch done, num left: ", num_left)
+                num_left -= batch_num
+            snr_net=np.array(SNR_comp)
+        
+        if SNR_write:
+            np.savetxt(SNR_file, SNR_comp)
+            snr_net=np.array(SNR_comp)
         
         detected = (np.array(snr_net) > SNR)#[-1] 
 
