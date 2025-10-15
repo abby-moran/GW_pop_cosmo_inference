@@ -265,6 +265,7 @@ def draw_mock_samples(log_mc_obs, sigma_log_mc, q_obs, sigma_q, log_dl_obs, sigm
 
         return m1_source, qs, z, prior_wt
     else:
+
         prior_wt =  1/m1s/dls
         #prior_wt = dls**2 * m1s      # same form as get_samples_from_event
     return m1s, qs, dls, prior_wt
