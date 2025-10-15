@@ -266,7 +266,8 @@ def draw_mock_samples(log_mc_obs, sigma_log_mc, q_obs, sigma_q, log_dl_obs, sigm
         return m1_source, qs, z, prior_wt
     else:
         prior_wt =  1/m1s/dls
-    return m1s, qs, dls, prior_wt#li_prior_wt(m1s, qs, redshift)#prior_wt
+        #prior_wt = dls**2 * m1s      # same form as get_samples_from_event
+    return m1s, qs, dls, prior_wt
 
 
 class PowerLawPDF(object):
@@ -393,7 +394,6 @@ def sel_samples_mock(file, nsamp=None, desired_pop_wt=None, SNR=1, rng=None, det
         if SNR_write:
             np.savetxt(SNR_file, SNR_comp)
             snr_net=np.array(SNR_comp)
-        
         detected = (np.array(snr_net) > SNR)#[-1] 
 
         m1s_sel = m1s_sel[detected]
