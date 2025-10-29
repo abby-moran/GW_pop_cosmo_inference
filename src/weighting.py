@@ -12,7 +12,7 @@ from inspect import getfullargspec
 from utils import chi_effective_prior_from_isotropic_spins
 import pandas as pd
 from fisher_snrs import compute_snrs
-from scipy.stats import norm
+from scipy.stats import norm, truncnorm
 import fisher_snrs
 import jax
 jax.config.update("jax_enable_x64", True)
@@ -238,11 +238,10 @@ def draw_mock_samples(log_mc_obs, sigma_log_mc, q_obs, sigma_q, log_dl_obs, sigm
 
     log_mcs = rng.normal(loc=log_mc_obs, scale=sigma_log_mc, size=size)
 
-    qs = rng.normal(loc=q_obs, scale=sigma_q, size=size)
-    while np.any(qs < 0) or np.any(qs > 1):
-        s = (qs < 0) | (qs > 1)
-        qs[s] = rng.normal(loc=q_obs, scale=sigma_q, size=np.sum(s))
-
+    a = (0 - (q_obs)) / (sigma_q)
+    b = (1 - (q_obs)) / (sigma_q)
+    qs =truncnorm.rvs(a, b, loc=q_obs, scale=sigma_q, size=size)
+    
     log_dls = rng.normal(loc=log_dl_obs, scale=sigma_log_dl, size=size)
 
     mcs = np.exp(log_mcs)
@@ -268,6 +267,25 @@ def draw_mock_samples(log_mc_obs, sigma_log_mc, q_obs, sigma_q, log_dl_obs, sigm
 
         prior_wt =  1/m1s/dls
         #prior_wt = dls**2 * m1s      # same form as get_samples_from_event
+    return m1s, qs, dls, prior_wt
+
+def draw_mock_samples_linear(m1_obs, sigma_m1, q_obs, sigma_q, dl_obs, sigma_dl, size=1, rng=None):
+    """
+    All inputs in detector frame 
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    m1s = rng.normal(loc=m1_obs, scale=sigma_m1, size=size)
+
+    a = (0 - (q_obs)) / (sigma_q)
+    b = (1 - (q_obs)) / (sigma_q)
+    qs =truncnorm.rvs(a, b, loc=q_obs, scale=sigma_q, size=size)
+    
+    a_DL = (0 - (dl_obs)) / (sigma_dl)
+    dls =truncnorm.rvs(a_DL, np.inf, loc=dl_obs, scale=sigma_dl, size=size)
+ 
+    prior_wt =  np.ones(size)
     return m1s, qs, dls, prior_wt
 
 

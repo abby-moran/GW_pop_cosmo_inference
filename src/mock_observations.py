@@ -9,7 +9,7 @@ import paths
 import seaborn as sns
 from tqdm import tqdm
 
-detection_threshold = 10.0
+#detection_threshold = 10.0
 
 @dataclass
 class Uncertainties(object):
@@ -21,8 +21,8 @@ class Uncertainties(object):
     def from_snr(cls, snr):
         # These formulas come from estimations based on uncertainties in GWTC-3
         slmc = 0.05*20/snr
-        sq = 0.07*20/snr
-        sld = 0.2*20/snr
+        sq = 0#.07*20/snr
+        sld =  0#.2*20/snr
 
         return cls(slmc, sq, sld)
 
