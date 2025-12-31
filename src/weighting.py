@@ -11,7 +11,7 @@ import intensity_models
 from inspect import getfullargspec
 from utils import chi_effective_prior_from_isotropic_spins
 import pandas as pd
-from fisher_snrs import compute_snrs
+import fisher_snrs #import compute_snrs
 from scipy.stats import norm, truncnorm
 import fisher_snrs
 import jax
@@ -55,11 +55,13 @@ def pop_wt(m1, q, z, default=True, **kwargs):
         log_dN_obj = intensity_models.LogDNDMDQDV
         pop_params = {key: kwargs[key] for key in getfullargspec(log_dN_obj)[0][1:] if key in kwargs.keys()}
         log_dN_func = log_dN_obj(**pop_params)
+    
     if "cosmo" not in kwargs.keys():
         cosmo = intensity_models.FlatwCDMCosmology(h, Om, w, zmax = kwargs.get("zmax", 20))
     else:
         cosmo = kwargs.get("cosmo")
     log_dN = log_dN_func(m1, q, z)
+    # Keep the dVCdz/(1+z) to convert rate density to probability density in z
     return np.exp(log_dN) * cosmo.dVCdz(z) / (1+z)
 
 def li_prior_wt(m1, q, z, cosmology_weighted=False):
@@ -163,11 +165,9 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
         a1s_sel = np.sqrt(sum([np.array(f[f'injections/spin1{ii}'])**2 for ii in ['x', 'y', 'z']]))
         a2s_sel = np.sqrt(sum([np.array(f[f'injections/spin2{ii}'])**2 for ii in ['x', 'y', 'z']]))
         costilt1s_sel  = (
-            np.array(f[f'injections/spin1z']) / a1s_sel
-        )
+            np.array(f[f'injections/spin1z']) / a1s_sel)
         costilt2s_sel  = (
-            np.array(f[f'injections/spin2z']) / a2s_sel
-        )
+            np.array(f[f'injections/spin2z']) / a2s_sel)
 
 
         pdraw_sel = np.array(f['injections/mass1_source_mass2_source_sampling_pdf'])*np.array(f['injections/redshift_sampling_pdf'])*m1s_sel
@@ -215,7 +215,7 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
         costilt1s_sel_cut = costilt1s_sel[inds]
         costilt2s_sel_cut = costilt2s_sel[inds]
         pdraw_sel_cut = pdraw_wt[inds]
-        ndraw_cut = len(m1s_sel)
+        ndraw_cut = np.zeros(len(a2s_sel_cut))+ndraw
 
         return m1s_sel_cut, qs_sel_cut, zs_sel_cut, a1s_sel_cut, a2s_sel_cut, costilt1s_sel_cut, costilt2s_sel_cut, pdraw_sel_cut, ndraw_cut
     
@@ -224,12 +224,12 @@ def dm1sz_dm1ddl(z, cosmo=None):
         #return (1+z) / (Planck18.comoving_distance(z).to(u.Gpc).value + (1+z)*Planck18.hubble_distance.to(u.Gpc).value / Planck18.efunc(z))
         dm1s_dm1d = (1+z)**-1
         ddl_dz = (Planck18.comoving_distance(z).to(u.Gpc).value + (1 + z) * Planck18.hubble_distance.to(u.Gpc).value / Planck18.efunc(z))
-
         return dm1s_dm1d * (ddl_dz)**-1
     else:
         return (1+z)**-1 / (cosmo.dC(z) + (1+z)*cosmo.dH / cosmo.E(z))
 
-def draw_mock_samples(log_mc_obs, sigma_log_mc, q_obs, sigma_q, log_dl_obs, sigma_log_dl, size=1, output_source_frame=False, rng=None):
+ 
+def draw_mock_samples(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q, log_dl_obs, sigma_log_dl, size=1, output_source_frame=False, rng=None):
     """
     All inputs in detector frame 
     """
@@ -238,38 +238,41 @@ def draw_mock_samples(log_mc_obs, sigma_log_mc, q_obs, sigma_q, log_dl_obs, sigm
 
     log_mcs = rng.normal(loc=log_mc_obs, scale=sigma_log_mc, size=size)
 
-    a = (0 - (q_obs)) / (sigma_q)
-    b = (1 - (q_obs)) / (sigma_q)
-    qs =truncnorm.rvs(a, b, loc=q_obs, scale=sigma_q, size=size)
     
-    log_dls = rng.normal(loc=log_dl_obs, scale=sigma_log_dl, size=size)
+    b = (0 - log_q_obs)/sigma_log_q 
+    log_qs_full=truncnorm.rvs(-np.inf, b, loc=log_q_obs, scale=sigma_log_q, size=5*size)
+    p = 1 / norm.cdf(-log_qs_full/sigma_log_q)
+    p_norm =  p/np.sum(p)
+    log_qs=np.random.choice(log_qs_full, size= size, replace=False, p = p_norm) # as in https://arxiv.org/pdf/2411.02494
+
+    qs=np.exp(log_qs)
+    q_wt =  1#norm.cdf(-log_qs/sigma_log_q)
+    
 
     mcs = np.exp(log_mcs)
     m1s = mcs / (qs**(3/5)/((1+qs)**(1/5)))
 
+    #a=(dl_obs)/sigma_dl  
+    log_dls=rng.normal(loc=log_dl_obs, scale=sigma_log_dl, size=size)
+    #dls=truncnorm.rvs(a, np.inf, loc=dl_obs, scale=sigma_dl, size=size)
     dls = np.exp(log_dls)
-    
+    #d_wt=norm.cdf(-dls/sigma_dl)
     
     if output_source_frame:
         zs = np.expm1(np.linspace(np.log(1), np.log(1+10), 1024))
         ds = Planck18.luminosity_distance(zs).to(u.Gpc).value
         z = np.interp(dls, ds, zs)
         m1_source = m1s / (1 + z)
-
-        # Flat in log(Mc), q, log(d), so prior is the product of three terms:
-        # d log(Mc) / d m1_source = 1/m1_source
-        # 1
-        # d log(dl) / dz = 1/dl (dC + (1+z)*dH/E(z))
         prior_wt = 1/m1_source/dls*(Planck18.comoving_distance(z).to(u.Gpc).value + (1+z)*Planck18.hubble_distance.to(u.Gpc).value/Planck18.efunc(z))
 
         return m1_source, qs, z, prior_wt
     else:
 
-        prior_wt =  1/m1s/dls
+        prior_wt =  1/m1s/qs/dls
         #prior_wt = dls**2 * m1s      # same form as get_samples_from_event
     return m1s, qs, dls, prior_wt
 
-def draw_mock_samples_linear(m1_obs, sigma_m1, q_obs, sigma_q, dl_obs, sigma_dl, size=1, rng=None):
+def draw_mock_samples_linear(m1_obs, sigma_m1, q_obs, sigma_q, z_obs, sigma_z, size=1, rng=None):
     """
     All inputs in detector frame 
     """
@@ -281,12 +284,14 @@ def draw_mock_samples_linear(m1_obs, sigma_m1, q_obs, sigma_q, dl_obs, sigma_dl,
     a = (0 - (q_obs)) / (sigma_q)
     b = (1 - (q_obs)) / (sigma_q)
     qs =truncnorm.rvs(a, b, loc=q_obs, scale=sigma_q, size=size)
+    #qs=rng.normal(loc=q_obs, scale=sigma_q, size=size)
     
-    a_DL = (0 - (dl_obs)) / (sigma_dl)
-    dls =truncnorm.rvs(a_DL, np.inf, loc=dl_obs, scale=sigma_dl, size=size)
- 
+    a_DL = (0 - (z_obs)) / (sigma_z)
+    zs =truncnorm.rvs(a_DL, np.inf, loc=z_obs, scale=sigma_z, size=size)
+    #dls =rng.normal(loc=dl_obs, scale=sigma_dl, size=size)
+
     prior_wt =  np.ones(size)
-    return m1s, qs, dls, prior_wt
+    return m1s, qs, zs, prior_wt
 
 
 class PowerLawPDF(object):
@@ -312,7 +317,7 @@ def load_jax64(arr):
 
     
 def sel_samples_mock(file, nsamp=None, desired_pop_wt=None, SNR=1, rng=None, detectors=['H1','L1'], sensitivity='aligo', batch_num=400, 
-                     SNR_load=False, SNR_file='LIGO_SNR.txt', SNR_write=True):
+                     SNR_load=False, SNR_file='LIGO_SNR.txt', SNR_write=True, z_max=1.9):
     """Return `(m1, q, z, pdraw, nsel)` to estimate selection effects. Can choose our detector and SNR threshold here to provide more flexbility to generate selection samples for a variety of mock cataglogues
     
     :param file: The injection file.
@@ -351,7 +356,7 @@ def sel_samples_mock(file, nsamp=None, desired_pop_wt=None, SNR=1, rng=None, det
         a2s_sel = jnp.sqrt(sum([load_jax64(f[f'injections/spin2{ii}'])**2 for ii in ['x','y','z']]))
         costilt1s_sel = load_jax64(f['injections/spin1z']) / a1s_sel
         costilt2s_sel = load_jax64(f['injections/spin2z']) / a2s_sel
-    
+
         pdraw_sel = (load_jax64(f['injections/mass1_source_mass2_source_sampling_pdf'])* load_jax64(f['injections/redshift_sampling_pdf'])* m1s_sel)
         T = (f.attrs['analysis_time_s'])/(3600.0*24.0*365.25)
         ndraw = f.attrs['n_accepted'] + f.attrs['n_rejected']
@@ -378,7 +383,6 @@ def sel_samples_mock(file, nsamp=None, desired_pop_wt=None, SNR=1, rng=None, det
             'iota': load_jax64(f['injections/inclination']),
             'pdraw_mqz': pdraw_sel}
         #snr_list = []    
-        
         #SNR_comp=jnp.asarray(fisher_snrs.compute_snrs_batch(df.iloc[0:100], detectors=detectors, sensitivity=sensitivity))
         #return SNR_comp, f['injections/optimal_snr_h'][0:100]
         
@@ -399,10 +403,14 @@ def sel_samples_mock(file, nsamp=None, desired_pop_wt=None, SNR=1, rng=None, det
                 else:
                     df_here = {k: v[start:] for k, v in df.items()}
                 SNR_batch = fisher_snrs.compute_snrs_batch(df_here, detectors=detectors, sensitivity=sensitivity)
-                #SNR_batch = jax.device_get(SNR_batch)  # move to CPU to free GPU
                 SNR_batch.block_until_ready()
-    
+                
                 SNR_comp[start:stop]= SNR_batch
+                if i==0:
+                    m1_test=np.array(df_here['m1'])
+                    print(m1_test[-20:])
+                    print(SNR_batch[-20:])
+
                 del df_here, SNR_batch
                 #jax.devices()[0].synchronize_all_streams()
                 if i% 10 ==0:
@@ -413,8 +421,7 @@ def sel_samples_mock(file, nsamp=None, desired_pop_wt=None, SNR=1, rng=None, det
         if SNR_write:
             np.savetxt(SNR_file, SNR_comp)
             snr_net=np.array(SNR_comp)
-        detected = (np.array(snr_net) > SNR)#[-1] 
-
+        detected = (np.array(snr_net) > SNR) #& (np.array(zs_sel) < z_max)
         m1s_sel = m1s_sel[detected]
         qs_sel = qs_sel[detected]
         zs_sel = zs_sel[detected]
