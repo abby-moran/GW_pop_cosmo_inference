@@ -14,17 +14,17 @@ from tqdm import tqdm
 @dataclass
 class Uncertainties(object):
     sigma_log_mc: object
-    sigma_q: object
+    sigma_log_q: object
     sigma_log_dl: object
 
     @classmethod
     def from_snr(cls, snr):
         # These formulas come from estimations based on uncertainties in GWTC-3
-        slmc = 0.05*20/snr
-        sq = 0#.07*20/snr
-        sld =  0#.2*20/snr
+        slmc = 0.05*20/snr    
+        slq = .1*20/snr #random number standing in for sigma log q rn
+        sld =  0#.2*20/snr #.2, .00001* is the error on the small dl samples
 
-        return cls(slmc, sq, sld)
+        return cls(slmc, slq, sld)
 
 if __name__ == '__main__':
     rng = np.random.default_rng(181286134409181405721219170031242732711)

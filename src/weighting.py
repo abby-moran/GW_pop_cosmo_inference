@@ -246,7 +246,7 @@ def draw_mock_samples(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q, log_dl_o
     log_qs=np.random.choice(log_qs_full, size= size, replace=False, p = p_norm) # as in https://arxiv.org/pdf/2411.02494
 
     qs=np.exp(log_qs)
-    q_wt =  1#norm.cdf(-log_qs/sigma_log_q)
+    #q_wt =  1#norm.cdf(-log_qs/sigma_log_q)
     
 
     mcs = np.exp(log_mcs)
