@@ -32,7 +32,7 @@ SENSITIVITIES = {'aligo': lalsim.SimNoisePSDaLIGODesignSensitivityP1200087,
                 'CE': lalsim.SimNoisePSDCosmicExplorerP1600143}
 
 population_parameters = dict()
-config_file = '../reproduce/configs/config3.txt'
+config_file = '../reproduce/configs/config6.txt'
 #outfile = 'new_mock_inj_cut.h5'#'mock_injections_o3_zp1.h5'
 
 population_parameters = dict()
@@ -45,7 +45,6 @@ with open(config_file) as param_file:
         except ValueError:
             pass
 snr_threshold = 1
-ndraw = int(population_parameters.pop('ndraw', int(5e4)))
 sensitivity='o3_PSD'
 detectors = population_parameters.pop('detectors', 'H1').split(',')
 custom_cosmo = intensity_models.FlatwCDMCosmology(population_parameters['h'], population_parameters['Om'], population_parameters['w'], population_parameters['zmax'])
@@ -114,7 +113,7 @@ class PowerLawPDF(object):
 
 
 if __name__ == "__main__":
-    ndraw=int(4e5)
+    ndraw=int(3e6)
     a=(0-population_parameters["zp"])/(population_parameters["zp"])
     b=(population_parameters["zmax"]-population_parameters["zp"])/(population_parameters["zp"])
     zpdf = scipy.stats.truncnorm(a, b, loc=population_parameters["zp"], scale=(population_parameters["zp"]))
@@ -242,4 +241,4 @@ if __name__ == "__main__":
     df_det = df_det[df_det['SNR'] > snr_threshold]
     
     print(f"Retained {len(df_det)} samples after rejection sampling and applying snr cut.")
-    df_det.to_hdf('confg3_inj.h5', key='true_parameters', mode='a', format='table', append=True)
+    df_det.to_hdf('confg6_inj.h5', key='true_parameters', mode='a', format='table', append=True)
