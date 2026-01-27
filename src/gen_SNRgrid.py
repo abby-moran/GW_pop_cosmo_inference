@@ -142,7 +142,7 @@ def build_snr_grid(df_grid, m1_grid, q_grid, detectors, sensitivity, batch_num=4
 
         df_here = {k: v[start:stop] for k, v in df_grid.items()}
 
-        snr_batch = fisher_snrs.compute_snrs_batch(df_here, detectors=detectors, sensitivity=sensitivity)
+        snr_batch = fisher_snrs.compute_snrs_batch(df_here, detectors=detectors, sensitivity=sensitivity, use_antenna=False)
         if i% 10 ==0:
             print("batch done, num left: ", num_left)
 
@@ -152,12 +152,15 @@ def build_snr_grid(df_grid, m1_grid, q_grid, detectors, sensitivity, batch_num=4
     return snr_out.reshape(len(m1_grid), len(q_grid))
 
 if __name__ == "__main__":
-    N_m1=1000
-    m1_min=2.5
-    m1_max=300
-    q_min=population_parameters['mbh_min']/m1_max
+    N_m1=500
+    m1_src_max = 350
+    z_max = population_parameters["zmax"]
+    
+    m1_det_min = 2.5
+    m1_det_max = m1_src_max * (1 + z_max)
+    q_min=population_parameters['mbh_min']/m1_src_max
     N_q=N_m1
-    m1_grid = jnp.logspace(jnp.log10(m1_min), jnp.log10(m1_max), N_m1)
+    m1_grid = jnp.logspace(jnp.log10(m1_det_min), jnp.log10(m1_det_max), N_m1)
     q_grid  = jnp.linspace(q_min, 1.0, N_q)
     M1, Q = jnp.meshgrid(m1_grid, q_grid, indexing="ij")
     
@@ -186,4 +189,4 @@ if __name__ == "__main__":
         'dm1sz_dm1ddl': jnp.ones(Ngrid),
     }
     SNRgrid=build_snr_grid(df_grid, m1_grid, q_grid, detectors, sensitivity)
-    np.savez("snr_grid_m1_q.npz", m1_grid=m1_grid, q_grid=q_grid, snr_grid=SNRgrid, dL_fid=1.0) # dL in Gpc
+    np.savez("snr_grid_m1det.npz", m1_grid=m1_grid, q_grid=q_grid, snr_grid=SNRgrid, dL_fid=1.0) # dL in Gpc
