@@ -20,9 +20,9 @@ class Uncertainties(object):
     @classmethod
     def from_snr(cls, snr):
         # These formulas come from estimations based on uncertainties in GWTC-3
-        slmc =0# 0.05*20/snr    
-        slq = 0#.1*20/snr #random number standing in for sigma log q rn
-        sld =  0#.2*20/snr #.2, .00001* is the error on the small dl samples
+        slmc = 0#.17/snr    #random
+        slq = .88/snr 
+        sld = 0# .2*20/snr #.2, .00001* is the error on the small dl samples
 
         return cls(slmc, slq, sld)
 

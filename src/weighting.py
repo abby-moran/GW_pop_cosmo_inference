@@ -229,7 +229,7 @@ def dm1sz_dm1ddl(z, cosmo=None):
         return (1+z)**-1 / (cosmo.dC(z) + (1+z)*cosmo.dH / cosmo.E(z))
 
  
-def draw_mock_samples(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q, log_dl_obs, sigma_log_dl, size=1, output_source_frame=False, rng=None):
+def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q, log_dl_obs, sigma_log_dl, size=1, output_source_frame=False, rng=None):
     """
     All inputs in detector frame 
     """
@@ -237,61 +237,71 @@ def draw_mock_samples(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q, log_dl_o
         rng = np.random.default_rng()
 
     log_mcs = rng.normal(loc=log_mc_obs, scale=sigma_log_mc, size=size)
+    mcs = np.exp(log_mcs)
 
-    
-    b = (0 - log_q_obs)/sigma_log_q 
-    log_qs_full=truncnorm.rvs(-np.inf, b, loc=log_q_obs, scale=sigma_log_q, size=5*size)
-    p = 1 / norm.cdf(-log_qs_full/sigma_log_q)
-    p_norm =  p/np.sum(p)
-    log_qs=np.random.choice(log_qs_full, size= size, replace=False, p = p_norm) # as in https://arxiv.org/pdf/2411.02494
+    a = -np.inf
+    b = (0.0 - log_q_obs) / sigma_log_q
+    log_qs = truncnorm.rvs(a, b, loc=log_q_obs, scale=sigma_log_q, size=size, random_state=rng)
+    qs = np.exp(log_qs)  # q in (0,1]
 
-    qs=np.exp(log_qs)
-    #q_wt =  1#norm.cdf(-log_qs/sigma_log_q)
-    
+    m1s = mcs / (qs**(3/5) / (1 + qs)**(1/5))
+
+    log_dls = rng.normal(loc=log_dl_obs, scale=sigma_log_dl, size=size)
+    dls = np.exp(log_dls)
+
+    if output_source_frame:
+        zs = np.expm1(np.linspace(np.log(1), np.log(1 + 10), 1024))
+        ds = Planck18.luminosity_distance(zs).to(u.Gpc).value
+        z = np.interp(dls, ds, zs)
+        m1_source = m1s / (1 + z)
+
+        # Flat in log(Mc), log(q), log(dL) -> Jacobians for conversion
+        prior_wt = 1 / m1_source / dls * (
+            Planck18.comoving_distance(z).to(u.Gpc).value + 
+            (1 + z) * Planck18.hubble_distance.to(u.Gpc).value / Planck18.efunc(z)
+        )
+        return m1_source, qs, z, prior_wt
+
+    else:
+        prior_wt = 1 / m1s / dls
+        return m1s, qs, dls, prior_wt
+
+def draw_mock_samples(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q, log_dl_obs, sigma_log_dl, size=1, output_source_frame=False, rng=None):
+    if rng is None:
+        rng = np.random.default_rng()
+
+    log_mcs = rng.normal(loc=log_mc_obs, scale=sigma_log_mc, size=size)
+    q_obs=np.exp(log_q_obs)
+    sigma_q = q_obs * sigma_log_q
+
+    qs = rng.normal(loc=q_obs, scale=sigma_q, size=size)
+    while np.any(qs < 0) or np.any(qs > 1):
+        s = (qs < 0) | (qs > 1)
+        qs[s] = rng.normal(loc=q_obs, scale=sigma_q, size=np.sum(s))
+
+    log_dls = rng.normal(loc=log_dl_obs, scale=sigma_log_dl, size=size)
 
     mcs = np.exp(log_mcs)
-    m1s = mcs / (qs**(3/5)/((1+qs)**(1/5)))
+    m1s = mcs / (qs**(3/5)/(1+qs)**(1/5))
 
-    #a=(dl_obs)/sigma_dl  
-    log_dls=rng.normal(loc=log_dl_obs, scale=sigma_log_dl, size=size)
-    #dls=truncnorm.rvs(a, np.inf, loc=dl_obs, scale=sigma_dl, size=size)
     dls = np.exp(log_dls)
-    #d_wt=norm.cdf(-dls/sigma_dl)
-    
+
     if output_source_frame:
         zs = np.expm1(np.linspace(np.log(1), np.log(1+10), 1024))
         ds = Planck18.luminosity_distance(zs).to(u.Gpc).value
         z = np.interp(dls, ds, zs)
         m1_source = m1s / (1 + z)
+
+        # Flat in log(Mc), q, log(d), so prior is the product of three terms:
+        # d log(Mc) / d m1_source = 1/m1_source
+        # 1
+        # d log(dl) / dz = 1/dl (dC + (1+z)*dH/E(z))
         prior_wt = 1/m1_source/dls*(Planck18.comoving_distance(z).to(u.Gpc).value + (1+z)*Planck18.hubble_distance.to(u.Gpc).value/Planck18.efunc(z))
 
         return m1_source, qs, z, prior_wt
     else:
-
-        prior_wt =  1/m1s/qs/dls
-        #prior_wt = dls**2 * m1s      # same form as get_samples_from_event
-    return m1s, qs, dls, prior_wt
-
-def draw_mock_samples_linear(m1_obs, sigma_m1, q_obs, sigma_q, z_obs, sigma_z, size=1, rng=None):
-    """
-    All inputs in detector frame 
-    """
-    if rng is None:
-        rng = np.random.default_rng()
-
-    m1s = rng.normal(loc=m1_obs, scale=sigma_m1, size=size)
-
-    a = (0 - (q_obs)) / (sigma_q)
-    b = (1 - (q_obs)) / (sigma_q)
-    qs =truncnorm.rvs(a, b, loc=q_obs, scale=sigma_q, size=size)
-    #qs=rng.normal(loc=q_obs, scale=sigma_q, size=size)
-    
-    a_DL = (0 - (z_obs)) / (sigma_z)
-    zs =truncnorm.rvs(a_DL, np.inf, loc=z_obs, scale=sigma_z, size=size)
-    #dls =rng.normal(loc=dl_obs, scale=sigma_dl, size=size)
-
-    prior_wt =  np.ones(size)
-    return m1s, qs, zs, prior_wt
+        prior_wt = 1/m1s/dls
+        return m1s, qs, dls, prior_wt
 
 
 class PowerLawPDF(object):
