@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gw-pop-cosmo-inference"
+version = "0.1.0"
+description = "Bayesian hierarchical inference of GW population and cosmological parameters"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    # Core inference stack
+    "jax[cuda12]>=0.4.25,<0.6.1",
+    "numpyro",
+    "arviz",
+    # GW waveforms and signal processing
+    "lalsuite>=7.26.4",
+    "ripplegw",
+    "bilby",
+    # Scientific computing
+    "astropy",
+    "numpy",
+    "scipy",
+    "pandas",
+    # Visualization
+    "matplotlib",
+    "seaborn",
+    "corner",
+    # I/O and utilities
+    "h5py",
+    "tqdm",
+    "setuptools<81",
+]
+
+[project.optional-dependencies]
+# jimgw: GW inference framework. Conflicts with ripplegw on JAX version in some
+# configurations; its usage in the code is currently commented out.
+jimgw = ["jimgw"]
+
+[tool.hatch.build.targets.wheel]
+# src/ modules are not installed as a package; scripts add src/ to sys.path directly.
+packages = []
+
+[tool.uv]
+# Don't try to install this project itself as a package, only its dependencies.
+package = false
+
+# jimFisher (Fisher matrix sampling, used in fisher_snrs.py) is not on PyPI.
+# Install after activating the venv:
+#   uv pip install git+https://github.com/jacobgolomb/jimFisher
