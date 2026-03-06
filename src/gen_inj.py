@@ -34,8 +34,7 @@ SENSITIVITIES = {'aligo': lalsim.SimNoisePSDaLIGODesignSensitivityP1200087,
                 'CE': lalsim.SimNoisePSDCosmicExplorerP1600143}
 
 population_parameters = dict()
-config_file = '../reproduce/configs/config3.txt'
-#outfile = 'new_mock_inj_cut.h5'#'mock_injections_o3_zp1.h5'
+config_file = '../reproduce/configs/c2_zp5.txt'
 
 population_parameters = dict()
 with open(config_file) as param_file:
@@ -46,7 +45,8 @@ with open(config_file) as param_file:
             population_parameters[key.strip()] = float(val.strip())
         except ValueError:
             pass
-snr_threshold = 1
+snr_threshold = 0
+ndet=1
 sensitivity='o3_PSD'
 detectors = population_parameters.pop('detectors', 'H1').split(',')
 custom_cosmo = intensity_models.FlatwCDMCosmology(population_parameters['h'], population_parameters['Om'], population_parameters['w'], population_parameters['zmax'])
@@ -112,8 +112,7 @@ class PowerLawPDF(object):
     
     def icdf(self, c):
         return ((self.a**self.alpha*self.b*c + self.a*self.b**self.alpha*(1-c))/(self.a*self.b)**self.alpha)**(1/(1-self.alpha))
-
-
+    
 if __name__ == "__main__":
     grid = np.load("snr_grid_m1det_ext.npz")
     
@@ -123,12 +122,13 @@ if __name__ == "__main__":
     dL_fid   = float(grid["dL_fid"])
     
     log_snr_interp = RegularGridInterpolator((m1_grid, q_grid), np.log(snr_grid), bounds_error=False, fill_value=-np.inf)
-
-    for i in range(20):
+    num_loops=1
+    for i in range(num_loops):
         ndraw=int(1e7)
-        a=(0-population_parameters["zp"])/(population_parameters["zp"])
-        b=(population_parameters["zmax"]-population_parameters["zp"])/(population_parameters["zp"])
-        zpdf = scipy.stats.truncnorm(a, b, loc=population_parameters["zp"], scale=(population_parameters["zp"]))
+        #a=(0-population_parameters["zp"])/(population_parameters["zp"])
+        #b=(population_parameters["zmax"]-population_parameters["zp"])/(population_parameters["zp"])
+        zpdf = scipy.stats.uniform(loc=0, scale=population_parameters["zmax"])
+        #scipy.stats.truncnorm(a, b, loc=population_parameters["zp"], scale=(population_parameters["zp"]))
         
         a=(population_parameters["mbh_min"]-population_parameters["mpisn"])/(2*population_parameters["mpisn"])
         mpdf = scipy.stats.truncnorm(a, np.inf, loc=population_parameters["mpisn"], scale=(2*population_parameters["mpisn"]))
@@ -141,20 +141,6 @@ if __name__ == "__main__":
         qpdf = scipy.stats.uniform(loc=0+offset, scale=1-offset) #goes from loc to loc+scale
         q = qpdf.ppf(rng.uniform(0, 1, size=ndraw))  
         
-        
-        #mtpdf = PowerLawPDF(2, m+population_parameters['mbh_min'], 2 * m)
-        
-        #mt = mtpdf.icdf(rng.uniform(low=0, high=1, size=ndraw))
-        
-        #m2 = mt - m
-        #q = m2/m
-        
-        #print("calculating pdraws")
-        #pdraw = mpdf.pdf(m)*zpdf.pdf(z)*(mtpdf(mt)*m)
-        
-        # for truncated uniform q
-        # then
-        
         mt=m+q*m
         m2 = mt - m
         print("calculating pdraws")
@@ -162,14 +148,6 @@ if __name__ == "__main__":
         pdraw = mpdf.pdf(m) * zpdf.pdf(z) * qpdf.pdf(q)
         
         m1d = m * (1 + z)
-        iota = np.arccos(rng.uniform(low=-1, high=1, size=ndraw))
-        
-        ra = rng.uniform(low=0, high=2*np.pi, size=ndraw)
-        dec = np.arcsin(rng.uniform(low=-1, high=1, size=ndraw))
-        
-        # 0 < psi < pi, uniformly distributed
-        psi = rng.uniform(low=0, high=np.pi, size=ndraw)
-        gmst = rng.uniform(low=0, high=2*np.pi, size=ndraw)
         m1_det = m * (1 + z)
         points = np.column_stack([m1_det, q])
         rho0 = np.exp(log_snr_interp(points))
@@ -187,21 +165,9 @@ if __name__ == "__main__":
         
         det = detectors[0]
         
-        #A0 = np.sqrt(Fp0**2 + Fc0**2)
         rho0 = np.exp(log_snr_interp(points))
-        #rho0 /= A0
         rho = rho0 * (dL_fid / dL)
         
-        #Fp = np.zeros(ndraw)
-        #Fc = np.zeros(ndraw)
-        
-        #for i in range(ndraw):
-        #    Fp[i], Fc[i] = lal.ComputeDetAMResponse(lal.cached_detector_by_prefix[detectors[0]].response, ra[i], dec[i], psi[i], gmst[i])
-        
-        cosi = np.cos(iota)
-        #Theta_sq = (Fp**2 * (1 + cosi**2)**2 / 4 + Fc**2 * cosi**2)
-        #Theta = np.sqrt(Theta_sq)
-        #SNR_comp = rho * Theta
         zeros=jnp.zeros(len(m))
         
         df = {
@@ -210,11 +176,6 @@ if __name__ == "__main__":
             'z': jnp.array(z),
             'dL': jnp.array(dL), #in GPC here
             'm1d': jnp.array(m1d),
-            'iota': jnp.array(iota),
-            'ra': jnp.array(ra),
-            'dec': jnp.array(dec),
-            'psi': jnp.array(psi),
-            'gmst': jnp.array(gmst),
             's1x': zeros, 
             's1y': zeros, 
             's1z': zeros, #jnp.zeros(len(m)), 
@@ -224,7 +185,7 @@ if __name__ == "__main__":
             'pdraw_mqz': jnp.array(pdraw),
             'dm1sz_dm1ddl': jnp.array(dm1sz_dm1ddl),
             'SNR_0': jnp.array(rho),
-            'ndraw': zeros+ndraw
+            'ndraw': zeros+ndraw*num_loops
         }
         
         #df["SNR"] = SNR_comp
@@ -238,19 +199,26 @@ if __name__ == "__main__":
                                            population_parameters['w'], population_parameters['zmax'])
 
 
-        log_dN_obj = intensity_models.LogDNDMDQDV
-        pop_params = {key: population_parameters[key] for key in getfullargspec(log_dN_obj)[0][1:] if key in population_parameters.keys()}
-        log_dN_func=log_dN_obj(**pop_params)
-        log_dN_vals = log_dN_func(df_pd['m1'].values, df_pd['q'].values, df_pd['z'].values)
-        log_w = log_dN_vals - jnp.log(pdraw) +jnp.log(cosmo.dVCdz(df_pd['z'].values)) -jnp.log1p(df_pd['z'].values)
-        pdraw_sel=np.zeros_like(pdraw)
+        #log_dN_obj = intensity_models.LogDNDMDQDV
+        #pop_params = {key: population_parameters[key] for key in getfullargspec(log_dN_obj)[0][1:] if key in population_parameters.keys()}
+        #log_dN_func=log_dN_obj(**pop_params)
+        #log_dN_vals = log_dN_func(df_pd['m1'].values, df_pd['q'].values, df_pd['z'].values)
+        #pdraw_cosmo=dm1sz_dm1ddl*pdraw
+        #log_w = log_dN_vals - jnp.log(pdraw_cosmo) +jnp.log(cosmo.dVCdz(df_pd['z'].values)) -2*jnp.log1p(df_pd['z'].values)- jnp.log(cosmo.ddL_dz(df_pd['z'].values)) 
+        #pdraw_sel=np.zeros_like(pdraw)
+
+        #log_w_max = np.nanmax(log_w)
         
+        #accept_prob = np.exp(log_w - log_w_max)
+        #sel_mask = np.random.choice(len(df_pd), p=accept_prob/np.sum(accept_prob), size=int(1e6))
+
         # stable accept-reject
-        log_w_max = np.nanmax(log_w)
-        accept_prob = np.exp(log_w - log_w_max)
-        u = rng.uniform(size=len(accept_prob))
-        sel_mask = u < accept_prob
-        df_det = df_pd[sel_mask]
+        #log_w_max = np.nanmax(log_w)
+        #accept_prob = np.exp(log_w - log_w_max)
+        #u = rng.uniform(size=len(accept_prob))
+        #sel_mask = u < accept_prob
+        
+        df_det = df_pd#.iloc[sel_mask]
         Fp = np.zeros(len(df_det))
         Fc = np.zeros(len(df_det))
         
@@ -262,13 +230,13 @@ if __name__ == "__main__":
         gmst = rng.uniform(low=0, high=2*np.pi, size=len(df_det))
         iota = np.arccos(rng.uniform(low=-1, high=1, size=len(df_det)))
         
-        for i in range(len(df_det)):
-            Fp[i], Fc[i] = lal.ComputeDetAMResponse(lal.cached_detector_by_prefix[detectors[0]].response, ra[i], dec[i], psi[i], gmst[i])
+        for j in range(len(df_det)):
+            Fp[j], Fc[j] = lal.ComputeDetAMResponse(lal.cached_detector_by_prefix[detectors[0]].response, ra[j], dec[j], psi[j], gmst[j])
         
         cosi = np.cos(iota)
         Theta_sq = (Fp**2 * (1 + cosi**2)**2 / 4 + Fc**2 * cosi**2)
         Theta = np.sqrt(Theta_sq)
-        SNR_comp = df_det['SNR_0'] * Theta
+        SNR_comp = df_det['SNR_0'] * Theta* np.sqrt(ndet)
         df_det['Theta']=Theta
 
         df_det['SNR']=SNR_comp
@@ -276,8 +244,8 @@ if __name__ == "__main__":
         
         df_det = df_det[df_det['SNR'] > snr_threshold]
         df_det=df_det.drop(columns=['SNR_0'])
-        #print(f"Retained {len(df_det)} samples after rejection sampling and applying snr cut.")
+
         if i==0:
-            df_det.to_hdf('con3_SNRcomp_ext.h5', key='true_parameters', mode='a', format='table', append=False)
+            df_det.to_hdf('c2_zp5_snr0.h5', key='true_parameters', mode='a', format='table', append=False)
         else:
-            df_det.to_hdf('con3_SNRcomp_ext.h5', key='true_parameters', mode='a', format='table', append=True)
+            df_det.to_hdf('c2_zp5_snr0.h5', key='true_parameters', mode='a', format='table', append=True)
