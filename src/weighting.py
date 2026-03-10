@@ -11,9 +11,9 @@ import intensity_models
 from inspect import getfullargspec
 from utils import chi_effective_prior_from_isotropic_spins
 import pandas as pd
-import fisher_snrs #import compute_snrs
+#import fisher_snrs #import compute_snrs
 from scipy.stats import norm, truncnorm
-import fisher_snrs
+#import fisher_snrs
 import jax
 jax.config.update("jax_enable_x64", True)
 
@@ -226,53 +226,80 @@ def dm1sz_dm1ddl(z, cosmo=None):
         ddl_dz = (Planck18.comoving_distance(z).to(u.Gpc).value + (1 + z) * Planck18.hubble_distance.to(u.Gpc).value / Planck18.efunc(z))
         return dm1s_dm1d * (ddl_dz)**-1
     else:
-        return (1+z)**-1 / (cosmo.dC(z) + (1+z)*cosmo.dH / cosmo.E(z))
+        dm1s_dm1d = (1+z)**-1
+        ddl_dz = cosmo.ddL_dz((z))
+        return  dm1s_dm1d * (ddl_dz)**-1
 
- 
-def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q, log_dl_obs, sigma_log_dl, size=1, output_source_frame=False, rng=None):
+def get_mc(m1, q):
+    return m1* (q**(3/5) / (1 + q)**(1/5))
+
+def get_m1(mc, q):
+    return mc/(q**(3/5) / (1 + q)**(1/5))
+    
+def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q,dl_true, #log_dl_obs, sigma_log_dl, 
+                           theta_obs, sigma_theta, rho_obs, rho_fun,
+                           size=1, output_source_frame=False, rng=None, dl_fid=1, theta_fid=1, ndet=1):#, m_min=5.0):
     """
     All inputs in detector frame 
     """
     if rng is None:
         rng = np.random.default_rng()
 
-    log_mcs = rng.normal(loc=log_mc_obs, scale=sigma_log_mc, size=size)
+    #b_dl = (np.log(5.7) - log_dl_obs) / sigma_log_dl 
+    #log_dls = norm.rvs(loc=log_dl_obs, scale=sigma_log_dl, size=size)
+    #dls = np.exp(log_dls)
+
+    b_q = (0.0 - log_q_obs) / sigma_log_q
+    log_qs = truncnorm.rvs(-np.inf, b_q, loc=log_q_obs, scale=sigma_log_q, size=2*size, random_state=rng)
+    # compute weights: 1 / Phi(-x / sigma)
+    #  https://arxiv.org/pdf/2411.02494
+    # add a check that prints a warning if the effective number of samples here is < size (sum of weights squared over square of the sum, check)
+    weights = 1 / norm.cdf(-log_qs / sigma_log_q)
+    weights=np.array(weights)
+    weights /= np.sum(weights) #normalize
+    ess = 1.0 / np.sum(weights**2)
+    if ess < size:
+        print(f"Warning: Effective sample size ({ess:.1f}) < requested size ({size})")
+    # resample 
+    log_qs_final = rng.choice(log_qs, size=size, p=weights)
+    qs = np.exp(log_qs_final)
+    
+    log_mcs = norm.rvs(loc=log_mc_obs, scale=sigma_log_mc, size=size)
     mcs = np.exp(log_mcs)
-
-    a = -np.inf
-    b = (0.0 - log_q_obs) / sigma_log_q
-    log_qs = truncnorm.rvs(a, b, loc=log_q_obs, scale=sigma_log_q, size=size, random_state=rng)
-    qs = np.exp(log_qs)  # q in (0,1]
-
     m1s = mcs / (qs**(3/5) / (1 + qs)**(1/5))
 
-    log_dls = rng.normal(loc=log_dl_obs, scale=sigma_log_dl, size=size)
-    dls = np.exp(log_dls)
+    #Θ ~ N[0, 1](Θ_obs, σΘ) / [Φ((1 – Θ) / σΘ) – Φ(–Θ/ σΘ)]
+    a_th = (0.0 - theta_obs) / sigma_theta
+    b_th = (1 - theta_obs) / sigma_theta
+    thetas = truncnorm.rvs(a_th, b_th, loc=theta_obs, scale=sigma_theta, size=2*size, random_state=rng)
+    # compute weights: 1 / Phi(-x / sigma)
+    weights = 1 / (norm.cdf((1-thetas) / sigma_theta)- norm.cdf((-thetas / sigma_theta)))
+    weights /= np.sum(weights) #normalize
+    ess = 1.0 / np.sum(weights**2)
+    if ess < size:
+        print(f"Warning: Effective sample size ({ess:.1f}) < requested size ({size})")
+   
+    # resample 
+    thetas_final = rng.choice(thetas, size=size, p=weights)
 
-    if output_source_frame:
-        zs = np.expm1(np.linspace(np.log(1), np.log(1 + 10), 1024))
-        ds = Planck18.luminosity_distance(zs).to(u.Gpc).value
-        z = np.interp(dls, ds, zs)
-        m1_source = m1s / (1 + z)
+    # scale = sqrt(ndet)
+    rhos = norm.rvs(loc=rho_obs, scale=np.sqrt(ndet), size=size)
 
-        # Flat in log(Mc), log(q), log(dL) -> Jacobians for conversion
-        prior_wt = 1 / m1_source / dls * (
-            Planck18.comoving_distance(z).to(u.Gpc).value + 
-            (1 + z) * Planck18.hubble_distance.to(u.Gpc).value / Planck18.efunc(z)
-        )
-        return m1_source, qs, z, prior_wt
+    #dL = dL_fid x (Θ / Θ_fid) x ρ_fid (M, q, dL_fid, Θ_fid)  / ρ
+    points = np.column_stack([m1s, qs])
+    dls = dl_fid*thetas_final/theta_fid * np.exp(rho_fun(points))/rhos
+    #print(thetas_final/theta_fid)
+    #print( np.exp(rho_fun(points))/rhos)
 
-    else:
-        prior_wt = 1 / m1s / dls
-        return m1s, qs, dls, prior_wt
+    eps=1e-40
+    prior_wt = 1/ m1s / qs * (rhos+eps) / (dls+eps) #triple check and compare to those papers
+    return m1s, qs, dls, prior_wt
 
-def draw_mock_samples(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q, log_dl_obs, sigma_log_dl, size=1, output_source_frame=False, rng=None):
+def draw_mock_samples(log_mc_obs, sigma_log_mc, q_obs, sigma_q, log_dl_obs, sigma_log_dl, size=1, output_source_frame=False, rng=None):
     if rng is None:
         rng = np.random.default_rng()
 
     log_mcs = rng.normal(loc=log_mc_obs, scale=sigma_log_mc, size=size)
-    q_obs=np.exp(log_q_obs)
-    sigma_q = q_obs * sigma_log_q
 
     qs = rng.normal(loc=q_obs, scale=sigma_q, size=size)
     while np.any(qs < 0) or np.any(qs > 1):
