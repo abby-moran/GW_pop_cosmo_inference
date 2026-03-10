@@ -54,7 +54,9 @@ def get_pop_params(config_file):
     return population_parameters, cosmo
 
 
-def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8, jitter_SNR=True, ndet=1, append_tf=False, evt_offset=0):
+def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8, 
+                 jitter_SNR=True, ndet=1, append_tf=False, evt_offset=0,
+                 detection_rng=None):
     """
     takes in an event dataframe df and generates a file which will store the values we'd actulaly observe from the events
 
@@ -70,8 +72,13 @@ def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8, jitter_SNR=
     outputs a file with observed log chirp mass, log q, and Theta (finn-chernoff parameter) with corresponding uncertainties calculted from 
     SNR scalings
     """
-    rng = np.random.default_rng(251286134409181405721219170031242732711)
-    jitter = rng.normal(loc=0, scale=np.sqrt(ndet), size=len(df))
+    if detection_rng is None:
+        detection_rng = np.random.default_rng()
+    
+    # unseeded rng for observation noise (different realization each run)
+    noise_rng = np.random.default_rng()
+
+    jitter = detection_rng.normal(loc=0, scale=np.sqrt(ndet), size=len(df))
     
     if jitter_SNR:
         df['SNR_OBS'] = df['SNR'] + jitter
@@ -95,12 +102,12 @@ def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8, jitter_SNR=
     sigma_theta=[]
     for i, row in tqdm(inj_det.iterrows()):
         uncert = mock_observations.Uncertainties.from_snr(row['SNR_OBS'])
-        log_mc_obs.append(np.log(row['mc_det']) + mult*uncert.sigma_log_mc*rng.normal())
+        log_mc_obs.append(np.log(row['mc_det']) + mult*uncert.sigma_log_mc*noise_rng.normal())
         sigma_log_mc.append(mult*uncert.sigma_log_mc)
         
         slq = mult*uncert.sigma_q / row['q']   # error propagation
         b = (0.0 - np.log(row['q'])) / slq
-        log_q_obs.append(truncnorm.rvs(-np.inf, b, loc=np.log(row['q']), scale=slq))
+        log_q_obs.append(truncnorm.rvs(-np.inf, b, loc=np.log(row['q']), scale=slq,  random_state=noise_rng))
         sigma_log_q.append(slq)
 
         sigma_theta.append(mult*uncert.sigma_theta)
@@ -108,7 +115,7 @@ def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8, jitter_SNR=
         # modeled after DOI 10.3847/2041-8213/ab77c9
         a = (0.0 - row['Theta']) / sigma_theta[-1]
         b = (1 - row['Theta']) / sigma_theta[-1]
-        theta_obs.append(truncnorm.rvs(a, b, loc=row['Theta'], scale= sigma_theta[-1]))
+        theta_obs.append(truncnorm.rvs(a, b, loc=row['Theta'], scale= sigma_theta[-1],  random_state=noise_rng))
     
     inj_det['log_mc_obs'] = log_mc_obs
     inj_det['sigma_log_mc'] = sigma_log_mc
@@ -161,7 +168,7 @@ def gen_mock_PE(obs_file, log_SNR_fun, population_parameters, cosmo, nsamples=20
             q_event.append(samples[1])
             dl_event.append(samples[2])
             pdraw_event.append(samples[3])
-            evt.append(e['evt'])
+            evt.append(n)
     
         # store all samples for this event
         m1s.append(np.array(m1_event).flatten())
@@ -194,13 +201,15 @@ def gen_mock_PE(obs_file, log_SNR_fun, population_parameters, cosmo, nsamples=20
     return(m1s, qs, dls, pdraws, evts)
 
 if __name__ == "__main__":
-    mult = .1
+    rng = np.random.default_rng(251286134409181405721219170031242732711)
+
+    mult = .3
     inj_file='../src/cn_zm55_snr0.h5'
-    obs_file = '../src/data/obscn_zm55_err1.h5'
-    sel_file = '../src/sel_cn_zm55_err1.h5'
-    pe_file='../src/pe_cn_zm55_err1.h5'
+    obs_file = '../src/data/obscn_zm55_err3.h5'
+    sel_file = '../src/sel_cn_zm55_err3.h5'
+    pe_file='../src/pe_cn_zm55_err3real3.h5'
     ndet=1
-    reweight_inj=True
+    redo_sel=False
     if ndet>0:
         jitter=True
     else:
@@ -227,77 +236,75 @@ if __name__ == "__main__":
     pop_params = {key: population_parameters[key] for key in getfullargspec(log_dN_obj)[0][1:] if key in population_parameters.keys()}
     log_dN_func = log_dN_obj(**pop_params)
 
-    # ----------------------------------------------------------------
-    # PASS 1: compute weights chunk by chunk (just floats, low memory)
-    # ----------------------------------------------------------------
-    if reweight_inj:
-        print('Pass 1: computing weights...')
-        log_w_chunks = []
-        pdraw_cosmo_chunks = []
+    # compute weights, one chunk at a time
+    print('Pass 1: computing weights...')
+    log_w_chunks = []
+    pdraw_cosmo_chunks = []
 
-        for start in tqdm(range(0, n_total, chunk_size)):
-            chunk = pd.read_hdf(inj_file, key='true_parameters',
-                                start=start, stop=start + chunk_size)
-            chunk['dm1sz_dm1ddl2'] = dm1sz_dm1ddl(chunk['z'].to_numpy(), cosmology=cosmo)
-            chunk['pdraw_cosmo'] = chunk['pdraw_mqz'] * chunk['dm1sz_dm1ddl2']
+    for start in tqdm(range(0, n_total, chunk_size)):
+        chunk = pd.read_hdf(inj_file, key='true_parameters',
+                            start=start, stop=start + chunk_size)
+        chunk['dm1sz_dm1ddl2'] = dm1sz_dm1ddl(chunk['z'].to_numpy(), cosmology=cosmo)
+        chunk['pdraw_cosmo'] = chunk['pdraw_mqz'] * chunk['dm1sz_dm1ddl2']
 
-            log_dN_vals = log_dN_func(chunk['m1'].values, chunk['q'].values, chunk['z'].values)
-            log_w = (log_dN_vals
-                        + jnp.log(cosmo.dVCdz(chunk['z'].values))
-                        - 2 * jnp.log1p(chunk['z'].values)
-                        - jnp.log(chunk['pdraw_cosmo'].values)
-                        - jnp.log(cosmo.ddL_dz(chunk['z'].values)))
-            log_w_chunks.append(np.array(log_w))
-            pdraw_cosmo_chunks.append(chunk['pdraw_cosmo'].values)
+        log_dN_vals = log_dN_func(chunk['m1'].values, chunk['q'].values, chunk['z'].values)
+        log_w = (log_dN_vals
+                    + jnp.log(cosmo.dVCdz(chunk['z'].values))
+                    - 2 * jnp.log1p(chunk['z'].values)
+                    - jnp.log(chunk['pdraw_cosmo'].values)
+                    - jnp.log(cosmo.ddL_dz(chunk['z'].values)))
+        log_w_chunks.append(np.array(log_w))
+        pdraw_cosmo_chunks.append(chunk['pdraw_cosmo'].values)
 
-        log_w_all = np.concatenate(log_w_chunks)
-        pdraw_cosmo_all = np.concatenate(pdraw_cosmo_chunks)
-        del log_w_chunks, pdraw_cosmo_chunks
+    # select the indicidies for the events we want within the inj file
+    log_w_all = np.concatenate(log_w_chunks)
+    pdraw_cosmo_all = np.concatenate(pdraw_cosmo_chunks)
+    del log_w_chunks, pdraw_cosmo_chunks
 
-        log_w_max = np.nanmax(log_w_all)
-        accept_prob = np.exp(log_w_all - log_w_max)
-        accept_prob = np.nan_to_num(accept_prob, nan=0.0)
-        accept_prob /= accept_prob.sum()
+    log_w_max = np.nanmax(log_w_all)
+    accept_prob = np.exp(log_w_all - log_w_max)
+    accept_prob = np.nan_to_num(accept_prob, nan=0.0)
+    accept_prob /= accept_prob.sum()
 
-        print('Sampling indices...')
-        sampled_indices = np.sort(np.random.choice(len(log_w_all), p=accept_prob, size=num_tot))
+    print('Sampling indices...')
+    sampled_indices = sampled_indices = np.sort(rng.choice(len(log_w_all), p=accept_prob, size=num_tot))
+    #np.sort(np.random.choice(len(log_w_all), p=accept_prob, size=num_tot))
 
-        # ----------------------------------------------------------------
-        # PASS 2: process selected rows chunk by chunk
-        # ----------------------------------------------------------------
-        print('Pass 2: processing selected rows...')
-        all_detected_indices_global = []  # global positions in df_det
-        evt_offset = 0
-        df_det_global_offset = 0  # tracks position in df_det across chunks
-        first_chunk = True
+    
+    # process the events we want (resampled to our target dist) in chunks
+    print('Pass 2: processing selected rows...')
+    all_detected_indices_global = []  # global positions in df_det
+    evt_offset = 0
+    df_det_global_offset = 0  # tracks position in df_det across chunks
+    first_chunk = True
 
+    for start in tqdm(range(0, n_total, chunk_size)):
+        stop = start + chunk_size
+        mask = (sampled_indices >= start) & (sampled_indices < stop)
+        chunk_sampled = sampled_indices[mask] - start
 
-        for start in tqdm(range(0, n_total, chunk_size)):
-            stop = start + chunk_size
-            mask = (sampled_indices >= start) & (sampled_indices < stop)
-            chunk_sampled = sampled_indices[mask] - start
+        if len(chunk_sampled) == 0:
+            continue
 
-            if len(chunk_sampled) == 0:
-                continue
+        chunk = pd.read_hdf(inj_file, key='true_parameters', start=start, stop=stop)
+        df_det_chunk = chunk.iloc[chunk_sampled].copy()
 
-            chunk = pd.read_hdf(inj_file, key='true_parameters', start=start, stop=stop)
-            df_det_chunk = chunk.iloc[chunk_sampled].copy()
-
-            global_sampled = sampled_indices[mask]  # global indices
-            df_det_chunk['pdraw_sel'] = np.exp(log_w_all[global_sampled]
-                                        + np.log(pdraw_cosmo_all[global_sampled]))
-            df_det_chunk['dl'] = cosmo.dL(df_det_chunk['z'].to_numpy())
-            df_det_chunk['m1d'] = df_det_chunk['m1'] * (1 + df_det_chunk['z'])  # ← add this
-            df_det_chunk = df_det_chunk.reset_index(drop=True)
+        global_sampled = sampled_indices[mask]  # global indices, get just the ones that fit our pop model
+        df_det_chunk['pdraw_sel'] = np.exp(log_w_all[global_sampled]
+                                    + np.log(pdraw_cosmo_all[global_sampled]))
+        df_det_chunk['dl'] = cosmo.dL(df_det_chunk['z'].to_numpy())
+        df_det_chunk['m1d'] = df_det_chunk['m1'] * (1 + df_det_chunk['z'])  
+        df_det_chunk = df_det_chunk.reset_index(drop=True)
 
 
-            # get_mock_obs on this chunk
-            detected_indices, evt_names = get_mock_obs(df_det_chunk, obs_file, cosmo,
-                mult=mult, jitter_SNR=jitter, detection_threshold=detection_threshold,
-                append_tf=not first_chunk, evt_offset=evt_offset)
+        # get_mock_obs on this chunk
+        detected_indices, evt_names = get_mock_obs(df_det_chunk, obs_file, cosmo,
+            mult=mult, jitter_SNR=jitter, detection_threshold=detection_threshold,
+            append_tf=not first_chunk, evt_offset=evt_offset, detection_rng=rng)
 
-            # sel_samples: detected rows with true values
-            det_mask = df_det_chunk.index.isin(detected_indices)
+        # sel_samples: detected rows with true values
+        det_mask = df_det_chunk.index.isin(detected_indices)
+        if redo_sel:
             sel_chunk = df_det_chunk[det_mask].copy()
             sel_chunk['ndraw'] = num_tot
             sel_chunk['evt'] = evt_names
@@ -306,29 +313,15 @@ if __name__ == "__main__":
                                 append=not first_chunk, format='table')
 
             evt_offset += det_mask.sum()
-            first_chunk = False
-            print('Generating mock PE...')
-        m1s, qs, dls, pdraws, evts = gen_mock_PE(
-            obs_file, log_snr_interp, population_parameters, cosmo,
-            outfile=pe_file, ndet=ndet, nsamples=200
-        )
-        surviving_evts = set(evts[:, 0])  # evt names that made it through
+        first_chunk = False
+    print('Generating mock PE...')
+    m1s, qs, dls, pdraws, evts = gen_mock_PE(
+        obs_file, log_snr_interp, population_parameters, cosmo,
+        outfile=pe_file, ndet=ndet, nsamples=200
+    )
+    surviving_evts = set(evts[:, 0])  # evt names that made it through
+    if redo_sel:
         sel_samples = pd.read_hdf(sel_file, key='true_parameters')
         sel_samples = sel_samples[sel_samples['evt'].isin(surviving_evts)]
         sel_samples.to_hdf(sel_file, key='true_parameters', format='table', mode='w')
-        print("array shapes (we want nevents, nsamples): ", m1s.shape, qs.shape, dls.shape, pdraws.shape)
-    else:
-        print("Skipping reweighting and PE generation, loading from files...")
-    # ----------------------------------------------------------------
-    # PE generation (reads from the obs file written above)
-    # ----------------------------------------------------------------
-        print('Generating mock PE...')
-        m1s, qs, dls, pdraws, evts = gen_mock_PE(
-            obs_file, log_snr_interp, population_parameters, cosmo,
-            outfile=pe_file, ndet=ndet, nsamples=200
-        )
-    #surviving_evts = set(evts[:, 0])  # evt names that made it through
-    #sel_samples = pd.read_hdf(sel_file, key='true_parameters')
-    #sel_samples = sel_samples[sel_samples['evt'].isin(surviving_evts)]
-    #sel_samples.to_hdf(sel_file, key='true_parameters', format='table', mode='w')
-        print("array shapes (we want nevents, nsamples): ", m1s.shape, qs.shape, dls.shape, pdraws.shape)
+    print("array shapes (we want nevents, nsamples): ", m1s.shape, qs.shape, dls.shape, pdraws.shape)

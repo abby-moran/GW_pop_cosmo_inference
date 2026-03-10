@@ -30,14 +30,16 @@ if __name__ == "__main__":
     random_seed = 1652819403
 
     prior = get_priors_from_file("priors/high_zmax.prior")
-    pe_samples_mock = pd.read_hdf('../src/pe_cn_zm55_err1.h5', key='samples').iloc[0:2000]  # 4k to 6k 
+    file='../src/pe_c2_zm55_err1real2.h5'
+    pe_samples_mock = pd.read_hdf(file, key='samples').iloc[0:2000]  # 4k to 6k 
+    print(f'loaded in {file}')
     m1s = np.asarray(pe_samples_mock['m1'].to_list())
     qs = np.asarray(pe_samples_mock['q'].to_list())
     dls =  np.asarray(pe_samples_mock['dl'].to_list()) +1e-40
     pdraws = np.asarray(pe_samples_mock['pdraw'].to_list())
     print("array shapes (we want nevents, nsamples): ", m1s.shape, qs.shape, dls.shape, pdraws.shape)
 
-    sel_samples=pd.read_hdf('../src/sel_cn_zm55_err1.h5', key='true_parameters')
+    sel_samples=pd.read_hdf('../src/sel_c2_zm55_err1.h5', key='true_parameters')
     ndraw=sel_samples['ndraw'].iloc[0]
 
     assert np.all(m1s > 0) 
@@ -57,7 +59,7 @@ if __name__ == "__main__":
     mcmc.run(jax.random.PRNGKey(random_seed), m1s, qs, dls, pdraws,
             sel_samples['m1d'].to_list(), sel_samples['q'].to_list(), sel_samples['dl'].to_list(), sel_samples['pdraw_sel'].to_list(), ndraw, prior)
     samples = mcmc.get_samples(group_by_chain=True)
-    np.savez("o3_cn_zm55_err1.npz", **samples)
+    np.savez("o3_c2_zm55_err1r2.npz", **samples)
 
 
     
