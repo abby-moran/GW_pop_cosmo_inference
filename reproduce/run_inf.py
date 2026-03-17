@@ -22,6 +22,24 @@ import tqdm
 from scipy.special import logsumexp
 from inspect import getfullargspec
 import numpyro.infer.util as util
+from numpyro.infer import init_to_value
+
+
+def get_pop_params(config_file):
+    population_parameters = dict()
+    population_parameters = dict()
+    with open(config_file) as param_file:
+        for line in param_file:
+            (key, val) = line.split('=')
+            population_parameters[key.strip()] = val.strip()
+            try:
+                population_parameters[key.strip()] = float(val.strip())
+            except ValueError:
+                pass
+    cosmo = intensity_models.FlatwCDMCosmology(population_parameters['h'], population_parameters['Om'],
+                                           population_parameters['w'], population_parameters['zmax'])
+
+    return population_parameters, cosmo
 
 if __name__ == "__main__":
 
@@ -30,7 +48,7 @@ if __name__ == "__main__":
     random_seed = 1652819403
 
     prior = get_priors_from_file("priors/high_zmax.prior")
-    file='../src/pe_c2_zm55_err1real2.h5'
+    file='../src/pe_c2_zm55_err.h5'
     pe_samples_mock = pd.read_hdf(file, key='samples').iloc[0:2000]  # 4k to 6k 
     print(f'loaded in {file}')
     m1s = np.asarray(pe_samples_mock['m1'].to_list())
@@ -39,7 +57,7 @@ if __name__ == "__main__":
     pdraws = np.asarray(pe_samples_mock['pdraw'].to_list())
     print("array shapes (we want nevents, nsamples): ", m1s.shape, qs.shape, dls.shape, pdraws.shape)
 
-    sel_samples=pd.read_hdf('../src/sel_c2_zm55_err1.h5', key='true_parameters')
+    sel_samples=pd.read_hdf('../src/sel_c2_zm55_err.h5', key='true_parameters')
     ndraw=sel_samples['ndraw'].iloc[0]
 
     assert np.all(m1s > 0) 
@@ -54,12 +72,18 @@ if __name__ == "__main__":
     assert not np.any(np.isnan(sel_samples['pdraw_sel'])) 
     assert not np.any(np.isinf(sel_samples['pdraw_sel']))
 
-    kernel = NUTS(intensity_models.pop_cosmo_model)#, target_accept_prob=0.95)
+    population_parameters, cosmo = get_pop_params('../reproduce/configs/c2_zp5.txt')
+    init_vals = {k: jnp.array(float(v)) 
+             for k, v in population_parameters.items() 
+             if k in prior}
+    
+    kernel = NUTS(intensity_models.pop_cosmo_model,init_strategy=init_to_value(values=init_vals))
     mcmc = MCMC(kernel, num_warmup=nmcmc, num_samples=nmcmc, num_chains=nchain, progress_bar=True)
-    mcmc.run(jax.random.PRNGKey(random_seed), m1s, qs, dls, pdraws,
-            sel_samples['m1d'].to_list(), sel_samples['q'].to_list(), sel_samples['dl'].to_list(), sel_samples['pdraw_sel'].to_list(), ndraw, prior)
+    mcmc.run(jax.random.PRNGKey(random_seed), m1s, qs, dls, pdraws, sel_samples['m1d'].to_list(), 
+             sel_samples['q'].to_list(), sel_samples['dl'].to_list(), sel_samples['pdraw_sel'].to_list(),
+        ndraw, prior)
     samples = mcmc.get_samples(group_by_chain=True)
-    np.savez("o3_c2_zm55_err1r2.npz", **samples)
+    np.savez("o3_c2_zm55_err.npz", **samples) 
 
 
     

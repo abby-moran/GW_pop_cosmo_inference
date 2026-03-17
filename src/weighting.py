@@ -238,7 +238,7 @@ def get_m1(mc, q):
     
 def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q,dl_true, #log_dl_obs, sigma_log_dl, 
                            theta_obs, sigma_theta, rho_obs, rho_fun,
-                           size=1, output_source_frame=False, rng=None, dl_fid=1, theta_fid=1, ndet=1):#, m_min=5.0):
+                           size=1, output_source_frame=False, rng=None, dl_fid=1, theta_fid=1, ndet=1, m_max=500):#, m_min=5.0):
     """
     All inputs in detector frame 
     """
@@ -248,87 +248,123 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q,dl_t
     #b_dl = (np.log(5.7) - log_dl_obs) / sigma_log_dl 
     #log_dls = norm.rvs(loc=log_dl_obs, scale=sigma_log_dl, size=size)
     #dls = np.exp(log_dls)
-
+    a_q=(-9 - log_q_obs) / sigma_log_q
     b_q = (0.0 - log_q_obs) / sigma_log_q
-    log_qs = truncnorm.rvs(-np.inf, b_q, loc=log_q_obs, scale=sigma_log_q, size=2*size, random_state=rng)
+    log_qs = truncnorm.rvs(a_q, b_q, loc=log_q_obs, scale=sigma_log_q, size=size, random_state=rng)
     # compute weights: 1 / Phi(-x / sigma)
     #  https://arxiv.org/pdf/2411.02494
     # add a check that prints a warning if the effective number of samples here is < size (sum of weights squared over square of the sum, check)
-    weights = 1 / norm.cdf(-log_qs / sigma_log_q)
-    weights=np.array(weights)
-    weights /= np.sum(weights) #normalize
-    ess = 1.0 / np.sum(weights**2)
-    if ess < size:
-        print(f"Warning: Effective sample size ({ess:.1f}) < requested size ({size})")
+    #weights = 1 / norm.cdf(-log_qs / sigma_log_q)
+    #weights=np.array(weights)
+    #weights /= np.sum(weights) #normalize
+    #ess = 1.0 / np.sum(weights**2)
+    #if ess < size:
+    #    print(f"Warning: Effective sample size ({ess:.1f}) < requested size ({size})")
     # resample 
-    log_qs_final = rng.choice(log_qs, size=size, p=weights)
-    qs = np.exp(log_qs_final)
+    #log_qs_final = rng.choice(log_qs, size=size, p=weights)
+    qs = np.exp(log_qs)
     
-    log_mcs = norm.rvs(loc=log_mc_obs, scale=sigma_log_mc, size=size)
+    max_logmc=np.log(get_mc(m_max, (qs)))#np.min(qs)))
+    b_mc= (max_logmc - log_mc_obs) / sigma_log_mc
+    phi_b_mc = norm.cdf(b_mc)   # phi(b_mc) per sample
+    log_mcs = truncnorm.rvs(-np.inf, b_mc, loc=log_mc_obs, scale=sigma_log_mc, size=size, random_state=rng)
+    
+    # norm.rvs(loc=log_mc_obs, scale=sigma_log_mc, size=size)
     mcs = np.exp(log_mcs)
     m1s = mcs / (qs**(3/5) / (1 + qs)**(1/5))
 
     #Θ ~ N[0, 1](Θ_obs, σΘ) / [Φ((1 – Θ) / σΘ) – Φ(–Θ/ σΘ)]
     a_th = (0.0 - theta_obs) / sigma_theta
     b_th = (1 - theta_obs) / sigma_theta
-    thetas = truncnorm.rvs(a_th, b_th, loc=theta_obs, scale=sigma_theta, size=2*size, random_state=rng)
+    thetas = truncnorm.rvs(a_th, b_th, loc=theta_obs, scale=sigma_theta, size=size, random_state=rng)
     # compute weights: 1 / Phi(-x / sigma)
-    weights = 1 / (norm.cdf((1-thetas) / sigma_theta)- norm.cdf((-thetas / sigma_theta)))
-    weights /= np.sum(weights) #normalize
-    ess = 1.0 / np.sum(weights**2)
-    if ess < size:
-        print(f"Warning: Effective sample size ({ess:.1f}) < requested size ({size})")
+    #weights = 1 / (norm.cdf((1-thetas) / sigma_theta)- norm.cdf((-thetas / sigma_theta)))
+    #weights /= np.sum(weights) #normalize
+    #ess = 1.0 / np.sum(weights**2)
+    #if ess < size:
+    #    print(f"Warning: Effective sample size ({ess:.1f}) < requested size ({size})")
    
     # resample 
-    thetas_final = rng.choice(thetas, size=size, p=weights)
+    thetas_final = thetas#rng.choice(thetas, size=size, p=weights)
 
     # scale = sqrt(ndet)
-    rhos = norm.rvs(loc=rho_obs, scale=np.sqrt(ndet), size=size)
+    rhos = norm.rvs(loc=rho_obs, scale=np.sqrt(ndet), size=size,
+                    random_state=rng)
 
     #dL = dL_fid x (Θ / Θ_fid) x ρ_fid (M, q, dL_fid, Θ_fid)  / ρ
     points = np.column_stack([m1s, qs])
-    dls = dl_fid*thetas_final/theta_fid * np.exp(rho_fun(points))/rhos
-    #print(thetas_final/theta_fid)
-    #print( np.exp(rho_fun(points))/rhos)
-
-    eps=1e-40
-    prior_wt = 1/ m1s / qs * (rhos+eps) / (dls+eps) #triple check and compare to those papers
+    dls = dl_fid * thetas_final / theta_fid * np.exp(rho_fun(points)) / rhos
+    eps=1e-30
+    
+    #prior_wt = rhos / (m1s * qs * dls+eps)
+    
+    phi_b_mc = np.maximum(norm.cdf(b_mc), 1e-6) #dont resample q, theta, pass in in the weights
+    q_corr = norm.cdf(-log_qs / sigma_log_q)  # Φ(−log q / σ) at each sample
+    theta_corr = norm.cdf((1 - thetas_final) / sigma_theta) - norm.cdf(-thetas_final / sigma_theta)
+ 
+    prior_wt = rhos  * q_corr * theta_corr / (phi_b_mc*m1s * qs * dls + eps)
     return m1s, qs, dls, prior_wt
 
-def draw_mock_samples(log_mc_obs, sigma_log_mc, q_obs, sigma_q, log_dl_obs, sigma_log_dl, size=1, output_source_frame=False, rng=None):
+def draw_mock_samples(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q, dl_true,
+                           theta_obs, sigma_theta, rho_obs, rho_fun,
+                           size=1, rng=None, dl_fid=1, theta_fid=1, ndet=1, m_max=500):
     if rng is None:
         rng = np.random.default_rng()
 
-    log_mcs = rng.normal(loc=log_mc_obs, scale=sigma_log_mc, size=size)
+    draw_size = 40 * size
 
-    qs = rng.normal(loc=q_obs, scale=sigma_q, size=size)
-    while np.any(qs < 0) or np.any(qs > 1):
-        s = (qs < 0) | (qs > 1)
-        qs[s] = rng.normal(loc=q_obs, scale=sigma_q, size=np.sum(s))
+    # Step 1: sample log_q from truncated normal, then correct for truncation (like logq_add_err)
+    a_q = (-9 - log_q_obs) / sigma_log_q
+    b_q = (0.0 - log_q_obs) / sigma_log_q
+    log_qs_raw = truncnorm.rvs(a_q, b_q, loc=log_q_obs, scale=sigma_log_q, size= draw_size, random_state=rng)
+    w_q = norm.cdf(-log_q_obs / sigma_log_q) / norm.cdf(-log_qs_raw / sigma_log_q)
+    w_q = w_q / w_q.sum()
+    log_qs = rng.choice(log_qs_raw, size=draw_size, p=w_q, replace=True)
+    qs = np.exp(log_qs)
 
-    log_dls = rng.normal(loc=log_dl_obs, scale=sigma_log_dl, size=size)
-
+    # Step 2: sample log_mc from truncated normal (upper bound from m_max)
+    max_logmc = np.log(get_mc(m_max, qs))
+    b_mc = (max_logmc - log_mc_obs) / sigma_log_mc
+    log_mcs = truncnorm.rvs(-np.inf, b_mc, loc=log_mc_obs, scale=sigma_log_mc, size=draw_size, random_state=rng)
     mcs = np.exp(log_mcs)
-    m1s = mcs / (qs**(3/5)/(1+qs)**(1/5))
+    m1s = mcs / (qs**(3/5) / (1 + qs)**(1/5))
 
-    dls = np.exp(log_dls)
+    # Step 3: sample theta from truncated normal, then correct for truncation (like Theta_add_err)
+    a_th = (0.0 - theta_obs) / sigma_theta
+    b_th = (1.0 - theta_obs) / sigma_theta
+    thetas_raw = truncnorm.rvs(a_th, b_th, loc=theta_obs, scale=sigma_theta, size=draw_size, random_state=rng)
+    w_th = (norm.cdf((1 - theta_obs) / sigma_theta) - norm.cdf(-theta_obs / sigma_theta)) / \
+           (norm.cdf((1 - thetas_raw) / sigma_theta) - norm.cdf(-thetas_raw / sigma_theta))
+    w_th = w_th / w_th.sum()
+    thetas = rng.choice(thetas_raw, size=draw_size, p=w_th, replace=True)
 
-    if output_source_frame:
-        zs = np.expm1(np.linspace(np.log(1), np.log(1+10), 1024))
-        ds = Planck18.luminosity_distance(zs).to(u.Gpc).value
-        z = np.interp(dls, ds, zs)
-        m1_source = m1s / (1 + z)
+    # Step 4: sample rho
+    rhos = norm.rvs(loc=rho_obs, scale=np.sqrt(ndet), size=draw_size, random_state=rng)
 
-        # Flat in log(Mc), q, log(d), so prior is the product of three terms:
-        # d log(Mc) / d m1_source = 1/m1_source
-        # 1
-        # d log(dl) / dz = 1/dl (dC + (1+z)*dH/E(z))
-        prior_wt = 1/m1_source/dls*(Planck18.comoving_distance(z).to(u.Gpc).value + (1+z)*Planck18.hubble_distance.to(u.Gpc).value/Planck18.efunc(z))
+    # Step 5: derive dL
+    points = np.column_stack([m1s, qs])
+    snr_fid = np.exp(rho_fun(points))
+    dls = dl_fid * thetas / theta_fid * snr_fid / rhos
 
-        return m1_source, qs, z, prior_wt
-    else:
-        prior_wt = 1/m1s/dls
-        return m1s, qs, dls, prior_wt
+    # Step 6: joint reweight by dL Jacobian only, exactly as in working code
+    w_dl = 1/ (thetas * snr_fid * dl_fid)#dls**2 
+    w_dl = np.where(np.isfinite(w_dl) & (dls > 0) & (rhos > 0), w_dl, 0.0)
+    w_dl = w_dl / w_dl.sum()
+
+    ess = 1.0 / np.sum(w_dl**2)
+    if ess < size:
+        print(f"Warning: Effective sample size ({ess:.1f}) < requested size ({size})")
+
+    # Step 7: resample all jointly
+    idx = rng.choice(draw_size, size=size, p=w_dl, replace=True)
+    m1s_out = m1s[idx]
+    qs_out = qs[idx]
+    dls_out = dls[idx]
+
+    prior_wt = 1.0 / (m1s_out * qs_out)
+
+    return m1s_out, qs_out, dls_out, prior_wt
+    
 
 
 class PowerLawPDF(object):
