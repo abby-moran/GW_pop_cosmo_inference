@@ -212,3 +212,35 @@ $$
 - Use `jnp` for array operations inside model code and `np` only for setup and precomputation.
 - Prefer `jnp.where` to Python branching in jitted logic.
 - The PISN grid uses manual 2D bilinear interpolation instead of `jnp.interp`.
+
+## Signal-to-Noise Ratio Computation
+
+We compute the signal-to-noise ratio (SNR) as a function of primary mass $m_1$, mass ratio $q$, Finn-Chernoff parameter $\Theta$ and luminosity distance $d_L$ as follows.
+
+First pick a fiducial luminosity distance $d_L^0 = 1$ Gpc$ and a fiducial Finn-Chernoff parameter $\Theta^0 = 1$ and compute the optimal SNR $\rho_0$ for a grid of $m_1$ and $q$ to construct an interpolant $\rho_0(m_1, q)$.
+
+Then for a given event with $m_1$, $q$, $d_L$ and $\Theta$, the SNR is given by:
+
+$$
+\rho = \rho_0(m_1, q) \frac{d_L^0}{d_L} \frac{\Theta}{\Theta^0} .
+$$
+
+The interpolant is constructed by producing templates $h_{+,\times}$ using IMRPhenomXPHM for $\cos\iota = 1$ and computing
+
+$$
+\rho_0 = \left\langle h_+, h_+ \right\rangle^{1/2}
+$$
+
+where the inner product is defined as
+
+$$
+\left\langle f, g \right\rangle = 4 \Re \sum_i \frac{f_i^* g_i}{S(f_i)} \Delta f
+$$
+
+Note that we only use $h_+$, which is equivalent to assuming $F_+ = 1$ and $F_\times = 0$, consistent with the face-on orientation and $\Theta = 1$.
+Recall that the Finn-Chernoff parameter is defined as
+$$
+\Theta = \sqrt{F_+^2 \frac{(1+\cos^2\iota)^2}{4} + F_\times^2 \cos^2\iota }.
+$$.
+
+We use the aLIGO design sensitivity as the reference PSD, $S(f)$.
