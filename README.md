@@ -102,95 +102,109 @@ The `pdraw` columns store draw probabilities used to correct for non-uniform sam
 
 ## Population Model Reference
 
-The population model is described in Golomb, Isi, and Farr (2024), "Physical Models for the Astrophysical Population of Black Holes: Application to the Bump in the Mass Distribution of Gravitational Wave Sources", ApJ 976 ([arXiv:2312.03973](https://arxiv.org/abs/2312.03973)). That paper fixes Planck 2018 LCDM cosmology; this codebase extends the framework to infer flat w-CDM cosmological parameters as well.
+The population model is described in Golomb, Isi, and Farr (2024), "Physical Models for the Astrophysical Population of Black Holes: Application to the Bump in the Mass Distribution of Gravitational Wave Sources", ApJ 976 ([arXiv:2312.03973](https://arxiv.org/abs/2312.03973)). That paper fixes Planck 2018 $\Lambda$CDM cosmology; this codebase extends the framework to infer flat $w$-CDM cosmological parameters as well.
 
 ### Mass Function: CO Core IMF And PISN Remnant Mapping
 
 The primary black-hole mass function for first-generation systems is derived by convolving a broken power-law CO-core IMF with a stochastic remnant-mass relation:
 
-```text
-dN/dm_CO proportional to (m_CO / 20 Msun)^(-a) for m_CO < 20 Msun
-                      and (m_CO / 20 Msun)^(-b) for m_CO > 20 Msun
-```
+$$
+\frac{dN}{dm_{\mathrm{CO}}} \propto
+\begin{cases}
+\left(\frac{m_{\mathrm{CO}}}{20\,M_\odot}\right)^{-a}, & m_{\mathrm{CO}} < 20\,M_\odot \\
+\left(\frac{m_{\mathrm{CO}}}{20\,M_\odot}\right)^{-b}, & m_{\mathrm{CO}} > 20\,M_\odot
+\end{cases}
+$$
 
-Here `a` and `b` are the low-mass and high-mass slopes, and the break at `20 Msun` is fixed.
+Here $a$ and $b$ are the low-mass and high-mass slopes, and the break at $20\,M_\odot$ is fixed.
 
 The mean BH mass from a CO core is:
 
-```text
-mu(m_CO | m_PISN, m_BHmax) =
-    m_CO                                          if m_CO < m_PISN
-    m_BHmax + (m_CO - (2*m_BHmax - m_PISN))^2
-              / [4*(m_PISN - m_BHmax)]            if m_PISN <= m_CO < 2*m_BHmax - m_PISN
-    0                                             otherwise
-```
+$$
+\mu(m_{\mathrm{CO}} \mid m_{\mathrm{PISN}}, m_{\mathrm{BHmax}}) =
+\begin{cases}
+m_{\mathrm{CO}}, & m_{\mathrm{CO}} < m_{\mathrm{PISN}} \\
+m_{\mathrm{BHmax}} + \dfrac{\left(m_{\mathrm{CO}} - (2m_{\mathrm{BHmax}} - m_{\mathrm{PISN}})\right)^2}{4(m_{\mathrm{PISN}} - m_{\mathrm{BHmax}})}, & m_{\mathrm{PISN}} \le m_{\mathrm{CO}} < 2m_{\mathrm{BHmax}} - m_{\mathrm{PISN}} \\
+0, & \text{otherwise}
+\end{cases}
+$$
 
-`mpisn` sets the onset of PISN suppression and `mbhmax` is the maximum BH mass, sampled through `dmbhmax = mbhmax - mpisn`. The realized BH mass is log-normally scattered about `mu` with log-space width `sigma`.
+$m_{\mathrm{PISN}}$ sets the onset of PISN suppression and $m_{\mathrm{BHmax}}$ is the maximum BH mass, sampled through $dm_{\mathrm{BHmax}} = m_{\mathrm{BHmax}} - m_{\mathrm{PISN}}$. The realized BH mass is log-normally scattered about $\mu$ with log-space width $\sigma$.
 
 The first-generation BH mass function is then:
 
-```text
-dN/dm_BH = integral (dN/dm_CO) * p(m_BH | mu(m_CO), sigma) dm_CO
-```
+$$
+\frac{dN}{dm_{\mathrm{BH}}} = \int \frac{dN}{dm_{\mathrm{CO}}}\, p\!\left(m_{\mathrm{BH}} \mid \mu(m_{\mathrm{CO}}), \sigma\right)\, dm_{\mathrm{CO}}
+$$
 
 This integral is precomputed on a large CO-mass by BH-mass grid in `LogDNDMPISN.__post_init__`.
 
 ### High-Mass Power-Law Tail
 
-Above `mbhmax`, the mass function gains a power-law tail:
+Above $m_{\mathrm{BHmax}}$, the mass function gains a power-law tail:
 
-```text
-dN/dm += f_pl * (dN/dm)|_{m=mbhmax} * (m / mbhmax)^(-c) * S(m | mbhmax)
-```
+$$
+\frac{dN}{dm} \mathrel{+}= f_{\mathrm{pl}} \left.\frac{dN}{dm}\right|_{m = m_{\mathrm{bhmax}}}
+\left(\frac{m}{m_{\mathrm{bhmax}}}\right)^{-c} S(m \mid m_{\mathrm{bhmax}})
+$$
 
-Here `S` is a smooth turn-on near `mbhmax`, `fpl` is the relative amplitude, and `c` is the tail slope. This component represents hierarchical or second-generation black holes. At low masses, a Planck-taper window turns on at `mbh_min` over a width `delta_m`, fixed in the current implementation.
+Here $S$ is a smooth turn-on near $m_{\mathrm{BHmax}}$, $f_{\mathrm{pl}}$ is the relative amplitude, and $c$ is the tail slope. This component represents hierarchical or second-generation black holes. At low masses, a Planck-taper window turns on at $m_{\mathrm{BH,min}}$ over a width $\delta_m$, fixed in the current implementation.
 
 ### Redshift Evolution Of `m_PISN`
 
 The PISN threshold mass evolves with redshift as a proxy for metallicity evolution:
 
-```text
-m_PISN(z) = m_PISN(z=0) + mpisndot * (1 - 1/(1+z))
-m_BHmax(z) = m_PISN(z) + dmbhmax
-```
+$$
+m_{\mathrm{PISN}}(z) = m_{\mathrm{PISN}}(z=0) + mpisndot \left(1 - \frac{1}{1+z}\right)
+$$
 
-`mpisndot` is sampled from `Uniform(-2, 8)` in units of solar masses. The full 2D PISN grid over mass and redshift is precomputed in `LogDNDM.setup_interp()`.
+$$
+m_{\mathrm{BHmax}}(z) = m_{\mathrm{PISN}}(z) + dmbhmax
+$$
+
+$\dot{m}_{\mathrm{PISN}}$ is sampled from `Uniform(-2, 8)` in units of $M_\odot$. The full 2D PISN grid over mass and redshift is precomputed in `LogDNDM.setup_interp()`.
 
 ### Pairing Function And Mass-Ratio Distribution
 
-The joint distribution over primary mass `m1`, mass ratio `q = m2/m1`, and redshift `z` is:
+The joint distribution over primary mass $m_1$, mass ratio $q = m_2/m_1$, and redshift $z$ is:
 
-```text
-dN / (dm1 dq dV dt) proportional to (m1 + m2)^beta * (dN/dm1) * (dN/dm2) * R(z)
-```
+$$
+\frac{dN}{dm_1\,dq\,dV\,dt} \propto (m_1 + m_2)^\beta \frac{dN}{dm_1} \frac{dN}{dm_2} R(z)
+$$
 
-`beta` controls pairing preference: positive values favor equal-mass binaries and negative values favor unequal-mass binaries. The expression is normalized so that `m1 * dN/(dm1 dq dV dt) = 1` at reference values `mref = 30`, `qref = 1`, and `zref = 0.001`. The overall rate `R` then has units of the differential merger rate at that reference point.
+$\beta$ controls pairing preference: positive values favor equal-mass binaries and negative values favor unequal-mass binaries. The expression is normalized so that
+
+$$
+m_1 \frac{dN}{dm_1\,dq\,dV\,dt} = 1
+$$
+
+at reference values $m_{\mathrm{ref}} = 30$, $q_{\mathrm{ref}} = 1$, and $z_{\mathrm{ref}} = 0.001$. The overall rate $R$ then has units of the differential merger rate at that reference point.
 
 ### Merger-Rate Evolution
 
 The redshift evolution follows a Madau-Dickinson form:
 
-```text
-R(z) proportional to (1+z)^lam / [1 + ((1+z)/(1+zp))^kappa]
-```
+$$
+R(z) \propto \frac{(1+z)^\lambda}{1 + \left(\frac{1+z}{1+z_p}\right)^\kappa}
+$$
 
-It is normalized to unity at `zref = 0.001`. The parameters are `lam`, `zp`, and `kappa = lam + dkappa`, where `kappa > lam` produces a turnover at high redshift.
+It is normalized to unity at $z_{\mathrm{ref}} = 0.001$. The parameters are $\lambda$, $z_p$, and $\kappa = \lambda + \Delta\kappa$, where $\kappa > \lambda$ produces a turnover at high redshift.
 
 ### Hierarchical Bayesian Likelihood
 
-For `N_det` detected events with posterior samples `theta_j^(i)` for event `i`,
+For $N_{\mathrm{det}}$ detected events with posterior samples $\theta_j^{(i)}$ for event $i$,
 
-```text
-log L(Lambda) =
-    sum_i log[ (1/n_samp) sum_j pi(theta_j^(i) | Lambda) / p_draw(theta_j^(i)) ]
-    - N_det * log[ (1/N_draw) sum_k pi(theta_k^sel | Lambda) / p_draw^sel(theta_k^sel) ]
-```
+$$
+\log \mathcal{L}(\Lambda) =
+\sum_i \log \left[ \frac{1}{n_{\mathrm{samp}}} \sum_j \frac{\pi(\theta_j^{(i)} \mid \Lambda)}{p_{\mathrm{draw}}(\theta_j^{(i)})} \right]
+- N_{\mathrm{det}} \log \left[ \frac{1}{N_{\mathrm{draw}}} \sum_k \frac{\pi(\theta_k^{\mathrm{sel}} \mid \Lambda)}{p_{\mathrm{draw}}^{\mathrm{sel}}(\theta_k^{\mathrm{sel}})} \right]
+$$
 
-- `pi(theta | Lambda)` is the population model evaluated at detector-frame parameters, including the Jacobian for transforming into source-frame quantities and comoving volume.
-- `p_draw` is the draw distribution used to generate PE samples or injections.
-- The second term is the expected detection fraction `mu_sel`.
-- The merger rate is sampled via a Gaussian approximation, `R = N_det / mu_sel + sqrt(N_det) / mu_sel * R_unit` with `R_unit ~ N(0, 1)`.
-- `neff_sel = exp(2 * log_mu_sel - log_s^2)` monitors Monte Carlo noise in the selection integral and should be comfortably larger than `N_det`.
+- $\pi(\theta \mid \Lambda)$ is the population model evaluated at detector-frame parameters, including the Jacobian for transforming into source-frame quantities and comoving volume.
+- $p_{\mathrm{draw}}$ is the draw distribution used to generate PE samples or injections.
+- The second term is the expected detection fraction $\mu_{\mathrm{sel}}$.
+- The merger rate is sampled via a Gaussian approximation, $R = N_{\mathrm{det}} / \mu_{\mathrm{sel}} + \sqrt{N_{\mathrm{det}}} / \mu_{\mathrm{sel}} \cdot R_{\mathrm{unit}}$ with $R_{\mathrm{unit}} \sim \mathcal{N}(0, 1)$.
+- $neff_{\mathrm{sel}} = \exp(2 \log \mu_{\mathrm{sel}} - \log s^2)$ monitors Monte Carlo noise in the selection integral and should be comfortably larger than $N_{\mathrm{det}}$.
 
 ### JAX Usage Patterns
 
