@@ -14,18 +14,26 @@ from tqdm import tqdm
 @dataclass
 class Uncertainties(object):
     sigma_log_mc: object
-    sigma_log_q: object
+    sigma_q: object
     sigma_log_dl: object
+    sigma_theta: object
 
     @classmethod
-    def from_snr(cls, snr):
+    def from_snr(cls, snr, mc_scale=None, q_scale=None, th_scale=None):
+        #have the scales as paramters, with these as the defaults
         # These formulas come from estimations based on uncertainties in GWTC-3
-        slmc = 0#.17/snr    #random
-        slq = .88/snr 
-        sld = 0# .2*20/snr #.2, .00001* is the error on the small dl samples
+        mc_scale = mc_scale if mc_scale is not None else 1.78
+        q_scale = q_scale if q_scale is not None else 2.8
+        th_scale = th_scale if th_scale is not None else 1.1
 
-        return cls(slmc, slq, sld)
+        slmc = mc_scale / snr #derived #low errors are .8 and .8
+        sq = q_scale / snr #derived 
+        slth = th_scale / snr
+        sld = 0 # .2*20/snr #.2, .00001* is the error on the small dl samples
 
+        return cls(slmc, sq, sld, slth)
+        
+     
 if __name__ == '__main__':
     rng = np.random.default_rng(181286134409181405721219170031242732711)
 
