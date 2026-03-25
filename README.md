@@ -228,19 +228,28 @@ $$
 The interpolant is constructed by producing templates $h_{+,\times}$ using IMRPhenomXPHM for $\cos\iota = 1$ and computing
 
 $$
-\rho_0 = \left\langle h_+, h_+ \right\rangle^{1/2}
+\rho_0 = \left\langle h_+, h_+ \right\rangle^{1/2} \, ,
 $$
 
 where the inner product is defined as
 
 $$
-\left\langle f, g \right\rangle = 4 \Re \sum_i \frac{f_i^* g_i}{S(f_i)} \Delta f
+\left\langle f, g \right\rangle = 4 \Re \sum_i \frac{f_i^* g_i}{S(f_i)} \Delta f \, .
 $$
 
 Note that we only use $h_+$, which is equivalent to assuming $F_+ = 1$ and $F_\times = 0$, consistent with the face-on orientation and $\Theta = 1$.
 Recall that the Finn-Chernoff parameter is defined as
 $$
-\Theta = \sqrt{F_+^2 \frac{(1+\cos^2\iota)^2}{4} + F_\times^2 \cos^2\iota }.
+\Theta = \sqrt{F_+^2 \frac{(1+\cos^2\iota)^2}{4} + F_\times^2 \cos^2\iota} \, .
 $$.
 
 We use the aLIGO design sensitivity as the reference PSD, $S(f)$.
+
+### Jacobian
+
+We want to transform from $\{m_1, q, \Theta, \rho\}$ to $\{m_1, q, \Theta, d_L\}$. Since $\rho$ is as given above, we can write the Jacobian as
+$$
+\left| \frac{\partial \rho}{\partial d_L} \right| = \rho_0(m_1, q) \frac{d_L^0}{d_L^2} \frac{\Theta}{\Theta^0} = \rho/d_L\, .
+$$
+
+
