@@ -1,0 +1,7 @@
+__pycache__/
+.nfs*
+cython_debug/
+*.so
+*.pyd
+*.pyx.c
+*.pyx.cpp
