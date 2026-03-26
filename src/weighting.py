@@ -245,10 +245,10 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q,dl_t
     """
     if rng is None:
         rng = np.random.default_rng()
-    size=8*size_final
+    size=10*size_final
 
     b_q = (0.0 - log_q_obs) / sigma_log_q
-    q_bound=-5
+    q_bound=np.log(.1)
     a_q = (q_bound  - log_q_obs) / sigma_log_q
     log_qs = truncnorm.rvs(a_q, b_q, loc=log_q_obs, scale=sigma_log_q, size=2*size, random_state=rng)
     # compute weights: 1 / Phi(-x / sigma)
@@ -297,7 +297,8 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q,dl_t
     dls = dl_fid*thetas_final/theta_fid * snr_fid/rhos
     
     eps=1e-30
-    reweight_fact=dls/rhos *m1s*qs
+    reweight_fact=dls/rhos *m1s*qs/dls**2
+    reweight_fact=jnp.nan_to_num(reweight_fact, nan=0, neginf=-1e30, posinf=1e30)
     reweight_fact=reweight_fact/np.sum(reweight_fact)
     ess = 1.0 / np.sum(reweight_fact**2)
     if ess < size_final:

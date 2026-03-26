@@ -34,7 +34,7 @@ SENSITIVITIES = {'aligo': lalsim.SimNoisePSDaLIGODesignSensitivityP1200087,
                 'CE': lalsim.SimNoisePSDCosmicExplorerP1600143}
 
 population_parameters = dict()
-config_file = '../reproduce/configs/config6.txt'
+config_file = '../reproduce/configs/c2_zp5.txt'
 #outfile = 'new_mock_inj_cut.h5'#'mock_injections_o3_zp1.h5'
 
 population_parameters = dict()
@@ -142,7 +142,8 @@ def build_snr_grid(df_grid, m1_grid, q_grid, detectors, sensitivity, batch_num=4
 
         df_here = {k: v[start:stop] for k, v in df_grid.items()}
 
-        snr_batch = fisher_snrs.compute_snrs_batch(df_here, detectors=detectors, sensitivity=sensitivity, use_antenna=False)
+        snr_batch = fisher_snrs.compute_snrs_batch(df_here, detectors=detectors, 
+                                                   sensitivity=sensitivity, use_antenna=False)
         if i% 10 ==0:
             print("batch done, num left: ", num_left)
 
@@ -152,13 +153,13 @@ def build_snr_grid(df_grid, m1_grid, q_grid, detectors, sensitivity, batch_num=4
     return snr_out.reshape(len(m1_grid), len(q_grid))
 
 if __name__ == "__main__":
-    N_m1=500
-    m1_src_max = 350
+    N_m1=1200
+    m1_src_max = 400
     z_max = population_parameters["zmax"]
     
     m1_det_min = 2.5
     m1_det_max = m1_src_max * (1 + z_max)
-    q_min=population_parameters['mbh_min']/m1_src_max
+    q_min=.005 #population_parameters['mbh_min']/m1_src_max
     N_q=N_m1
     m1_grid = jnp.logspace(jnp.log10(m1_det_min), jnp.log10(m1_det_max), N_m1)
     q_grid  = jnp.linspace(q_min, 1.0, N_q)
@@ -189,4 +190,4 @@ if __name__ == "__main__":
         'dm1sz_dm1ddl': jnp.ones(Ngrid),
     }
     SNRgrid=build_snr_grid(df_grid, m1_grid, q_grid, detectors, sensitivity)
-    np.savez("snr_grid_m1det.npz", m1_grid=m1_grid, q_grid=q_grid, snr_grid=SNRgrid, dL_fid=1.0) # dL in Gpc
+    np.savez("snr_grid_326.npz", m1_grid=m1_grid, q_grid=q_grid, snr_grid=SNRgrid, dL_fid=1.0) # dL in Gpc

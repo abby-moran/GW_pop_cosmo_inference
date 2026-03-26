@@ -133,7 +133,8 @@ def compute_optimal_SNR(h, psd, fs):
 
 
 # JAX BATCHED VERSION?
-def compute_snrs_batch(df, detectors=['H1'], sensitivity='aligo', fmin=20.0, fmax=2048.0, deltaf=.25, f_ref=20.0):
+def compute_snrs_batch(df, detectors=['H1'], sensitivity='aligo', fmin=20.0, fmax=2048.0, 
+                       deltaf=.25, f_ref=20.0, use_antenna=True):
     """
     Fully JAX-native SNR computation for a batch of GW events.
     df: pandas.DataFrame with columns m1,q,z,s1x,s1y,s1z,s2x,s2y,s2z,dL,iota,psi,ra,dec
@@ -156,7 +157,7 @@ def compute_snrs_batch(df, detectors=['H1'], sensitivity='aligo', fmin=20.0, fma
     psi = jnp.array(df["psi"])
     ra = jnp.array(df["ra"])
     dec = jnp.array(df["dec"])
-    gps_time = jnp.array(df["gps_time"])
+    
 
     # Derived quantities
     m2 = m1 * q
@@ -196,8 +197,11 @@ def compute_snrs_batch(df, detectors=['H1'], sensitivity='aligo', fmin=20.0, fma
                 dt_list.append(dt)
             dets[det] = (jnp.array(Fp_list), jnp.array(Fc_list), jnp.array(dt_list))
         return dets
-
-    det_objs = precompute_detectors()
+    if use_antenna:
+        gps_time = jnp.array(df["gps_time"])
+        det_objs = precompute_detectors()
+    else:
+        det_objs = None
 
     # Convert to ripple parameters
     def convert_single(i):
@@ -221,13 +225,21 @@ def compute_snrs_batch(df, detectors=['H1'], sensitivity='aligo', fmin=20.0, fma
         psd_safe = jnp.where(psd_vals > 0.0, psd_vals, jnp.inf)
 
         for det in detectors:
-            Fp_arr, Fc_arr, dt_arr = det_objs[det]
+            if use_antenna:
+                Fp_arr, Fc_arr, dt_arr = det_objs[det]
+            else:
+                Fp_arr = jnp.ones(nevents)
+                Fc_arr = jnp.zeros(nevents)
+                dt_arr = jnp.zeros(nevents)
+
             Fp_i, Fc_i, dt_i = Fp_arr[event_idx], Fc_arr[event_idx], dt_arr[event_idx]
-            # Detector projection and phase shift
             h_fd = (Fp_i * hp + Fc_i * hc) * jnp.exp(2j * jnp.pi * freq_common * dt_i)
-            integrand = (jnp.abs(h_fd)**2) / psd_safe 
-            #df = freq_common[1] - freq_common[0] 
-            sn_det.append(jnp.sqrt(4 * jnp.sum(integrand) * df_jax)) 
+            integrand = (jnp.abs(h_fd)**2) / psd_safe
+            sn_det.append(jnp.sqrt(4 * jnp.sum(integrand) * df_jax))
+
+            if not use_antenna:
+                break  # single reference detector, downstream handles ndet
+
         return jnp.sqrt(jnp.sum(jnp.array(sn_det)**2))
 
     snr_fn = jax.vmap(snr_single, in_axes=(0, 0))
