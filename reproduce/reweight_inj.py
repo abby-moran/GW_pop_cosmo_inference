@@ -56,7 +56,7 @@ def get_pop_params(config_file):
 
 def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8, 
                  jitter_SNR=True, ndet=1, append_tf=False, evt_offset=0,
-                 detection_rng=None):
+                 detection_rng=None, mc_scale=None, q_scale=None, th_scale=None):
     """
     takes in an event dataframe df and generates a file which will store the values we'd actulaly observe from the events
 
@@ -100,17 +100,18 @@ def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8,
     theta_obs=[]
     sigma_theta=[]
     for i, row in tqdm(inj_det.iterrows()):
-        uncert = mock_observations.Uncertainties.from_snr(row['SNR_OBS'])
+        uncert = mock_observations.Uncertainties.from_snr(row['SNR_OBS'],
+                                        mc_scale=mc_scale, q_scale=q_scale, th_scale=th_scale)
         #log_mc_obs.append(np.log(row['mc_det']) + mult*uncert.sigma_log_mc*noise_rng.normal())
         #sigma_log_mc.append(mult*uncert.sigma_log_mc)
         
-        slmc =0#mult*uncert.sigma_log_mc   # error propagation
+        slmc =mult*uncert.sigma_log_mc   # error propagation
         log_mc_obs.append(norm.rvs(loc=np.log(row['mc_det']), scale=slmc,  random_state=noise_rng))
         sigma_log_mc.append(slmc)
 
-        slq =0#mult*uncert.sigma_q / row['q']   # error propagation
+        slq =mult*uncert.sigma_q / row['q']   # error propagation
         b = (0.0 - np.log(row['q'])) / slq
-        a = (-5  - np.log(row['q'])) / slq
+        a =(-6  - np.log(row['q'])) / slq
         log_q_obs.append(truncnorm.rvs(a, b, loc=np.log(row['q']), scale=slq,  random_state=noise_rng))
         sigma_log_q.append(slq)
 
@@ -137,7 +138,8 @@ def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8,
                append=append_tf, format='table')
     return detected_indices, np.array(inj_det['evt'].tolist())
 
-def gen_mock_PE(obs_file, log_SNR_fun, population_parameters, cosmo, nsamples=200, outfile=None, ndet=1, append_tf=False):
+def gen_mock_PE(obs_file, log_SNR_fun, population_parameters, cosmo, nsamples=200, 
+                outfile=None, ndet=1, append_tf=False, new_sel=True):
     """
     takes a file which constains observed values, and samples assuming Gaussians and outputs that in a file. 
     Need an SNR scaling relation log_SNR_fun
@@ -146,13 +148,16 @@ def gen_mock_PE(obs_file, log_SNR_fun, population_parameters, cosmo, nsamples=20
     """
     
     pe_samples_full = pd.read_hdf(obs_file, 'observations')
-    pe_samples_full=pe_samples_full
+    #if new_sel:
+    #    pe_samples_full=pe_samples_full
+    #else:
+    pe_samples_full=pe_samples_full[0:10000]
     
     m1s, qs, dls, pdraws , evts= [], [], [], [], []
     mass_obs_evt, q_err, dl_=[], [], []
     for i, (n, e) in enumerate(pe_samples_full.groupby('evt')):
-        if i >= 10000:
-            break
+        #if i >= 10000:
+        #    break
         # preallocate arrays for this event
         m1_event = []
         q_event = []
@@ -193,14 +198,14 @@ def gen_mock_PE(obs_file, log_SNR_fun, population_parameters, cosmo, nsamples=20
     evts = np.array(evts)
 
     # compute median dL per event
-    dl_cutoff = cosmo.dL(population_parameters['zmax'])
-    ind_det = np.median(dls, axis=1) < dl_cutoff
+    #dl_cutoff = cosmo.dL(population_parameters['zmax'])
+    #ind_det = np.median(dls, axis=1) < dl_cutoff
 
-    m1s = m1s[ind_det]
-    qs = qs[ind_det]
-    dls = dls[ind_det]
-    pdraws = pdraws[ind_det]
-    evts = evts[ind_det]
+    #m1s = m1s[ind_det]
+    #qs = qs[ind_det]
+    #dls = dls[ind_det]
+    #pdraws = pdraws[ind_det]
+    #evts = evts[ind_det]
     if outfile is not None:
         df_samples = pd.DataFrame({'m1': list(m1s),       # each element is an array of nsamples
                                     'q': list(qs), 'dl': list(dls), 'pdraw': list(pdraws), 'evt': list(evts[:,0])})
@@ -213,9 +218,9 @@ if __name__ == "__main__":
 
     mult = 1
     inj_file='../src/c2_zp5_snr0.h5'
-    obs_file = '../src/data/obsc2_zm55_dlerr.h5'
-    sel_file = '../src/sel_c2_zm55_dlerr.h5'
-    pe_file='../src/pe_c2_zm55_dlerr.h5'
+    obs_file = '../src/data/obsc2_zm55_err.h5'
+    sel_file = '../src/sel_c2_zm55_err.h5'
+    pe_file='../src/pe_c2_zm55_err.h5'
     ndet=1
     write_obs=True
     new_sel=True
@@ -223,6 +228,7 @@ if __name__ == "__main__":
         jitter=True
     else:
         jitter=False
+    nsamples=300
 
     detection_threshold = 8
     chunk_size = int(2e6) # memory limit
@@ -232,7 +238,7 @@ if __name__ == "__main__":
     #    n_total = f['true_parameters']['m1'].shape[0][0:int(1e8)]
     population_parameters, cosmo = get_pop_params('../reproduce/configs/c2_zp5.txt')
 
-    grid = np.load("../src/snr_grid_m1det_ext.npz")
+    grid = np.load("../src/snr_grid_326.npz")
     m1_grid  = grid["m1_grid"]
     q_grid   = grid["q_grid"]
     snr_grid = grid["snr_grid"]
@@ -274,7 +280,7 @@ if __name__ == "__main__":
         print('Sampling indices...')
         sampled_indices = np.sort(np.random.choice(len(log_w_all), p=accept_prob, size=num_tot))
         # pdraw_sel per sampled index (needed later for sel_samples)
-        pdraw_sel_all = np.exp(log_w_all + np.log(np.exp(log_w_all - log_w_max) * 0))  # recompute below per chunk
+        #pdraw_sel_all = np.exp(log_w_all + np.log(np.exp(log_w_all - log_w_max) * 0))  # recompute below per chunk
         del log_w_all, accept_prob
         
         # process the events we want (resampled to our target dist) in chunks
@@ -314,10 +320,13 @@ if __name__ == "__main__":
             df_det_chunk['ndraw'] = num_tot
             df_det_chunk = df_det_chunk.reset_index(drop=True)
 
-
+            mc_scale=population_parameters.get('mc_scale', None)
+            q_scale=population_parameters.get('q_scale', None)
+            th_scale=population_parameters.get('th_scale', None)
             detected_indices, evt_names = get_mock_obs(df_det_chunk, obs_file, cosmo,
                 mult=mult, jitter_SNR=jitter, detection_threshold=detection_threshold,
-                append_tf=not first_chunk, evt_offset=evt_offset)
+                append_tf=not first_chunk, evt_offset=evt_offset, mc_scale=mc_scale, 
+                q_scale=q_scale, th_scale=th_scale)
 
             # sel_samples: detected rows with true values
             det_mask = df_det_chunk.index.isin(detected_indices)
@@ -334,12 +343,12 @@ if __name__ == "__main__":
         print('Using old obs file')
     print('Generating mock PE...')
     m1s, qs, dls, pdraws, evts = gen_mock_PE(obs_file, log_snr_interp, population_parameters, cosmo,
-        outfile=pe_file, ndet=ndet, nsamples=300)
+        outfile=pe_file, ndet=ndet, nsamples=nsamples, new_sel=new_sel)
     
-    if write_obs:
-        if new_sel:
-            surviving_evts = set(evts[:, 0])  # evt names that made it through
-            sel_samples = pd.read_hdf(sel_file, key='true_parameters')
-            sel_samples = sel_samples[sel_samples['evt'].isin(surviving_evts)]
-            sel_samples.to_hdf(sel_file, key='true_parameters', format='table', mode='w')
+    #if write_obs:
+    #    if new_sel:
+    #        surviving_evts = set(evts[:, 0])  # evt names that made it through
+    #        sel_samples = pd.read_hdf(sel_file, key='true_parameters')
+    #        sel_samples = sel_samples[sel_samples['evt'].isin(surviving_evts)]
+    #        sel_samples.to_hdf(sel_file, key='true_parameters', format='table', mode='w')
     print("array shapes (we want nevents, nsamples): ", m1s.shape, qs.shape, dls.shape, pdraws.shape)

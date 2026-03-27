@@ -48,7 +48,7 @@ if __name__ == "__main__":
     random_seed = 1652819403
 
     prior = get_priors_from_file("priors/high_zmax.prior")
-    file='../src/pe_c2_zm55_dlerr.h5'
+    file='../src/pe_c2_zm55_err.h5'
     pe_samples_mock = pd.read_hdf(file, key='samples').iloc[0:2000]# 4k to 6k 
     print(f'loaded in {file}')
     m1s = np.asarray(pe_samples_mock['m1'].to_list())
@@ -58,7 +58,7 @@ if __name__ == "__main__":
     pdraws= jnp.nan_to_num(pdraws, neginf=-1e30, posinf=1e30)
     print("array shapes (we want nevents, nsamples): ", m1s.shape, qs.shape, dls.shape, pdraws.shape)
 
-    sel_samples=pd.read_hdf('../src/sel_c2_zm55_dlerr.h5', key='true_parameters')
+    sel_samples=pd.read_hdf('../src/sel_c2_zm55_err.h5', key='true_parameters')
     ndraw=sel_samples['ndraw'].iloc[0]
 
     assert np.all(m1s > 0) 
@@ -84,4 +84,4 @@ if __name__ == "__main__":
              sel_samples['q'].to_list(), sel_samples['dl'].to_list(), sel_samples['pdraw_sel'].to_list(),
         ndraw, prior)
     samples = mcmc.get_samples(group_by_chain=True)
-    np.savez("o3_c2_zm55_dlerr.npz", **samples) 
+    np.savez("o3_c2_zm55_err.npz", **samples) 

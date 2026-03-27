@@ -419,7 +419,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     # event-wise log weight for deteced events = log of pop density (model's differential merger rate density) 
     #      + Jacobian from source to detector frame 
     #      + cosmology factors (for volume element, D_L to z) + log_pdraw (corrects for non-uniform prior over parameter space)
-    log_wts = log_dN(m1s, qs, zs)  - log_pdraw -2*jnp.log1p(zs)+ jnp.log(cosmo.dVCdz(zs))  - jnp.log(cosmo.ddL_dz(zs)) 
+    log_wts = log_dN(m1s, qs, zs)  - log_pdraw -2*jnp.log1p(zs) - jnp.log(cosmo.ddL_dz(zs)) + jnp.log(cosmo.dVCdz(zs)) 
     # dLdz/1+z is to deal with pdraw being in detector frame mass, dL
     log_like_per_event = jss.logsumexp(log_wts, axis=1) - jnp.log(nsamp)  # shape (nobs,)
 
