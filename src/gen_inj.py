@@ -226,16 +226,17 @@ if __name__ == "__main__":
         dec = np.arcsin(rng.uniform(low=-1, high=1, size=len(df_det)))
         
         
-        psi = rng.uniform(low=0, high=np.pi, size=len(df_det))
-        gmst = rng.uniform(low=0, high=2*np.pi, size=len(df_det))
-        iota = np.arccos(rng.uniform(low=-1, high=1, size=len(df_det)))
+        #psi = rng.uniform(low=0, high=np.pi, size=len(df_det))
+        #gmst = rng.uniform(low=0, high=2*np.pi, size=len(df_det))
+        #iota = np.arccos(rng.uniform(low=-1, high=1, size=len(df_det)))
         
-        for j in range(len(df_det)):
-            Fp[j], Fc[j] = lal.ComputeDetAMResponse(lal.cached_detector_by_prefix[detectors[0]].response, ra[j], dec[j], psi[j], gmst[j])
+        #for j in range(len(df_det)):
+        #    Fp[j], Fc[j] = lal.ComputeDetAMResponse(lal.cached_detector_by_prefix[detectors[0]].response, ra[j], dec[j], psi[j], gmst[j])
         
-        cosi = np.cos(iota)
-        Theta_sq = (Fp**2 * (1 + cosi**2)**2 / 4 + Fc**2 * cosi**2)
-        Theta = np.sqrt(Theta_sq)
+        #cosi = np.cos(iota)
+        Theta=np.random.beta(2,4,len(df_det))
+        #Theta_sq = (Fp**2 * (1 + cosi**2)**2 / 4 + Fc**2 * cosi**2)
+        #Theta = np.sqrt(Theta_sq)
         SNR_comp = df_det['SNR_0'] * Theta* np.sqrt(ndet)
         df_det['Theta']=Theta
 
@@ -246,6 +247,6 @@ if __name__ == "__main__":
         df_det=df_det.drop(columns=['SNR_0'])
 
         if i==0:
-            df_det.to_hdf('c2_zp5_snr0.h5', key='true_parameters', mode='a', format='table', append=False)
+            df_det.to_hdf('c2_zp5_Thbeta.h5', key='true_parameters', mode='a', format='table', append=False)
         else:
-            df_det.to_hdf('c2_zp5_snr0.h5', key='true_parameters', mode='a', format='table', append=True)
+            df_det.to_hdf('c2_zp5_Thbeta.h5', key='true_parameters', mode='a', format='table', append=True)
