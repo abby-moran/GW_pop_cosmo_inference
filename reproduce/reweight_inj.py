@@ -82,7 +82,7 @@ def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8,
     if jitter_SNR:
         df['SNR_OBS'] = norm.rvs(loc=df['SNR'], scale= np.sqrt(ndet),  random_state=noise_rng)
     else:
-        df['SNR_OBS'] = df['SNR']
+        df['SNR_OBS'] = df['SNR'] #set the uncertatinty so its not a function of SNR
     
     # Store which original df indices passed the SNR cut
     snr_mask = df['SNR_OBS'] > detection_threshold
@@ -109,10 +109,10 @@ def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8,
         log_mc_obs.append(norm.rvs(loc=np.log(row['mc_det']), scale=slmc,  random_state=noise_rng))
         sigma_log_mc.append(slmc)
 
-        slq =mult*uncert.sigma_q / row['q']   # error propagation
+        slq = mult*uncert.sigma_q / row['q']   # error propagation
         b = (0.0 - np.log(row['q'])) / slq
-        a =(-6  - np.log(row['q'])) / slq
-        log_q_obs.append(truncnorm.rvs(a, b, loc=np.log(row['q']), scale=slq,  random_state=noise_rng))
+        a =(-7  - np.log(row['q'])) / slq
+        log_q_obs.append(truncnorm.rvs(-np.inf, b, loc=np.log(row['q']), scale=slq,  random_state=noise_rng))
         sigma_log_q.append(slq)
 
         sigma_theta.append(mult*uncert.sigma_theta)
@@ -217,10 +217,10 @@ if __name__ == "__main__":
     rng = np.random.default_rng(251286134409181405721219170031242732711)
 
     mult = 1
-    inj_file='../src/c2_zp5_snr0.h5'
-    obs_file = '../src/data/obsc2_zm55_err.h5'
-    sel_file = '../src/sel_c2_zm55_err.h5'
-    pe_file='../src/pe_c2_zm55_err.h5'
+    inj_file='../src/c2_zp5_Thbeta.h5'
+    obs_file = '../src/data/obsc2_zm55_errExt.h5'
+    sel_file = '../src/sel_c2_zm55_errExt.h5'
+    pe_file='../src/pe_c2_zm55_errExt.h5'
     ndet=1
     write_obs=True
     new_sel=True
@@ -228,7 +228,7 @@ if __name__ == "__main__":
         jitter=True
     else:
         jitter=False
-    nsamples=300
+    nsamples=6000
 
     detection_threshold = 8
     chunk_size = int(2e6) # memory limit

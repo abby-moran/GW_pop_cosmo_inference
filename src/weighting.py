@@ -14,6 +14,7 @@ import pandas as pd
 #import fisher_snrs #import compute_snrs
 from scipy.stats import norm, truncnorm
 #import fisher_snrs
+import jax.scipy.stats as jsst
 import jax
 jax.config.update("jax_enable_x64", True)
 
@@ -248,7 +249,7 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q,dl_t
     size=10*size_final
 
     b_q = (0.0 - log_q_obs) / sigma_log_q
-    q_bound=-6
+    q_bound=-np.inf
     a_q = (q_bound  - log_q_obs) / sigma_log_q
     log_qs = truncnorm.rvs(a_q, b_q, loc=log_q_obs, scale=sigma_log_q, size=2*size, random_state=rng)
     # compute weights: 1 / Phi(-x / sigma)
@@ -284,9 +285,16 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q,dl_t
     ess = 1.0 / np.sum(weights**2)
     if ess < size:
         print(f"Warning: Effective sample size ({ess:.1f}) < requested size ({size})")
+    thetas_final= rng.choice(thetas, size=size, p=weights)
+
+    #weights = np.random.beta(2, 4, size=len(thetas_2))
+    #weights /= np.sum(weights) #normalize
+    #ess = 1.0 / np.sum(weights**2)
+    #if ess < size:
+    #    print(f"Warning: Effective sample size ({ess:.1f}) < requested size ({size})")
    
     # resample 
-    thetas_final = rng.choice(thetas, size=size, p=weights)
+    #thetas_final = rng.choice(thetas_2, size=size, p=weights)
 
     scale = np.sqrt(ndet)
     rhos = norm.rvs(loc=rho_obs, scale=scale, size=size, random_state=rng)
@@ -297,8 +305,9 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q,dl_t
     dls = dl_fid*thetas_final/theta_fid * snr_fid/rhos
     
     eps=1e-30
-    reweight_fact=dls/rhos *m1s*qs
-    reweight_fact=jnp.nan_to_num(reweight_fact, nan=0, neginf=-1e30, posinf=1e30)
+    
+    reweight_fact=dls/rhos *m1s*qs * jsst.beta.pdf(thetas_final, 2, 4)
+    reweight_fact=jnp.nan_to_num(reweight_fact, nan=0, neginf=-1e40, posinf=1e40)
     reweight_fact=reweight_fact/np.sum(reweight_fact)
     ess = 1.0 / np.sum(reweight_fact**2)
     if ess < size_final:
@@ -311,7 +320,6 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q,dl_t
     snr_fid=snr_fid[indicies]
 
     log_prior_wt = np.zeros(size_final)
-    #log_prior_wt = np.log(dls) - np.log(snr_fid)
     return m1s, qs, dls, log_prior_wt
 
 def draw_mock_samples(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q, dl_true,
