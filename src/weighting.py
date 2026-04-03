@@ -1,4 +1,4 @@
-import astropy.cosmology as cosmo
+import astropy.cosmology as cosmol
 from astropy.cosmology import Planck18
 import astropy.units as u
 import dataclasses
@@ -237,8 +237,8 @@ def get_mc(m1, q):
 def get_m1(mc, q):
     return mc/(q**(3/5) / (1 + q)**(1/5))
     
-def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q,dl_true, #log_dl_obs, sigma_log_dl, 
-                           theta_obs, sigma_theta, rho_obs, rho_fun,
+def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, q_obs, sigma_q,dl_true, #log_dl_obs, sigma_log_dl, 
+                           theta_obs, sigma_theta, rho_obs, rho_fun, cosmo,
                            size_final=1, detection_threshold=8, rng=None, dl_fid=1, theta_fid=1, ndet=1
                            ,m_max=1000):#, m_min=5.0):
     """
@@ -248,22 +248,29 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q,dl_t
         rng = np.random.default_rng()
     size=10*size_final
 
-    b_q = (0.0 - log_q_obs) / sigma_log_q
-    q_bound=-np.inf
-    a_q = (q_bound  - log_q_obs) / sigma_log_q
-    log_qs = truncnorm.rvs(a_q, b_q, loc=log_q_obs, scale=sigma_log_q, size=2*size, random_state=rng)
+    #b_q = (0.0 - log_q_obs) / sigma_log_q
+    #q_bound=-np.inf
+    #a_q = (q_bound  - log_q_obs) / sigma_log_q
+    a_q = (0.0 - q_obs) / sigma_q
+    b_q = (1 - q_obs) / sigma_q
+    qs = truncnorm.rvs(a_q, b_q, loc=q_obs, scale=sigma_q, size=2*size, random_state=rng)
     # compute weights: 1 / Phi(-x / sigma)
+    weights = (norm.cdf((1 - q_obs) / sigma_q) - norm.cdf(-q_obs / sigma_q)) / \
+          (norm.cdf((1 - qs) / sigma_q) - norm.cdf(-qs / sigma_q))
+    
+    #log_qs = truncnorm.rvs(a_q, b_q, loc=log_q_obs, scale=sigma_log_q, size=2*size, random_state=rng)
     #  https://arxiv.org/pdf/2411.02494
-    weights = (norm.cdf((0.0 - log_q_obs) / sigma_log_q) - norm.cdf((q_bound - log_q_obs) / sigma_log_q)) / \
-          (norm.cdf((0.0 - log_qs) / sigma_log_q) - norm.cdf((q_bound- log_qs) / sigma_log_q))
+    #weights = (norm.cdf((0.0 - log_q_obs) / sigma_log_q) - norm.cdf((q_bound - log_q_obs) / sigma_log_q)) / \
+    #      (norm.cdf((0.0 - log_qs) / sigma_log_q) - norm.cdf((q_bound- log_qs) / sigma_log_q))
     weights=np.array(weights)
     weights /= np.sum(weights) #normalize
     ess = 1.0 / np.sum(weights**2)
     if ess < size:
         print(f"Warning: Effective sample size ({ess:.1f}) < requested size ({size})")
     # resample 
-    log_qs_final = rng.choice(log_qs, size=size, p=weights)
-    qs = np.exp(log_qs_final)
+    #log_qs_final = rng.choice(log_qs, size=size, p=weights)
+    qs = rng.choice(qs, size=size, p=weights)
+    #qs = np.exp(log_qs_final)
 
     #max_logmc = np.log(get_mc(m_max, qs))
     #b_mc = (max_logmc - log_mc_obs) / sigma_log_mc
@@ -306,7 +313,7 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q,dl_t
     
     eps=1e-30
     
-    reweight_fact=dls/rhos *m1s*qs * jsst.beta.pdf(thetas_final, 2, 4)
+    reweight_fact=dls/rhos *m1s * jsst.beta.pdf(thetas_final, 2, 4)#*qs
     reweight_fact=jnp.nan_to_num(reweight_fact, nan=0, neginf=-1e40, posinf=1e40)
     reweight_fact=reweight_fact/np.sum(reweight_fact)
     ess = 1.0 / np.sum(reweight_fact**2)

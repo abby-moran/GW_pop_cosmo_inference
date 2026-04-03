@@ -95,8 +95,10 @@ def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8,
     inj_det['mc_det'] = inj_det['mc'] * (1 + inj_det['z'])
     log_mc_obs = []
     sigma_log_mc = []
-    log_q_obs=[]
-    sigma_log_q=[]
+    #log_q_obs=[]
+    #sigma_log_q=[]
+    q_obs=[]
+    sigma_q=[]
     theta_obs=[]
     sigma_theta=[]
     for i, row in tqdm(inj_det.iterrows()):
@@ -109,11 +111,12 @@ def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8,
         log_mc_obs.append(norm.rvs(loc=np.log(row['mc_det']), scale=slmc,  random_state=noise_rng))
         sigma_log_mc.append(slmc)
 
-        slq = mult*uncert.sigma_q / row['q']   # error propagation
-        b = (0.0 - np.log(row['q'])) / slq
-        a =(-7  - np.log(row['q'])) / slq
-        log_q_obs.append(truncnorm.rvs(-np.inf, b, loc=np.log(row['q']), scale=slq,  random_state=noise_rng))
-        sigma_log_q.append(slq)
+        #slq = mult*uncert.sigma_q / row['q']   # error propagation
+        sq=mult*uncert.sigma_q
+        a = (0.0 - row['q']) / sq
+        b = (1 - row['q']) / sq
+        q_obs.append(truncnorm.rvs(a, b, loc=row['q'], scale=sq,  random_state=noise_rng))
+        sigma_q.append(sq)
 
         sigma_theta.append(mult*uncert.sigma_theta)
         # Θ_obs ~ N[0, 0.25](Θ_true, σΘ),
@@ -125,8 +128,10 @@ def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8,
     inj_det['log_mc_obs'] = log_mc_obs
     inj_det['sigma_log_mc'] = sigma_log_mc
     
-    inj_det['log_q_obs'] = log_q_obs
-    inj_det['sigma_log_q'] = sigma_log_q
+    #inj_det['log_q_obs'] = log_q_obs
+    #inj_det['sigma_log_q'] = sigma_log_q
+    inj_det['q_obs'] = q_obs
+    inj_det['sigma_q'] = sigma_q
     inj_det['theta_obs'] = theta_obs
     inj_det['sigma_theta'] = sigma_theta
     
@@ -168,14 +173,16 @@ def gen_mock_PE(obs_file, log_SNR_fun, population_parameters, cosmo, nsamples=20
             samples = weighting.draw_mock_samples_mine(
                 e['log_mc_obs'].iloc[0],  # detector frame
                 e['sigma_log_mc'].iloc[0],
-                e['log_q_obs'].iloc[0], 
-                e['sigma_log_q'].iloc[0],
+                #e['log_q_obs'].iloc[0], 
+                #e['sigma_log_q'].iloc[0],
+                e['q_obs'].iloc[0], 
+                e['sigma_q'].iloc[0],
                 e['dl'].iloc[0],
                 
                 e['theta_obs'].iloc[0],
                 e['sigma_theta'].iloc[0],
                 e['SNR_OBS'].iloc[0], 
-                log_SNR_fun, ndet=ndet, size_final=nsamples)
+                log_SNR_fun, cosmo, ndet=ndet, size_final=nsamples)
             
             m1_event.append(samples[0])
             q_event.append(samples[1])
@@ -217,10 +224,10 @@ if __name__ == "__main__":
     rng = np.random.default_rng(251286134409181405721219170031242732711)
 
     mult = 1
-    inj_file='../src/c2_zp5_Thbeta.h5'
-    obs_file = '../src/data/obsc2_zm55_errExt.h5'
-    sel_file = '../src/sel_c2_zm55_errExt.h5'
-    pe_file='../src/pe_c2_zm55_errExt.h5'
+    inj_file='../src/cnew_zp5_Thbeta.h5'
+    obs_file = '../src/data/obscn_zm55_hierr.h5'
+    sel_file = '../src/sel_cn_zm55_hierr.h5'
+    pe_file='../src/pe_cn_zm55_hierr.h5'
     ndet=1
     write_obs=True
     new_sel=True
@@ -228,7 +235,7 @@ if __name__ == "__main__":
         jitter=True
     else:
         jitter=False
-    nsamples=6000
+    nsamples=1000
 
     detection_threshold = 8
     chunk_size = int(2e6) # memory limit
@@ -236,7 +243,7 @@ if __name__ == "__main__":
     n_total=int(8e7) # how many of our total injectinos to consider, right now its too long so only use some
     #with h5py.File('../src/c2_zp5_snr0.h5', 'r') as f:
     #    n_total = f['true_parameters']['m1'].shape[0][0:int(1e8)]
-    population_parameters, cosmo = get_pop_params('../reproduce/configs/c2_zp5.txt')
+    population_parameters, cosmo = get_pop_params('../reproduce/configs/c_new_zm55_hierr.txt')
 
     grid = np.load("../src/snr_grid_326.npz")
     m1_grid  = grid["m1_grid"]
