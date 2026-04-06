@@ -154,12 +154,12 @@ def build_snr_grid(df_grid, m1_grid, q_grid, detectors, sensitivity, batch_num=4
 
 if __name__ == "__main__":
     N_m1=1200
-    m1_src_max = 400
+    m1_src_max = 450
     z_max = population_parameters["zmax"]
     
-    m1_det_min = 2.5
+    m1_det_min = .1
     m1_det_max = m1_src_max * (1 + z_max)
-    q_min=.005 #population_parameters['mbh_min']/m1_src_max
+    q_min=.0001 #population_parameters['mbh_min']/m1_src_max
     N_q=N_m1
     m1_grid = jnp.logspace(jnp.log10(m1_det_min), jnp.log10(m1_det_max), N_m1)
     q_grid  = jnp.linspace(q_min, 1.0, N_q)

@@ -34,7 +34,7 @@ SENSITIVITIES = {'aligo': lalsim.SimNoisePSDaLIGODesignSensitivityP1200087,
                 'CE': lalsim.SimNoisePSDCosmicExplorerP1600143}
 
 population_parameters = dict()
-config_file = '../reproduce/configs/c2_zp5.txt'
+config_file = '../reproduce/configs/c_new_zm55.txt'
 
 population_parameters = dict()
 with open(config_file) as param_file:
@@ -148,8 +148,7 @@ if __name__ == "__main__":
         pdraw = mpdf.pdf(m) * zpdf.pdf(z) * qpdf.pdf(q)
         
         m1d = m * (1 + z)
-        m1_det = m * (1 + z)
-        points = np.column_stack([m1_det, q])
+        points = np.column_stack([m1d, q])
         rho0 = np.exp(log_snr_interp(points))
         
         print("assigning spins")
@@ -247,6 +246,6 @@ if __name__ == "__main__":
         df_det=df_det.drop(columns=['SNR_0'])
 
         if i==0:
-            df_det.to_hdf('c2_zp5_Thbeta.h5', key='true_parameters', mode='a', format='table', append=False)
+            df_det.to_hdf('cnew_zp5_Thbeta.h5', key='true_parameters', mode='a', format='table', append=False)
         else:
-            df_det.to_hdf('c2_zp5_Thbeta.h5', key='true_parameters', mode='a', format='table', append=True)
+            df_det.to_hdf('cnew_zp5_Thbeta.h5', key='true_parameters', mode='a', format='table', append=True)

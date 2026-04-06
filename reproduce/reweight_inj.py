@@ -224,10 +224,10 @@ if __name__ == "__main__":
     rng = np.random.default_rng(251286134409181405721219170031242732711)
 
     mult = 1
-    inj_file='../src/cnew_zp5_Thbeta.h5'
-    obs_file = '../src/data/obscn_zm55_hierr.h5'
-    sel_file = '../src/sel_cn_zm55_hierr.h5'
-    pe_file='../src/pe_cn_zm55_hierr.h5'
+    inj_file='../src/c2_zp5_Thbeta.h5'
+    obs_file = '../src/data/obsc2_zm55_err.h5'
+    sel_file = '../src/sel_c2_zm55_err.h5'
+    pe_file='../src/pe_c2_zm55_err_500samp.h5'
     ndet=1
     write_obs=True
     new_sel=True
@@ -235,7 +235,7 @@ if __name__ == "__main__":
         jitter=True
     else:
         jitter=False
-    nsamples=1000
+    nsamples=500
 
     detection_threshold = 8
     chunk_size = int(2e6) # memory limit
@@ -243,7 +243,7 @@ if __name__ == "__main__":
     n_total=int(8e7) # how many of our total injectinos to consider, right now its too long so only use some
     #with h5py.File('../src/c2_zp5_snr0.h5', 'r') as f:
     #    n_total = f['true_parameters']['m1'].shape[0][0:int(1e8)]
-    population_parameters, cosmo = get_pop_params('../reproduce/configs/c_new_zm55_hierr.txt')
+    population_parameters, cosmo = get_pop_params('../reproduce/configs/c2_zp5.txt')
 
     grid = np.load("../src/snr_grid_326.npz")
     m1_grid  = grid["m1_grid"]

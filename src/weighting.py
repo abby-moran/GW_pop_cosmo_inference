@@ -248,9 +248,6 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, q_obs, sigma_q,dl_true, #lo
         rng = np.random.default_rng()
     size=10*size_final
 
-    #b_q = (0.0 - log_q_obs) / sigma_log_q
-    #q_bound=-np.inf
-    #a_q = (q_bound  - log_q_obs) / sigma_log_q
     a_q = (0.0 - q_obs) / sigma_q
     b_q = (1 - q_obs) / sigma_q
     qs = truncnorm.rvs(a_q, b_q, loc=q_obs, scale=sigma_q, size=2*size, random_state=rng)
@@ -258,22 +255,15 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, q_obs, sigma_q,dl_true, #lo
     weights = (norm.cdf((1 - q_obs) / sigma_q) - norm.cdf(-q_obs / sigma_q)) / \
           (norm.cdf((1 - qs) / sigma_q) - norm.cdf(-qs / sigma_q))
     
-    #log_qs = truncnorm.rvs(a_q, b_q, loc=log_q_obs, scale=sigma_log_q, size=2*size, random_state=rng)
     #  https://arxiv.org/pdf/2411.02494
-    #weights = (norm.cdf((0.0 - log_q_obs) / sigma_log_q) - norm.cdf((q_bound - log_q_obs) / sigma_log_q)) / \
-    #      (norm.cdf((0.0 - log_qs) / sigma_log_q) - norm.cdf((q_bound- log_qs) / sigma_log_q))
     weights=np.array(weights)
     weights /= np.sum(weights) #normalize
     ess = 1.0 / np.sum(weights**2)
     if ess < size:
         print(f"Warning: Effective sample size ({ess:.1f}) < requested size ({size})")
     # resample 
-    #log_qs_final = rng.choice(log_qs, size=size, p=weights)
     qs = rng.choice(qs, size=size, p=weights)
-    #qs = np.exp(log_qs_final)
 
-    #max_logmc = np.log(get_mc(m_max, qs))
-    #b_mc = (max_logmc - log_mc_obs) / sigma_log_mc
     if sigma_log_mc==0:
         log_mcs=np.zeros(size)+log_mc_obs
     else:
@@ -293,15 +283,6 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, q_obs, sigma_q,dl_true, #lo
     if ess < size:
         print(f"Warning: Effective sample size ({ess:.1f}) < requested size ({size})")
     thetas_final= rng.choice(thetas, size=size, p=weights)
-
-    #weights = np.random.beta(2, 4, size=len(thetas_2))
-    #weights /= np.sum(weights) #normalize
-    #ess = 1.0 / np.sum(weights**2)
-    #if ess < size:
-    #    print(f"Warning: Effective sample size ({ess:.1f}) < requested size ({size})")
-   
-    # resample 
-    #thetas_final = rng.choice(thetas_2, size=size, p=weights)
 
     scale = np.sqrt(ndet)
     rhos = norm.rvs(loc=rho_obs, scale=scale, size=size, random_state=rng)

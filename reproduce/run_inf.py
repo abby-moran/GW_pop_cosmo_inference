@@ -48,17 +48,17 @@ if __name__ == "__main__":
     random_seed = 1652819403
 
     prior = get_priors_from_file("priors/high_zmax.prior")
-    file='../src/pe_c2_zm55_cut.h5'
-    pe_samples_mock = pd.read_hdf(file, key='samples').iloc[0:500]# 1.5 to 2.5 k on the 1k tests
+    file='../src/pe_c2_zm55_err_500samp.h5'
+    pe_samples_mock = pd.read_hdf(file, key='samples').iloc[0:5000]# 1.5 to 2.5 k on the 1k tests
     print(f'loaded in {file}')
     m1s = np.asarray(pe_samples_mock['m1'].to_list())
-    qs = np.asarray(pe_samples_mock['q'].to_list())
-    dls =  np.asarray(pe_samples_mock['dl'].to_list()) +1e-40
+    qs = np.asarray(pe_samples_mock['q'].to_list())#[:, :1000]
+    dls =  np.asarray(pe_samples_mock['dl'].to_list())
     pdraws = np.asarray(pe_samples_mock['pdraw'].to_list())
     pdraws= jnp.nan_to_num(pdraws, neginf=-1e30, posinf=1e30)
     print("array shapes (we want nevents, nsamples): ", m1s.shape, qs.shape, dls.shape, pdraws.shape)
 
-    sel_samples=pd.read_hdf('../src/sel_c2_zm55_cut.h5', key='true_parameters')
+    sel_samples=pd.read_hdf('../src/sel_c2_zm55_err.h5', key='true_parameters')
     ndraw=sel_samples['ndraw'].iloc[0]
 
     assert np.all(m1s > 0) 
@@ -84,6 +84,6 @@ if __name__ == "__main__":
              sel_samples['q'].to_list(), sel_samples['dl'].to_list(), sel_samples['pdraw_sel'].to_list(),
         ndraw, prior)
     samples = mcmc.get_samples(group_by_chain=True)
-    outfile="o3_c2_zm55_500cut.npz"
+    outfile="o3_c2_zm55_err5k.npz"
     np.savez(outfile, **samples) 
     print("Saved samples to " + outfile)
