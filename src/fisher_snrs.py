@@ -1,30 +1,28 @@
-from astropy.cosmology import Planck18
-import astropy.units as u
+#from astropy.cosmology import Planck18
+#import astropy.units as u
 import lal
-import lalsimulation as lalsim
+#import lalsimulation as lalsim
 import numpy as np
 import os.path as op
 import sys
 import pandas as pd
 import paths
 from tqdm import tqdm, trange
-import weighting
+#import weighting
 import scipy.integrate as sint
-import intensity_models
-import jimFisher
-from jimFisher.Fisher import FisherSamples
+#import intensity_models
+#import jimFisher
+#from jimFisher.Fisher import FisherSamples
 import jax
 jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp
-from bilby.gw.conversion import component_masses_to_chirp_mass
+#from bilby.gw.conversion import component_masses_to_chirp_mass
 import ripple as rp
 from ripplegw import ms_to_Mc_eta
 from ripplegw.waveforms import IMRPhenomD
 import lalsimulation as lalsim
 import os
-
-from fisher_utils import convert_to_ripple_params, IFO_GEOMETRIC_KEYS, BOUNDS
 from scipy.interpolate import interp1d
 
 sensitivity_path = f"{os.path.dirname(__file__)}/sensitivity_files"
@@ -45,80 +43,6 @@ def next_pow_2(x):
     while np2 < x:
         np2 = np2 << 1
     return np2
-
-def compute_snrs(d, detectors=['H1'], sensitivity='aligo', fmin=20.0, fmax=2048.0, psdstart=20.0, f_ref=20.0):
-    """
-    Compute SNRs for a set of sources described in dataframe d
-    d: pandas.DataFrame
-        Contains parameters
-        d in Gpc
-    detectors: list of str
-    sensitivity : str, PSD choice for ripple
-    fmin, fmax: float
-        freq band (Hz) - don't mess with this
-    psdstart: float, starting freq 
- 
-    Returns network SNRs for each row in d
-    borrowed some stuff from https://gist.github.com/maxisi/e3bb4af28edd892b38448340a3e90a75
-    """
-    
-    snrs = []
-    #fs = jnp.linspace(fmin, fmax, int(2*fmax))
-    freqs, sens = np.loadtxt(ASD_FILES[sensitivity], unpack=True)
-    if sensitivity=='o3_PSD':
-        psd=sens
-    else:
-        psd = sens**2 #assuming ASD here
-        
-    for _, r in tqdm(d.iterrows(), total=len(d)):
-        # unpack source params
-        m2s = r.m1*r.q
-        m1d = r.m1*(1+r.z)
-        m2d = m2s*(1+r.z)
-
-        a1 = np.sqrt(r.s1x*r.s1x + r.s1y*r.s1y + r.s1z*r.s1z)
-        a2 = np.sqrt(r.s2x*r.s2x + r.s2y*r.s2y + r.s2z*r.s2z)
-        
-        params_here = {"mass_1": m1d, "mass_2": m2d, "s1_z": r.s1z, "s2_z": r.s2z, 
-              "luminosity_distance": r.dL * 1e3, "phase_c": 0., "cos_iota": np.cos(r.iota), "ra": r.ra, #Gpc to Mpc 
-              "sin_dec": np.sin(r.dec), 'psi': r.psi, "t_c": 0., "s1_x": r.s1x, "s1_y": r.s1y, "s2_x": r.s2x, "s2_y": r.s2y}
-        params_here['chirp_mass'], params_here['eta'] = ms_to_Mc_eta(jnp.asarray((params_here['mass_1'], params_here['mass_2'])))
-        params_here['mass_ratio'] = params_here['mass_2'] / params_here['mass_1']
-        params_here_ripple=convert_to_ripple_params(params_here)
-        
-        theta_ripple= jnp.array([params_here_ripple['M_c'], params_here_ripple['eta'], 0.0, 0.0, params_here_ripple['d_L'], #chi1=chi2=0, dist in Mpc
-                                 params_here_ripple['t_c'], params_here_ripple['psi'], params_here_ripple['iota']]) 
-        #theta_ripple = jnp.array([Mc, eta, chi1, chi2, dist_mpc, tc, phic, inclination])
-        
-        T = max(4, next_pow_2(lalsim.SimInspiralChirpTimeBound(fmin, m1d*lal.MSUN_SI, m2d*lal.MSUN_SI, a1, a2)))
-        Nfft = int(T*2*fmax)
-        freq_arr_i = np.linspace(0, fmax, Nfft, endpoint=False)
-        freq_arr_i = jnp.array(freq_arr_i[(freq_arr_i >= fmin) & (freq_arr_i <= fmax)])
-        
-        sn_det = []
-        for det in detectors:
-            det_obj = lal.cached_detector_by_prefix[det]
-            gmst = lal.GreenwichMeanSiderealTime(params_here_ripple['t_c'])
-            Fp, Fc = lal.ComputeDetAMResponse(det_obj.response, float(params_here_ripple['ra']),  float(params_here_ripple['dec']), 
-                                              float(params_here_ripple['psi']), float(gmst))
-            dt = lal.TimeDelayFromEarthCenter(det_obj.location, float(params_here_ripple['ra']),  float(params_here_ripple['dec']), float(params_here_ripple['t_c']))
-            
-            hp, hc = IMRPhenomD.gen_IMRPhenomD_hphc(freq_arr_i, theta_ripple, f_ref)
-
-            # detector projection
-            h_fd = (Fp * hp + Fc * hc) * jnp.exp(2j * jnp.pi * freq_arr_i * dt)
-
-            psd_interped = interp1d(freqs, psd, fill_value=(psd[0], psd[-1]))(freq_arr_i)
-            psd_vals = jnp.array(psd_interped)# psd_series.data.data)
-            
-            # SNR
-            snr_here = compute_optimal_SNR(h_fd, psd_vals, freq_arr_i)
-            sn_det.append(snr_here)
-        
-        snr = jnp.sqrt(jnp.sum(jnp.array(sn_det)**2))  # quadrature sum across detectors
-        snrs.append(snr)
-
-    return jnp.array(snrs)
     
 def compute_optimal_SNR(h, psd, fs):
     """
@@ -129,8 +53,6 @@ def compute_optimal_SNR(h, psd, fs):
     integrand = (jnp.abs(h) ** 2) / psd
     snr_sq = 4 * jnp.sum(integrand) * df
     return jnp.sqrt(snr_sq)
-
-
 
 # JAX BATCHED VERSION?
 def compute_snrs_batch(df, detectors=['H1'], sensitivity='aligo', fmin=20.0, fmax=2048.0, 
@@ -251,45 +173,3 @@ def compute_snrs_batch(df, detectors=['H1'], sensitivity='aligo', fmin=20.0, fma
 #    # Use LAL to get chirp time bound
 #    T = max(4, next_pow_2(lalsim.SimInspiralChirpTimeBound(float(fmin), float(m1*lal.MSUN_SI), float(m2*lal.MSUN_SI), float(a1), float(a2))))
 #    return int(T * 2 * fmax)
-
-
-def compute_snrs_old(d, detectors = ['H1', 'L1'], sensitivity = 'aligo', fmin = 20, fmax = 2048, psdstart = 20):
-    psdstop = 0.95*fmax
-    fref = fmin
-
-    fishers = dict()
-    snrs = []
-    for dur in [4, 8, 16, 32, 64, 128, 256, 512]:
-        for det in detectors:
-            name=f"fisher_{det}_{dur}s"
-            fishers[name] = FisherSamples(name=name, fmin = 20, fmax = 2048, sensitivity=sensitivity, location=det, duration=dur,trigger_time=0,waveform="IMRPhenomD", f_ref=fref)
-
-    for _, r in tqdm(d.iterrows(), total=len(d)):
-        m2s = r.m1*r.q
-        m1d = r.m1*(1+r.z)
-        m2d = m2s*(1+r.z)
-
-        a1 = np.sqrt(r.s1x*r.s1x + r.s1y*r.s1y + r.s1z*r.s1z)
-        a2 = np.sqrt(r.s2x*r.s2x + r.s2y*r.s2y + r.s2z*r.s2z)
-
-
-        T = max(4, next_pow_2(lalsim.SimInspiralChirpTimeBound(fmin, m1d*lal.MSUN_SI, m2d*lal.MSUN_SI, a1, a2)))
-
-        sn = []
-        # distance goes Gpc to Mpc here
-        # jim GW takes distances in MPC by default: https://colab.research.google.com/drive/1ah_mwVpn3A32jhctA6BTj-Nqk7SGf9Dj?usp=sharing
-        # for an event 440 Mpc away
-        for det in detectors:
-            fisher = fishers[f"fisher_{det}_{T}s"]
-            params_here = {"mass_1": m1d, "mass_2": m2d, "s1_z": r.s1z, "s2_z": r.s2z, 
-              "luminosity_distance": r.dL * 1e3, "phase_c": 0., "cos_iota": np.cos(r.iota), "ra": r.ra, #Gpc to Mpc 
-              "sin_dec": np.sin(r.dec), 'psi': r.psi, "t_c": 0., "s1_x": r.s1x, "s1_y": r.s1y, "s2_x": r.s2x, "s2_y": r.s2y}
-            params_here['chirp_mass'] = component_masses_to_chirp_mass(params_here['mass_1'], params_here['mass_2'])
-            params_here['mass_ratio'] = params_here['mass_2'] / params_here['mass_1']
-            
-            snr = fisher.get_snr(params_here)
-            sn.append(snr)
-        sn = jnp.array(sn)
-        snrs.append(jnp.sqrt(jnp.sum(jnp.square(sn))))
-
-    return snrs

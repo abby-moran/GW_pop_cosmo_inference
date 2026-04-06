@@ -22,7 +22,7 @@ class Uncertainties(object):
     def from_snr(cls, snr, mc_scale=None, q_scale=None, th_scale=None):
         #have the scales as paramters, with these as the defaults
         # These formulas come from estimations based on uncertainties in GWTC-3
-        mc_scale = mc_scale if mc_scale is not None else 1.78
+        mc_scale = mc_scale if mc_scale is not None else 1.78 
         q_scale = q_scale if q_scale is not None else 2.8
         th_scale = th_scale if th_scale is not None else 1.1
 

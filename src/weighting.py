@@ -1,4 +1,3 @@
-import astropy.cosmology as cosmol
 from astropy.cosmology import Planck18
 import astropy.units as u
 import dataclasses

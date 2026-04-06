@@ -1,0 +1,2 @@
+/mnt/home/amoran/GW_pop_cosmo_inference/src/gen_inj.py:124: RuntimeWarning: divide by zero encountered in log
+  log_snr_interp = RegularGridInterpolator((m1_grid, q_grid), np.log(snr_grid), bounds_error=False, fill_value=-np.inf)
