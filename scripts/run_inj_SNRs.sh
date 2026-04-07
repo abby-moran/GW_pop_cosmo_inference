@@ -7,9 +7,9 @@
 
 module load cuda/12 cudnn
 
-source ~/miniforge3/bin/activate GW_all
+source /mnt/home/amoran/GW_pop_cosmo_inference/.venv/bin/activate
 unset LD_LIBRARY_PATH
 
-cd /mnt/home/amoran/GW_pop_cosmo_inference/src/
+cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python gen_inj.py
+srun python gen_inj.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/confg_mockTC3.ini

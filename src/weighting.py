@@ -46,6 +46,23 @@ def default_pop_wt(m1, q, z):
     log_dN = default_log_dNdmdqdV(m1, q, z)
     return 4*np.pi*np.exp(log_dN)*Planck18.differential_comoving_volume(z).to(u.Gpc**3/u.sr).value/(1+z)
 
+
+def get_pop_params(config_file):
+    population_parameters = dict()
+    population_parameters = dict()
+    with open(config_file) as param_file:
+        for line in param_file:
+            (key, val) = line.split('=')
+            population_parameters[key.strip()] = val.strip()
+            try:
+                population_parameters[key.strip()] = float(val.strip())
+            except ValueError:
+                pass
+    cosmo = intensity_models.FlatwCDMCosmology(population_parameters['h'], population_parameters['Om'],
+                                           population_parameters['w'], population_parameters['zmax'])
+
+    return population_parameters, cosmo
+
 def pop_wt(m1, q, z, default=True, **kwargs):
     if default and (not kwargs):
         h, Om, w = Planck18.h, Planck18.Om0, -1

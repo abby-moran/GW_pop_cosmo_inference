@@ -13,7 +13,7 @@ import os.path as op
 import pandas as pd
 import paths
 from utils import get_priors_from_file
-from utils import get_pop_params
+from weighting import get_pop_params
 from intensity_models import coords
 import mock_observations
 from scipy.stats import norm, truncnorm

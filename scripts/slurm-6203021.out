@@ -1,0 +1,14 @@
+E0407 13:39:00.477226  289496 ptx_compiler_helpers.cc:88] *** WARNING *** Invoking ptxas with version 12.5.82, which corresponds to a CUDA version <=12.6.2. CUDA versions 12.x.y up to and including 12.6.2 miscompile certain edge cases around clamping.
+Please upgrade to CUDA 12.6.3 or newer.
+/mnt/home/amoran/GW_pop_cosmo_inference/scripts/gen_inj.py:160: RuntimeWarning: divide by zero encountered in log
+  log_snr_interp = RegularGridInterpolator((m1_grid, q_grid), np.log(snr_grid), bounds_error=False, fill_value=-np.inf)
+Using the following custom population_parameters: {'h': 0.674, 'Om': 0.315, 'w': -1.0, 'a': 2.57, 'b': 0.428, 'c': 2.2881, 'mpisn': 34.06, 'mbhmax': 38.006, 'sigma': 0.122, 'fpl': 0.430417, 'lam': 6.592, 'kappa': 9.67, 'zp': 3.273, 'mpisndot': 0.0, 'zmax': 1.9, 'mbh_min': 5.0, 'delta_m': 2.5, 'beta': -2.093, 'mc_scale': 0.2, 'q_scale': 1.8, 'th_scale': 1.1, 'cosmo': FlatwCDMCosmology(h=0.674, Om=0.315, w=-1.0, zmax=1.9, ninterp=1024, zinterp=Array([0.00000000e+00, 1.04131475e-03, 2.08371384e-03, ...,
+       1.89396980e+00, 1.89698333e+00, 1.90000000e+00], dtype=float64), dcinterp=Array([0.00000000e+00, 4.63057878e-03, 9.26369560e-03, ...,
+       5.15257946e+00, 5.15722323e+00, 5.16186519e+00], dtype=float64), dlinterp=Array([0.00000000e+00, 4.63540067e-03, 9.28299849e-03, ...,
+       1.49114093e+01, 1.49403897e+01, 1.49694090e+01], dtype=float64), ddlinterp=Array([4.44795252, 4.45502339, 4.46209345, ..., 9.61530365, 9.61819823,
+       9.62109004], dtype=float64), vcinterp=Array([0.00000000e+00, 4.15905286e-07, 3.32997856e-06, ...,
+       5.73010662e+02, 5.74561340e+02, 5.76114204e+02], dtype=float64), dvcinterp=Array([0.00000000e+00, 1.19791709e-03, 4.79193041e-03, ...,
+       5.14476229e+02, 5.14666047e+02, 5.14854548e+02], dtype=float64))}
+calculating pdraws
+assigning spins
+calculating dLs

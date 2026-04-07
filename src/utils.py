@@ -1,8 +1,6 @@
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
-import intensity_models
-
 
 def jnp_cumtrapz(ys, xs):
     """Cumulative trapezoidal integral of the function defined by values `ys` at points `xs`."""
@@ -79,22 +77,6 @@ def chi_effective_prior_from_aligned_spins(xs, mass_ratio, a_max):
         amaxes = a_max[mask]
         pdfs[mask] = functions[case](X = Xs, q = qs, aMax = amaxes)
     return pdfs
-
-def get_pop_params(config_file):
-    population_parameters = dict()
-    population_parameters = dict()
-    with open(config_file) as param_file:
-        for line in param_file:
-            (key, val) = line.split('=')
-            population_parameters[key.strip()] = val.strip()
-            try:
-                population_parameters[key.strip()] = float(val.strip())
-            except ValueError:
-                pass
-    cosmo = intensity_models.FlatwCDMCosmology(population_parameters['h'], population_parameters['Om'],
-                                           population_parameters['w'], population_parameters['zmax'])
-
-    return population_parameters, cosmo
 
 def chi_effective_prior_from_isotropic_spins(xs, mass_ratio, a_max):
 

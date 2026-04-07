@@ -3,27 +3,24 @@ import astropy.units as u
 import warnings
 warnings.filterwarnings("ignore", "Wswiglal-redir-stdio")
 import lal
+import sys
+sys.path.append('../src/')
 import lalsimulation as lalsim
 import numpy as np
-import os.path as op
-import sys
 import pandas as pd
-import paths
 import jax.numpy as jnp
-from tqdm import tqdm, trange
 import weighting
 import scipy.integrate as sint
 import intensity_models
-from inspect import getfullargspec
 import scipy
-import fisher_snrs
-from fisher_snrs import compute_snrs
-#import mock_injections
-#from mock_injections import *
-import matplotlib.pyplot as plt
 from scipy.interpolate import RegularGridInterpolator
-
-
+import configparser
+import argparse
+from pathlib import Path
+import shutil
+import subprocess
+from datetime import datetime
+import os
 import jax
 import h5py
 import jax.scipy.special as jss
@@ -34,7 +31,49 @@ SENSITIVITIES = {'aligo': lalsim.SimNoisePSDaLIGODesignSensitivityP1200087,
                 'CE': lalsim.SimNoisePSDCosmicExplorerP1600143}
 
 population_parameters = dict()
-config_file = '../reproduce/configs/c_new_zm55.txt'
+parser = argparse.ArgumentParser()
+parser.add_argument("--config", required=True, help="Path to run config file")
+args = parser.parse_args()
+
+cfg = configparser.ConfigParser()
+cfg.read(args.config)
+base_runs_dir = "../runs"
+run_name = cfg["run"]["run_dir"]
+
+# optional: make unique with timestamp
+timestamp = datetime.now().strftime("%Y%m%d")
+os.makedirs(base_runs_dir, exist_ok=True)
+run_dir = os.path.join(base_runs_dir, f"{run_name}_{timestamp}")
+os.makedirs(run_dir, exist_ok=False)
+output_file = os.path.join(run_dir, cfg["run"]["output_file"])
+
+base_dir = Path("pop_configs")
+
+ndet = int(cfg["run"]["ndet"])
+snr_threshold = float(cfg["run"]["snr_threshold_0"])
+sensitivity=cfg["run"]["sensitivity"]
+#config_file = '../reproducepop_configs/configs/c_new_zm55.txt'
+try:
+    git_hash = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"],
+        stderr=subprocess.DEVNULL
+    ).decode().strip()
+except Exception:
+    git_hash = "UNKNOWN"
+
+config_file = base_dir / cfg["run"]["pop_config_file"]
+config_file = config_file.resolve()
+
+cfg["run"]["git_hash"] = git_hash
+ini_file = cfg["run"]["ini_file"]
+run_ini_path = os.path.join(run_dir, ini_file)
+with open(run_ini_path, "w") as f:
+    cfg.write(f)
+pop_config_copy = os.path.join(run_dir, os.path.basename(config_file))
+shutil.copy(config_file, run_dir)
+
+snr_file=cfg["run"]["snr_grid"]
+grid = np.load(snr_file)
 
 population_parameters = dict()
 with open(config_file) as param_file:
@@ -45,9 +84,7 @@ with open(config_file) as param_file:
             population_parameters[key.strip()] = float(val.strip())
         except ValueError:
             pass
-snr_threshold = 0
-ndet=1
-sensitivity='o3_PSD'
+
 detectors = population_parameters.pop('detectors', 'H1').split(',')
 custom_cosmo = intensity_models.FlatwCDMCosmology(population_parameters['h'], population_parameters['Om'], population_parameters['w'], population_parameters['zmax'])
 population_parameters['cosmo'] = custom_cosmo
@@ -114,7 +151,6 @@ class PowerLawPDF(object):
         return ((self.a**self.alpha*self.b*c + self.a*self.b**self.alpha*(1-c))/(self.a*self.b)**self.alpha)**(1/(1-self.alpha))
     
 if __name__ == "__main__":
-    grid = np.load("snr_grid_m1det_ext.npz")
     
     m1_grid  = grid["m1_grid"]
     q_grid   = grid["q_grid"]
@@ -125,11 +161,7 @@ if __name__ == "__main__":
     num_loops=1
     for i in range(num_loops):
         ndraw=int(1e7)
-        #a=(0-population_parameters["zp"])/(population_parameters["zp"])
-        #b=(population_parameters["zmax"]-population_parameters["zp"])/(population_parameters["zp"])
-        zpdf = scipy.stats.uniform(loc=0, scale=population_parameters["zmax"])
-        #scipy.stats.truncnorm(a, b, loc=population_parameters["zp"], scale=(population_parameters["zp"]))
-        
+        zpdf = scipy.stats.uniform(loc=0, scale=population_parameters["zmax"])        
         a=(population_parameters["mbh_min"]-population_parameters["mpisn"])/(2*population_parameters["mpisn"])
         mpdf = scipy.stats.truncnorm(a, np.inf, loc=population_parameters["mpisn"], scale=(2*population_parameters["mpisn"]))
         
@@ -159,7 +191,7 @@ if __name__ == "__main__":
         
         print("calculating dLs")
         
-        dm1sz_dm1ddl = weighting.dm1sz_dm1ddl(z, cosmo=population_parameters['cosmo'])
+        dm1sz_dm1ddl = weighting.dm1sz_dm1ddl(z, cosmology=population_parameters['cosmo'])
         dL = population_parameters['cosmo'].dL(z)# dL in Gpc 
         
         det = detectors[0]
@@ -186,9 +218,7 @@ if __name__ == "__main__":
             'SNR_0': jnp.array(rho),
             'ndraw': zeros+ndraw*num_loops
         }
-        
-        #df["SNR"] = SNR_comp
-        
+                
         # Convert dict of JAX arrays -> dict of NumPy arrays
         df_np = {k: np.asarray(v) for k, v in df.items()}
         
@@ -196,46 +226,15 @@ if __name__ == "__main__":
         df_pd = pd.DataFrame(df_np)
         cosmo = intensity_models.FlatwCDMCosmology(population_parameters['h'], population_parameters['Om'],
                                            population_parameters['w'], population_parameters['zmax'])
-
-
-        #log_dN_obj = intensity_models.LogDNDMDQDV
-        #pop_params = {key: population_parameters[key] for key in getfullargspec(log_dN_obj)[0][1:] if key in population_parameters.keys()}
-        #log_dN_func=log_dN_obj(**pop_params)
-        #log_dN_vals = log_dN_func(df_pd['m1'].values, df_pd['q'].values, df_pd['z'].values)
-        #pdraw_cosmo=dm1sz_dm1ddl*pdraw
-        #log_w = log_dN_vals - jnp.log(pdraw_cosmo) +jnp.log(cosmo.dVCdz(df_pd['z'].values)) -2*jnp.log1p(df_pd['z'].values)- jnp.log(cosmo.ddL_dz(df_pd['z'].values)) 
-        #pdraw_sel=np.zeros_like(pdraw)
-
-        #log_w_max = np.nanmax(log_w)
         
-        #accept_prob = np.exp(log_w - log_w_max)
-        #sel_mask = np.random.choice(len(df_pd), p=accept_prob/np.sum(accept_prob), size=int(1e6))
-
-        # stable accept-reject
-        #log_w_max = np.nanmax(log_w)
-        #accept_prob = np.exp(log_w - log_w_max)
-        #u = rng.uniform(size=len(accept_prob))
-        #sel_mask = u < accept_prob
-        
-        df_det = df_pd#.iloc[sel_mask]
+        df_det = df_pd
         Fp = np.zeros(len(df_det))
         Fc = np.zeros(len(df_det))
         
         ra = rng.uniform(low=0, high=2*np.pi, size=len(df_det))
         dec = np.arcsin(rng.uniform(low=-1, high=1, size=len(df_det)))
         
-        
-        #psi = rng.uniform(low=0, high=np.pi, size=len(df_det))
-        #gmst = rng.uniform(low=0, high=2*np.pi, size=len(df_det))
-        #iota = np.arccos(rng.uniform(low=-1, high=1, size=len(df_det)))
-        
-        #for j in range(len(df_det)):
-        #    Fp[j], Fc[j] = lal.ComputeDetAMResponse(lal.cached_detector_by_prefix[detectors[0]].response, ra[j], dec[j], psi[j], gmst[j])
-        
-        #cosi = np.cos(iota)
         Theta=np.random.beta(2,4,len(df_det))
-        #Theta_sq = (Fp**2 * (1 + cosi**2)**2 / 4 + Fc**2 * cosi**2)
-        #Theta = np.sqrt(Theta_sq)
         SNR_comp = df_det['SNR_0'] * Theta* np.sqrt(ndet)
         df_det['Theta']=Theta
 
@@ -246,6 +245,6 @@ if __name__ == "__main__":
         df_det=df_det.drop(columns=['SNR_0'])
 
         if i==0:
-            df_det.to_hdf('cnew_zp5_Thbeta.h5', key='true_parameters', mode='a', format='table', append=False)
+            df_det.to_hdf(output_file, key='true_parameters', mode='a', format='table', append=False)
         else:
-            df_det.to_hdf('cnew_zp5_Thbeta.h5', key='true_parameters', mode='a', format='table', append=True)
+            df_det.to_hdf(output_file, key='true_parameters', mode='a', format='table', append=True)
