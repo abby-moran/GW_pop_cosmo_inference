@@ -74,31 +74,7 @@ def li_prior_wt(m1, q, z, cosmology_weighted=False):
     else:
         return np.square(1+z)*m1*np.square(Planck18.luminosity_distance(z).to(u.Gpc).value)*(Planck18.comoving_distance(z).to(u.Gpc).value + (1+z)*Planck18.hubble_distance.to(u.Gpc).value/Planck18.efunc(z))
     
-def extract_posterior_samples(file, nsamp, desired_pop_wt=None, rng=None):
-    """Returns posterior samples over `m1`, `q`, `z` extracted from `file`.
-
-    The returned samples will be drawn from a density proportional to
-    `desired_pop_wt` (or, if none is given, the default LALInference/Bilby
-    prior).
-
-    :param file: The file (HDF5) containing posterior samples.
-
-    :param nsamp: The number of samples desired.  The code will raise a
-        `ValueError` if too few samples exist in the file.
-
-    :param desired_pop_wt: A function over `(m1, q, z)` giving the desired
-        population weight for the returned samples.  If none given, this will be
-        the default (non-cosmologically-weighted) LALInference/Bilby prior.
-
-    :param rng: A random number generator used for the draws; if `None`, one
-        will be initialized randomly.
-
-    :return: Arrays `(m1, q, z, pop_wt)` giving the samples and (unnormalized)
-        weights according to the extracted population.    
-    """
-    if rng is None:
-        rng = np.random.default_rng()
-
+def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax = 1.9):    
     with h5py.File(file, 'r') as f:
         if 'PublicationSamples' in f.keys():
             # O3a files
@@ -106,30 +82,20 @@ def extract_posterior_samples(file, nsamp, desired_pop_wt=None, rng=None):
         elif 'C01:Mixed' in f.keys():
             # O3b files
             samples = np.array(f['C01:Mixed/posterior_samples'])
-        else:
-            raise ValueError(f'could not read samples from file {file}')
+        elif 'PrecessingSpinIMRHM' in f.keys(): #what waveform approximation did we use
+            samples = np.array(f['PrecessingSpinIMRHM/posterior_samples'])        
+        else:   
+            print(f"Available keys in file {file}: {list(f.keys())}")
+            return None
+    zs=samples['redshift'] [()]
+    mask = samples['redshift'] < zmax
+    m1_det = samples['mass_1'][()][mask]
+    qs = samples['mass_ratio'][()][mask]
+    dLs = samples['luminosity_distance'][()][mask] / 1e3
         
-        m1 = np.array(samples['mass_1_source'])
-        q = np.array(samples['mass_ratio'])
-        z = np.array(samples['redshift'])
-        
-        m2 = q*m1
-        if np.median(m2) < intensity_models.mbh_min:
-            raise ValueError(f'rejecting {file} because median m2 < {intensity_models.mbh_min} MSun')
-
-        if desired_pop_wt is None:
-            pop_wt = li_prior_wt(m1, q, z)
-        else:
-            pop_wt = desired_pop_wt(m1, q, z)
-        wt = pop_wt / li_prior_wt(m1, q, z)
-        wt = wt / np.sum(wt)
-
-        ns = 1/np.sum(wt*wt)
-        if ns < 2*nsamp:
-            raise ValueError('could not read samples from {:s} due to too few samples: {:.1f}'.format(file, ns))
-
-        inds = rng.choice(np.arange(len(samples)), nsamp, p=wt)
-        return (m1[inds], q[inds], z[inds], pop_wt[inds])
+    prior = dLs**2 * m1_det
+    
+    return m1_det, qs, dLs, prior
 
 def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1, rng=None):
     """Return `(m1, q, z, pdraw, nsel)` to estimate selection effects.
@@ -219,15 +185,15 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
 
         return m1s_sel_cut, qs_sel_cut, zs_sel_cut, a1s_sel_cut, a2s_sel_cut, costilt1s_sel_cut, costilt2s_sel_cut, pdraw_sel_cut, ndraw_cut
     
-def dm1sz_dm1ddl(z, cosmo=None):
-    if not cosmo:
+def dm1sz_dm1ddl(z, cosmology=None):
+    if not cosmology:
         #return (1+z) / (Planck18.comoving_distance(z).to(u.Gpc).value + (1+z)*Planck18.hubble_distance.to(u.Gpc).value / Planck18.efunc(z))
         dm1s_dm1d = (1+z)**-1
         ddl_dz = (Planck18.comoving_distance(z).to(u.Gpc).value + (1 + z) * Planck18.hubble_distance.to(u.Gpc).value / Planck18.efunc(z))
         return dm1s_dm1d * (ddl_dz)**-1
     else:
         dm1s_dm1d = (1+z)**-1
-        ddl_dz = cosmo.ddL_dz((z))
+        ddl_dz = cosmology.ddL_dz((z))
         return  dm1s_dm1d * (ddl_dz)**-1
 
 def get_mc(m1, q):

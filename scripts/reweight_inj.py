@@ -13,6 +13,7 @@ import os.path as op
 import pandas as pd
 import paths
 from utils import get_priors_from_file
+from utils import get_pop_params
 from intensity_models import coords
 import mock_observations
 from scipy.stats import norm, truncnorm
@@ -23,35 +24,7 @@ from scipy.special import logsumexp
 from inspect import getfullargspec
 from scipy.interpolate import RegularGridInterpolator
 import weighting
-
-
-
-def dm1sz_dm1ddl(z, cosmology=None):
-    if not cosmology:
-        #return (1+z) / (Planck18.comoving_distance(z).to(u.Gpc).value + (1+z)*Planck18.hubble_distance.to(u.Gpc).value / Planck18.efunc(z))
-        dm1s_dm1d = (1+z)**-1
-        ddl_dz = (Planck18.comoving_distance(z).to(u.Gpc).value + (1 + z) * Planck18.hubble_distance.to(u.Gpc).value / Planck18.efunc(z))
-        return dm1s_dm1d * (ddl_dz)**-1
-    else:
-        dm1s_dm1d = (1+z)**-1
-        ddl_dz = cosmology.ddL_dz((z))
-        return  dm1s_dm1d * (ddl_dz)**-1
-
-def get_pop_params(config_file):
-    population_parameters = dict()
-    population_parameters = dict()
-    with open(config_file) as param_file:
-        for line in param_file:
-            (key, val) = line.split('=')
-            population_parameters[key.strip()] = val.strip()
-            try:
-                population_parameters[key.strip()] = float(val.strip())
-            except ValueError:
-                pass
-    cosmo = intensity_models.FlatwCDMCosmology(population_parameters['h'], population_parameters['Om'],
-                                           population_parameters['w'], population_parameters['zmax'])
-
-    return population_parameters, cosmo
+from weighting import dm1sz_dm1ddl
 
 
 def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8, 
@@ -95,8 +68,6 @@ def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8,
     inj_det['mc_det'] = inj_det['mc'] * (1 + inj_det['z'])
     log_mc_obs = []
     sigma_log_mc = []
-    #log_q_obs=[]
-    #sigma_log_q=[]
     q_obs=[]
     sigma_q=[]
     theta_obs=[]
@@ -104,14 +75,10 @@ def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8,
     for i, row in tqdm(inj_det.iterrows()):
         uncert = mock_observations.Uncertainties.from_snr(row['SNR_OBS'],
                                         mc_scale=mc_scale, q_scale=q_scale, th_scale=th_scale)
-        #log_mc_obs.append(np.log(row['mc_det']) + mult*uncert.sigma_log_mc*noise_rng.normal())
-        #sigma_log_mc.append(mult*uncert.sigma_log_mc)
-        
-        slmc =mult*uncert.sigma_log_mc   # error propagation
+        slmc =mult*uncert.sigma_log_mc   
         log_mc_obs.append(norm.rvs(loc=np.log(row['mc_det']), scale=slmc,  random_state=noise_rng))
         sigma_log_mc.append(slmc)
 
-        #slq = mult*uncert.sigma_q / row['q']   # error propagation
         sq=mult*uncert.sigma_q
         a = (0.0 - row['q']) / sq
         b = (1 - row['q']) / sq
@@ -127,9 +94,6 @@ def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8,
     
     inj_det['log_mc_obs'] = log_mc_obs
     inj_det['sigma_log_mc'] = sigma_log_mc
-    
-    #inj_det['log_q_obs'] = log_q_obs
-    #inj_det['sigma_log_q'] = sigma_log_q
     inj_det['q_obs'] = q_obs
     inj_det['sigma_q'] = sigma_q
     inj_det['theta_obs'] = theta_obs
@@ -153,16 +117,11 @@ def gen_mock_PE(obs_file, log_SNR_fun, population_parameters, cosmo, nsamples=20
     """
     
     pe_samples_full = pd.read_hdf(obs_file, 'observations')
-    #if new_sel:
-    #    pe_samples_full=pe_samples_full
-    #else:
     pe_samples_full=pe_samples_full[0:10000]
     
     m1s, qs, dls, pdraws , evts= [], [], [], [], []
     mass_obs_evt, q_err, dl_=[], [], []
     for i, (n, e) in enumerate(pe_samples_full.groupby('evt')):
-        #if i >= 10000:
-        #    break
         # preallocate arrays for this event
         m1_event = []
         q_event = []
@@ -204,15 +163,6 @@ def gen_mock_PE(obs_file, log_SNR_fun, population_parameters, cosmo, nsamples=20
     pdraws = np.array(pdraws)
     evts = np.array(evts)
 
-    # compute median dL per event
-    #dl_cutoff = cosmo.dL(population_parameters['zmax'])
-    #ind_det = np.median(dls, axis=1) < dl_cutoff
-
-    #m1s = m1s[ind_det]
-    #qs = qs[ind_det]
-    #dls = dls[ind_det]
-    #pdraws = pdraws[ind_det]
-    #evts = evts[ind_det]
     if outfile is not None:
         df_samples = pd.DataFrame({'m1': list(m1s),       # each element is an array of nsamples
                                     'q': list(qs), 'dl': list(dls), 'pdraw': list(pdraws), 'evt': list(evts[:,0])})
@@ -241,8 +191,7 @@ if __name__ == "__main__":
     chunk_size = int(2e6) # memory limit
     num_tot = int(5e7) #how many to reweight, should be les than n_total
     n_total=int(8e7) # how many of our total injectinos to consider, right now its too long so only use some
-    #with h5py.File('../src/c2_zp5_snr0.h5', 'r') as f:
-    #    n_total = f['true_parameters']['m1'].shape[0][0:int(1e8)]
+    
     population_parameters, cosmo = get_pop_params('../reproduce/configs/c2_zp5.txt')
 
     grid = np.load("../src/snr_grid_326.npz")
@@ -352,10 +301,4 @@ if __name__ == "__main__":
     m1s, qs, dls, pdraws, evts = gen_mock_PE(obs_file, log_snr_interp, population_parameters, cosmo,
         outfile=pe_file, ndet=ndet, nsamples=nsamples, new_sel=new_sel)
     
-    #if write_obs:
-    #    if new_sel:
-    #        surviving_evts = set(evts[:, 0])  # evt names that made it through
-    #        sel_samples = pd.read_hdf(sel_file, key='true_parameters')
-    #        sel_samples = sel_samples[sel_samples['evt'].isin(surviving_evts)]
-    #        sel_samples.to_hdf(sel_file, key='true_parameters', format='table', mode='w')
     print("array shapes (we want nevents, nsamples): ", m1s.shape, qs.shape, dls.shape, pdraws.shape)

@@ -5,3 +5,11 @@ cython_debug/
 *.pyd
 *.pyx.c
 *.pyx.cpp
+src/jimFisher
+*.pyc
+runs/.
+reproduce/.
+*.hdf5
+notebook.sh
+.ipynb_checkpoints/.
+src/.ipynb_checkpoints/.
