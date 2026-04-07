@@ -1,6 +1,0 @@
-Traceback (most recent call last):
-  File "/mnt/home/amoran/GW_pop_cosmo_inference/scripts/gen_inj.py", line 47, in <module>
-    os.makedirs(run_dir, exist_ok=False)
-  File "<frozen os>", line 225, in makedirs
-FileExistsError: [Errno 17] File exists: '../runs/mock_GWTC3_20260407'
-srun: error: workergpu155: task 0: Exited with exit code 1
