@@ -1,0 +1,17 @@
+#!/bin/bash
+#SBATCH --account=astro
+#SBATCH -p short
+#SBATCH -J notebook
+#SBATCH --time=0-11:00
+#SBATCH --gres=gpu:1    
+
+module load anaconda/3-2022.05 cuda11.8/toolkit/11.8.0 cudnn8.6-cuda11.8/8.6.0.163
+
+source /burg/opt/anaconda3-2022.05/etc/profile.d/conda.sh
+conda activate GWenv
+export XDG_RUNTIME_DIR=""
+jupyter notebook \
+  --no-browser \
+  --NotebookApp.ip=0.0.0.0 \
+  --NotebookApp.port=8888 \
+  --notebook-dir=/burg/astro/users/am6261

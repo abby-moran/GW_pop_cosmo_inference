@@ -40,12 +40,11 @@ cfg.read(args.config)
 base_runs_dir = "../runs"
 run_name = cfg["run"]["run_dir"]
 
-# optional: make unique with timestamp
-timestamp = datetime.now().strftime("%Y%m%d")
+#timestamp = datetime.now().strftime("%Y%m%d")
 os.makedirs(base_runs_dir, exist_ok=True)
-run_dir = os.path.join(base_runs_dir, f"{run_name}_{timestamp}")
+run_dir = os.path.join(base_runs_dir, f"{run_name}")
 os.makedirs(run_dir, exist_ok=False)
-output_file = os.path.join(run_dir, cfg["run"]["output_file"])
+output_file = os.path.join(run_dir, cfg["run"]["output_file_inj"])
 
 base_dir = Path("pop_configs")
 

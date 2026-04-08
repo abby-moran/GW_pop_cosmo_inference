@@ -1,0 +1,174 @@
+# Enable rule caching on Zenodo?
+cache_on_zenodo: true
+
+# Workflow graph (DAG) generation
+dag:
+  # Generate `dag.pdf` on each build?
+  render: false
+  # Graphviz layout engine
+  engine: sfdp
+  # Group files by type into plates?
+  group_by_type: false
+  # Custom graph attributes
+  graph_attr:
+    ranksep: "1"
+    nodesep: "0.65"
+  # Custom node attributes
+  node_attr:
+    shape: "box"
+    penwidth: "2"
+    width: "1"
+  # Files and glob patterns to ignore
+  # ignore_files:
+  #  - src/tex/orcid-ID.png
+
+
+# Externally-hosted datasets, e.g. on Zenodo
+datasets:
+  # GWTC-2.1
+  10.5281/zenodo.6513631:
+    destination: src/data/pe-samples-raw
+    contents:
+      IGWN-GWTC2p1-v2-GW190408_181802_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190412_053044_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190413_052954_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190413_134308_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190421_213856_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190503_185404_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190512_180714_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190513_205428_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190517_055101_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190519_153544_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190521_030229_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190521_074359_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190527_092055_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190602_175927_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190620_030421_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190630_185205_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190701_203306_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190706_222641_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190707_093326_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190708_232457_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190719_215514_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190720_000836_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190727_060333_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190728_064510_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190731_140936_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190803_022701_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190828_063405_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190828_065509_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190910_112807_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190915_235702_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190924_021846_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190929_012149_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC2p1-v2-GW190930_133541_PEDataRelease_mixed_nocosmo.h5:
+  10.5281/zenodo.5546663:
+    destination: src/data/pe-samples-raw
+    contents:
+      IGWN-GWTC3p0-v1-GW191103_012549_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW191105_143521_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW191109_010717_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW191127_050227_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW191129_134029_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW191204_171526_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW191215_223052_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW191216_213338_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW191222_033537_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW191230_180458_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW200112_155838_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW200128_022011_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW200129_065458_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW200202_154313_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW200208_130117_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW200209_085452_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW200216_220804_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW200219_094415_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW200224_222234_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW200225_060421_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW200302_015811_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW200311_115853_PEDataRelease_mixed_nocosmo.h5:
+      IGWN-GWTC3p0-v1-GW200316_215756_PEDataRelease_mixed_nocosmo.h5:
+  10.5281/zenodo.7890437:
+    destination: src/data
+    contents:
+      endo3_bbhpop-LIGO-T2100113-v12.hdf5:
+
+# Custom file dependencies
+dependencies:
+  src/scripts/m1-vs-m2.py:
+    - src/data/pe-samples.h5
+  src/scripts/dNdm_fitted.py:
+    - src/data/trace.nc
+  src/scripts/cosmo_params_corner.py:
+    - src/data/trace_cosmo.nc
+  src/scrpits/shape_corner.py:
+    - src/data/trace.nc
+  src/scripts/h_zoomin.py:
+    - src/data/trace_cosmo.nc
+  src/scripts/omh2_zoomin.py:
+    - src/data/trace_cosmo.nc
+  src/scripts/mock_observation_corner.py:
+    - src/data/mock_observations.h5
+
+
+# Name of the `.tex` manuscript and corresponding `.pdf` article
+ms_name: ms
+
+# Optimize DAG by removing unnecessary jobs upstream of cache hits?
+optimize_caching: false
+
+# Overleaf sync settings
+overleaf:
+  # Overleaf project ID (blank = disabled)
+  id: 
+  # Perform sync on GitHub Actions?
+  gh_actions_sync: true
+  # List of files to push to Overleaf
+  push:
+    - src/tex/figures
+    - src/tex/output
+  # List of files to pull from Overleaf
+  pull:
+    - src/tex/ms.tex
+    - src/tex/bib.bib
+
+# Always require all input files to be present on disk for workflow to pass?
+require_inputs: true
+
+# Allow cacheable rules to run on GitHub Actions?
+run_cache_rules_on_ci: false
+
+# Mapping of script file extensions to instructions for executing them
+scripts:
+  py: python {script}
+
+# Display of the `showyourwork` stamp on first page
+stamp:
+  # Show the stamp?
+  enabled: true
+  # Stamp angle in degrees
+  angle: -20.0
+  # Stamp size in inches
+  size: 0.75
+  # Horizontal position in inches from right edge of paper
+  xpos: 0.50
+  # Vertical position in inches from top edge of paper
+  ypos: 0.50
+  # Display of the repo URL in the stamp
+  url:
+    # Show the URL?
+    enabled: true
+    # Maximum URL length to display
+    maxlen: 40
+
+# Enable SyncTeX?
+synctex: True
+
+# Command-line options to be passed to tectonic when building the manuscript
+tectonic_args: []
+
+# Enable verbose output?
+verbose: false
+
+# Version of `showyourwork` used to create this workflow
+version: 0.4.2

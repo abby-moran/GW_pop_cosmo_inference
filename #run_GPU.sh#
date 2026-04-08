@@ -1,0 +1,14 @@
+#!/usr/bin/bash
+#SBATCH -p gpu
+#SBATCH --gpus-per-task=1
+#SBATCH --ntasks=1
+#SBATCH --mem=16G
+#SBATCH --time=0-2
+
+module load cuda/12 cudnn
+
+source ~/miniforge3/bin/activate GW_Bump
+
+cd /mnt/home/amoran/GW_stuff/reproduce
+
+srun python run_inference_evolution.py

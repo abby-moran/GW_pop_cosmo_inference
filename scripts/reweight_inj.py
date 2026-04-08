@@ -2,7 +2,6 @@ ndevice = 4
 import os
 import numpyro
 numpyro.set_host_device_count(ndevice)
-from astropy.cosmology import Planck18
 import astropy.units as u
 import sys
 import jax
@@ -11,23 +10,63 @@ import intensity_models
 import numpy as np
 import os.path as op
 import pandas as pd
-import paths
-from utils import get_priors_from_file
 from weighting import get_pop_params
-from intensity_models import coords
 import mock_observations
 from scipy.stats import norm, truncnorm
+import argparse
 
 import jax.numpy as jnp
 from tqdm import tqdm
-from scipy.special import logsumexp
 from inspect import getfullargspec
 from scipy.interpolate import RegularGridInterpolator
 import weighting
 from weighting import dm1sz_dm1ddl
+import configparser
+import ast
+from pathlib import Path
 
+#  read .ini file
+parser = argparse.ArgumentParser()
+parser.add_argument("--config", required=True, help="Path to run config file")
+args = parser.parse_args()
 
-def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8, 
+cfg = configparser.ConfigParser()
+cfg.read(args.config)
+
+run = cfg["run"]
+
+# helper to safely parse values 
+def parse(val):
+    try:
+        return ast.literal_eval(val)
+    except:
+        return val
+
+# load variables from ini
+base_runs_dir = "../runs"
+run_name = cfg["run"]["run_dir"]
+run_dir = os.path.join(base_runs_dir, f"{run_name}")
+
+inj_file = os.path.join(run_dir, cfg["run"]["output_file_inj"])
+detection_threshold = run.getint("final_snr_threshold")
+snr_grid_file = run.get("snr_grid")
+grid=np.load(snr_grid_file)
+nsamples = run.getint("n_PE")
+
+obs_file = os.path.join(run_dir, cfg["run"]["obs_file"])
+pe_file = os.path.join(run_dir, cfg["run"]["output_file_PE"])
+sel_file = os.path.join(run_dir, cfg["run"]["output_sel_file"])
+ndet = 3 #run.getint("ndet")
+
+write_obs = run.getboolean("write_obs")
+new_sel = run.getboolean("new_sel")
+base_dir = Path("pop_configs")
+
+pop_file=run.get("pop_config_file")
+pop_config_file = base_dir / cfg["run"]["pop_config_file"]
+pop_config_file = pop_config_file.resolve()
+    
+def get_mock_obs(df, out_file, cosmo, detection_threshold=8, 
                  jitter_SNR=True, ndet=1, append_tf=False, evt_offset=0,
                  detection_rng=None, mc_scale=None, q_scale=None, th_scale=None):
     """
@@ -37,7 +76,6 @@ def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8,
         df: events 
         out_file: where to store the observed values
         cosmo: cosmology model we're using, usually FlatwCDMCosmology with population paramters
-        mult: multiplier on the paramter uncertatintes, so higher numbers scale all the uncertainties up (except SNR)
         detection_threshold: what SNR we cut on, 8 by default
         jitter_SNR: False if detection is perfect, otherwise should be on
         ndet: number of mock detectors, controls how much we jitter the SNR by
@@ -75,17 +113,17 @@ def get_mock_obs(df, out_file, cosmo, mult=1, detection_threshold=8,
     for i, row in tqdm(inj_det.iterrows()):
         uncert = mock_observations.Uncertainties.from_snr(row['SNR_OBS'],
                                         mc_scale=mc_scale, q_scale=q_scale, th_scale=th_scale)
-        slmc =mult*uncert.sigma_log_mc   
+        slmc =uncert.sigma_log_mc   
         log_mc_obs.append(norm.rvs(loc=np.log(row['mc_det']), scale=slmc,  random_state=noise_rng))
         sigma_log_mc.append(slmc)
 
-        sq=mult*uncert.sigma_q
+        sq=uncert.sigma_q
         a = (0.0 - row['q']) / sq
         b = (1 - row['q']) / sq
         q_obs.append(truncnorm.rvs(a, b, loc=row['q'], scale=sq,  random_state=noise_rng))
         sigma_q.append(sq)
 
-        sigma_theta.append(mult*uncert.sigma_theta)
+        sigma_theta.append(uncert.sigma_theta)
         # Θ_obs ~ N[0, 0.25](Θ_true, σΘ),
         # modeled after DOI 10.3847/2041-8213/ab77c9
         a = (0.0 - row['Theta']) / sigma_theta[-1]
@@ -173,35 +211,32 @@ def gen_mock_PE(obs_file, log_SNR_fun, population_parameters, cosmo, nsamples=20
 if __name__ == "__main__":
     rng = np.random.default_rng(251286134409181405721219170031242732711)
 
-    mult = 1
-    inj_file='../src/c2_zp5_Thbeta.h5'
-    obs_file = '../src/data/obsc2_zm55_err.h5'
-    sel_file = '../src/sel_c2_zm55_err.h5'
-    pe_file='../src/pe_c2_zm55_err_500samp.h5'
-    ndet=1
-    write_obs=True
-    new_sel=True
+    #inj_file='../src/c2_zp5_Thbeta.h5'
+    #obs_file = '../src/data/obsc2_zm55_err.h5'
+    #sel_file = '../src/sel_c2_zm55_err.h5'
+    #pe_file='../src/pe_c2_zm55_err_500samp.h5'
+    #ndet=1
+    #write_obs=True
+    #new_sel=True
     if ndet>0:
         jitter=True
     else:
         jitter=False
-    nsamples=500
+    #nsamples=500
 
-    detection_threshold = 8
+    #detection_threshold = 8
     chunk_size = int(2e6) # memory limit
     num_tot = int(5e7) #how many to reweight, should be les than n_total
     n_total=int(8e7) # how many of our total injectinos to consider, right now its too long so only use some
     
-    population_parameters, cosmo = get_pop_params('../reproduce/configs/c2_zp5.txt')
+    population_parameters, cosmo = get_pop_params(pop_config_file)
 
-    grid = np.load("../src/snr_grid_326.npz")
+    #grid = np.load(snr_grid_file)
     m1_grid  = grid["m1_grid"]
     q_grid   = grid["q_grid"]
     snr_grid = grid["snr_grid"]
     dL_fid   = float(grid["dL_fid"])
     log_snr_interp = RegularGridInterpolator((m1_grid, q_grid), np.log(snr_grid), bounds_error=False, fill_value=-np.inf)
-
-    prior = get_priors_from_file("priors/high_zmax.prior")
 
     log_dN_obj = intensity_models.LogDNDMDQDV
     pop_params = {key: population_parameters[key] for key in getfullargspec(log_dN_obj)[0][1:] if key in population_parameters.keys()}
@@ -280,7 +315,7 @@ if __name__ == "__main__":
             q_scale=population_parameters.get('q_scale', None)
             th_scale=population_parameters.get('th_scale', None)
             detected_indices, evt_names = get_mock_obs(df_det_chunk, obs_file, cosmo,
-                mult=mult, jitter_SNR=jitter, detection_threshold=detection_threshold,
+                jitter_SNR=jitter, detection_threshold=detection_threshold,
                 append_tf=not first_chunk, evt_offset=evt_offset, mc_scale=mc_scale, 
                 q_scale=q_scale, th_scale=th_scale)
 

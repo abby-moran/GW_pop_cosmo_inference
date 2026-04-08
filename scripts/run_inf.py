@@ -1,56 +1,56 @@
-ndevice = 1
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
-
-import numpyro
-numpyro.set_host_device_count(ndevice)
-from astropy.cosmology import Planck18
-import astropy.units as u
 import sys
-import jax
 sys.path.append('../src/')
 import intensity_models
 import numpy as np
-from numpyro.infer import MCMC, NUTS, SA
-import os.path as op
 import pandas as pd
-import paths
 from utils import get_priors_from_file
-from intensity_models import coords
+import arviz as az
+import configparser
+import argparse
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--config", required=True, help="Path to run config file")
+args = parser.parse_args()
+
+cfg = configparser.ConfigParser()
+cfg.read(args.config)
+run = cfg["run"]
+base_runs_dir = "../runs"
+run_name = cfg["run"]["run_dir"]
+run_dir = os.path.join(base_runs_dir, f"{run_name}")
+
+outfile = os.path.join(run_dir, cfg["run"]["mcmc_out"])
+prior_dir="../runs/priors"
+prior = os.path.join(prior_dir, cfg["run"]["prior"])
+
+nmcmc = run.getint("nmcmc")
+nchain = run.getint("nchain")
+evt_start = run.getint("evt_start")
+evt_end= run.getint("evt_end")
+
+pe_file = os.path.join(run_dir, cfg["run"]["output_file_PE"])
+sel_file = os.path.join(run_dir, cfg["run"]["output_sel_file"])
+ndevice=nchain
+
+import numpyro
+numpyro.set_host_device_count(ndevice)
+import jax
+from numpyro.infer import MCMC, NUTS, SA
 import jax.numpy as jnp
-import tqdm
-from scipy.special import logsumexp
-from inspect import getfullargspec
-import numpyro.infer.util as util
-from numpyro.infer import init_to_value
-
-
-def get_pop_params(config_file):
-    population_parameters = dict()
-    population_parameters = dict()
-    with open(config_file) as param_file:
-        for line in param_file:
-            (key, val) = line.split('=')
-            population_parameters[key.strip()] = val.strip()
-            try:
-                population_parameters[key.strip()] = float(val.strip())
-            except ValueError:
-                pass
-    cosmo = intensity_models.FlatwCDMCosmology(population_parameters['h'], population_parameters['Om'],
-                                           population_parameters['w'], population_parameters['zmax'])
-
-    return population_parameters, cosmo
 
 if __name__ == "__main__":
 
-    nmcmc =  1800
-    nchain = 1
+    #nmcmc =  1800
+    #nchain = 1
     random_seed = 1652819403
 
-    prior = get_priors_from_file("priors/high_zmax.prior")
-    file='../src/pe_c2_zm55_err_500samp.h5'
-    pe_samples_mock = pd.read_hdf(file, key='samples').iloc[0:5000]# 1.5 to 2.5 k on the 1k tests
-    print(f'loaded in {file}')
+    prior = get_priors_from_file(prior)
+    pe_samples_mock = pd.read_hdf(pe_file, key='samples').iloc[evt_start:evt_end]# 1.5 to 2.5 k on the 1k tests
+    print(f'loaded in {pe_file}, events {evt_start} to {evt_end}')
     m1s = np.asarray(pe_samples_mock['m1'].to_list())
     qs = np.asarray(pe_samples_mock['q'].to_list())#[:, :1000]
     dls =  np.asarray(pe_samples_mock['dl'].to_list())
@@ -58,32 +58,25 @@ if __name__ == "__main__":
     pdraws= jnp.nan_to_num(pdraws, neginf=-1e30, posinf=1e30)
     print("array shapes (we want nevents, nsamples): ", m1s.shape, qs.shape, dls.shape, pdraws.shape)
 
-    sel_samples=pd.read_hdf('../src/sel_c2_zm55_err.h5', key='true_parameters')
+    sel_samples=pd.read_hdf(sel_file, key='true_parameters')
     ndraw=sel_samples['ndraw'].iloc[0]
 
     assert np.all(m1s > 0) 
     assert np.all(qs > 0) 
     assert np.all(dls > 0) 
     assert np.all(qs<=1) 
-    #assert np.all(pdraws>0) 
     assert not np.any(np.isnan(pdraws)) 
     assert not np.any(np.isinf(pdraws))
-   
-    #assert np.all(sel_samples['pdraw_sel']>0) 
     assert not np.any(np.isnan(sel_samples['pdraw_sel'])) 
     assert not np.any(np.isinf(sel_samples['pdraw_sel']))
-
-    population_parameters, cosmo = get_pop_params('../reproduce/configs/c2_zp5.txt')
-    init_vals = {k: jnp.array(float(v)) 
-             for k, v in population_parameters.items() 
-             if k in prior}
     
-    kernel = NUTS(intensity_models.pop_cosmo_model,init_strategy=init_to_value(values=init_vals))
-    mcmc = MCMC(kernel, num_warmup=nmcmc, num_samples=nmcmc, num_chains=nchain, progress_bar=True)
+    kernel = NUTS(intensity_models.pop_cosmo_model)
+    mcmc = MCMC(kernel, num_warmup=nmcmc, num_samples=nmcmc, num_chains=nchain,
+                chain_method="parallel", progress_bar=True)
     mcmc.run(jax.random.PRNGKey(random_seed), m1s, qs, dls, pdraws, sel_samples['m1d'].to_list(), 
              sel_samples['q'].to_list(), sel_samples['dl'].to_list(), sel_samples['pdraw_sel'].to_list(),
         ndraw, prior)
-    samples = mcmc.get_samples(group_by_chain=True)
-    outfile="o3_c2_zm55_err5k.npz"
-    np.savez(outfile, **samples) 
+    #outfile="o3_c2_zm55_err5k.npz"
+    samples = az.from_numpyro(mcmc, num_chains=nchain)
+    az.to_netcdf(samples, outfile)
     print("Saved samples to " + outfile)

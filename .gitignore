@@ -7,9 +7,10 @@ cython_debug/
 *.pyx.cpp
 src/jimFisher
 *.pyc
-runs/.
-reproduce/.
+runs/*
+old_reproduce/*
 *.hdf5
 notebook.sh
-.ipynb_checkpoints/.
-src/.ipynb_checkpoints/.
+.ipynb_checkpoints/*
+src/.ipynb_checkpoints/*
+.ipynb_checkpoints/*
