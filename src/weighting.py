@@ -267,13 +267,21 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, q_obs, sigma_q,dl_true, #lo
     thetas_final= rng.choice(thetas, size=size, p=weights)
 
     scale = np.sqrt(ndet)
-    #a_rho = (0.0 - rho_obs) / scale
-    rhos = norm.rvs(loc=rho_obs, scale=scale, size=size, random_state=rng)
+    a_rho = (0.0 - rho_obs) / scale
+    rhos_0 = truncnorm.rvs(a_rho, np.inf, loc=rho_obs, scale=scale, size=2*size, random_state=rng)
+    weights =  norm.cdf(rho_obs / scale) / norm.cdf(rhos_0 / scale)
+    weights /= np.sum(weights) #normalize
+    ess = 1.0 / np.sum(weights**2)
+    if ess < size:
+        print(f"Warning: Effective sample size on rho ({ess:.1f}) < requested size ({size})")
+    rhos= rng.choice(rhos_0, size=size, p=weights)
+
+
 
     #dL = dL_fid x (Θ / Θ_fid) x ρ_fid (M, q, dL_fid, Θ_fid)  / ρ
     points = np.column_stack([m1s, qs])
     snr_fid = np.exp(rho_fun(points))
-    dls = dl_fid*thetas_final/theta_fid * snr_fid/rhos
+    dls = dl_fid*thetas_final/theta_fid * snr_fid*np.sqrt(ndet)/rhos
     
     eps=1e-30
     

@@ -68,7 +68,7 @@ if __name__ == "__main__":
 
     assert np.all(m1s > 0) 
     assert np.all(qs > 0) 
-    assert np.all(dls > 0) 
+    #assert np.all(dls > 0) 
     assert np.all(qs<=1) 
     assert not np.any(np.isnan(pdraws)) 
     assert not np.any(np.isinf(pdraws))

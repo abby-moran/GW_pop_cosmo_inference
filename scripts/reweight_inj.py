@@ -56,7 +56,7 @@ nsamples = run.getint("n_PE")
 obs_file = os.path.join(run_dir, cfg["run"]["obs_file"])
 pe_file = os.path.join(run_dir, cfg["run"]["output_file_PE"])
 sel_file = os.path.join(run_dir, cfg["run"]["output_sel_file"])
-ndet = 3 #run.getint("ndet")
+ndet =run.getint("ndet")
 
 write_obs = run.getboolean("write_obs")
 new_sel = run.getboolean("new_sel")
@@ -91,9 +91,10 @@ def get_mock_obs(df, out_file, cosmo, detection_threshold=8,
 
     #jitter = detection_rng.normal(loc=0, scale=np.sqrt(ndet), size=len(df))    
     if jitter_SNR:
-        df['SNR_OBS'] = norm.rvs(loc=df['SNR'], scale= np.sqrt(ndet),  random_state=noise_rng)
+        a_rho=(0.0 - df['SNR']) / np.sqrt(ndet)
+        df['SNR_OBS'] = truncnorm.rvs(a_rho, np.inf, loc=df['SNR'], scale= np.sqrt(ndet),  random_state=noise_rng)
     else:
-        df['SNR_OBS'] = df['SNR'] #set the uncertatinty so its not a function of SNR
+        df['SNR_OBS'] = df['SNR'] 
     
     # Store which original df indices passed the SNR cut
     snr_mask = df['SNR_OBS'] > detection_threshold

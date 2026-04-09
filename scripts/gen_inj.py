@@ -2,7 +2,6 @@ from astropy.cosmology import Planck18
 import astropy.units as u
 import warnings
 warnings.filterwarnings("ignore", "Wswiglal-redir-stdio")
-import lal
 import sys
 sys.path.append('../src/')
 import lalsimulation as lalsim
@@ -19,10 +18,8 @@ import argparse
 from pathlib import Path
 import shutil
 import subprocess
-from datetime import datetime
 import os
 import jax
-import h5py
 import jax.scipy.special as jss
 jax.config.update("jax_enable_x64", True)
 
@@ -157,7 +154,7 @@ if __name__ == "__main__":
     dL_fid   = float(grid["dL_fid"])
     
     log_snr_interp = RegularGridInterpolator((m1_grid, q_grid), np.log(snr_grid), bounds_error=False, fill_value=-np.inf)
-    num_loops=1
+    num_loops=10
     for i in range(num_loops):
         ndraw=int(1e7)
         zpdf = scipy.stats.uniform(loc=0, scale=population_parameters["zmax"])        
