@@ -29,8 +29,13 @@ prior = os.path.join(prior_dir, cfg["run"]["prior"])
 
 nmcmc = run.getint("nmcmc")
 nchain = run.getint("nchain")
+
 evt_start = run.getint("evt_start")
-evt_end= run.getint("evt_end")
+evt_end= run.get("evt_end")
+if evt_end is None or evt_end.lower() == "none":
+    evt_end = None
+else:
+    evt_end = int(evt_end)
 
 pe_file = os.path.join(run_dir, cfg["run"]["output_file_PE"])
 sel_file = os.path.join(run_dir, cfg["run"]["output_sel_file"])

@@ -314,7 +314,7 @@ if __name__ == "__main__":
             mc_scale=population_parameters.get('mc_scale', None)
             q_scale=population_parameters.get('q_scale', None)
             th_scale=population_parameters.get('th_scale', None)
-            detected_indices, evt_names = get_mock_obs(df_det_chunk, obs_file, cosmo,
+            detected_indices, evt_names = get_mock_obs(df_det_chunk, obs_file, cosmo, ndet=ndet,
                 jitter_SNR=jitter, detection_threshold=detection_threshold,
                 append_tf=not first_chunk, evt_offset=evt_offset, mc_scale=mc_scale, 
                 q_scale=q_scale, th_scale=th_scale)

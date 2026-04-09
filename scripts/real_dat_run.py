@@ -9,10 +9,12 @@ warnings.filterwarnings("ignore", "Wswiglal-redir-stdio")
 import os
 from weighting import get_samples_from_event
 import argparse
+import astropy.units as u
 import configparser
 import subprocess
 import weighting 
 import re
+import ast
 
 
 #load in config stuff
@@ -34,7 +36,9 @@ os.makedirs(run_dir, exist_ok=False)
 output_file_PE = os.path.join(run_dir, cfg["run"]["output_file_PE"])
 output_sel_file = os.path.join(run_dir, cfg["run"]["output_sel_file"])
 sel_input = cfg["run"]["sel_input"]
-data_paths = cfg["run"]["data_paths"]
+data_paths = ast.literal_eval(cfg["run"]["data_paths"])
+
+PE_samps = cfg["run"].getint("PE_samps", fallback=1000)
 
 #copy the confg file, with the hash to the new directory
 try:
@@ -52,12 +56,15 @@ with open(run_ini_path, "w") as f:
 
 if __name__ == "__main__":
     files = []
+    print(f'data paths: {data_paths}')
     for path in data_paths:
+        print(f'globbing path: {path}')
         files += glob.glob(path)
     #folder1 = 
     #folder2 = "../../GW_2025/GWTC-3"
     #files = glob.glob(os.path.join(folder1, "*_nocosmo.h5"))
     #files += glob.glob(os.path.join(folder2, "*_nocosmo.h5"))
+    print(files)
     INCLUDE_LIST=[]
     with open("../runs/INCLUDE_LIST.txt", "r") as f:
         INCLUDE_LIST = set(line.strip() for line in f if line.strip())
@@ -81,11 +88,10 @@ if __name__ == "__main__":
         m1, q, dl, pdraw = result
 
         n = len(m1)
-        if n < 1000:
+        if n < PE_samps:
             continue
 
-        # sample indices directly (faster than DataFrame.sample)
-        idx = np.random.choice(n, 1000, replace=False)
+        idx = np.random.choice(n, PE_samps, replace=False)
 
         filename = os.path.basename(file)
         parts = re.split("_|-", filename)
@@ -95,19 +101,25 @@ if __name__ == "__main__":
             "m1": m1[idx],
             "q": q[idx],
             "dl": dl[idx],
-            "pdraw": np.log(pdraw[idx]),  # fix bug here
+            "pdraw": np.log(pdraw[idx]),
             "evt": event_here
         })
 
         print(f"Done {event_here}")
 
-    # concatenate once at the end
+    # stack into (nevents, PE_samps)
+    m1_arr = np.stack([r["m1"] for r in rows])
+    q_arr  = np.stack([r["q"] for r in rows])
+    dl_arr = np.stack([r["dl"] for r in rows])
+    pdraw_arr = np.stack([r["pdraw"] for r in rows])
+    evt_arr = np.array([r["evt"] for r in rows])  # (nevents,)
+
     final_df = pd.DataFrame({
-        "m1": np.concatenate([r["m1"] for r in rows]),
-        "q": np.concatenate([r["q"] for r in rows]),
-        "dl": np.concatenate([r["dl"] for r in rows]),
-        "pdraw": np.concatenate([r["pdraw"] for r in rows]),
-        "evt": np.concatenate([np.full(len(r["m1"]), r["evt"]) for r in rows]),
+        "m1": list(m1_arr),
+        "q": list(q_arr),
+        "dl": list(dl_arr),
+        "pdraw": list(pdraw_arr),
+        "evt": evt_arr
     })
 
     final_df.to_hdf(output_file_PE, key="samples", mode="w")
@@ -124,6 +136,6 @@ if __name__ == "__main__":
     df['pdraw_sel'] = df['pdraw_m1sqz']*df['dm1sz_dm1ddl']
     df['m1d']= df['m1']*(1+df['z'])
     df['dl'] = Planck18.luminosity_distance(df['z'].to_numpy()).to(u.Gpc).value
-    df.to_hdf(output_sel_file, 'samples')
+    df.to_hdf(output_sel_file, key='true_parameters')
 
 

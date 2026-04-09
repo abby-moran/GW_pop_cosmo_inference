@@ -1,191 +1,0 @@
-/mnt/home/amoran/GW_pop_cosmo_inference/scripts/reweight_inj.py:239: RuntimeWarning: divide by zero encountered in log
-  log_snr_interp = RegularGridInterpolator((m1_grid, q_grid), np.log(snr_grid), bounds_error=False, fill_value=-np.inf)
-Pass 1: computing weights...
-  0%|          | 0/40 [00:00<?, ?it/s]  2%|▎         | 1/40 [00:02<01:37,  2.50s/it]  5%|▌         | 2/40 [00:02<00:48,  1.27s/it]  8%|▊         | 3/40 [00:03<00:32,  1.13it/s] 10%|█         | 4/40 [00:05<00:49,  1.39s/it] 12%|█▎        | 5/40 [00:06<00:43,  1.25s/it] 18%|█▊        | 7/40 [00:06<00:21,  1.55it/s] 22%|██▎       | 9/40 [00:06<00:12,  2.49it/s] 28%|██▊       | 11/40 [00:06<00:08,  3.62it/s] 32%|███▎      | 13/40 [00:07<00:05,  4.93it/s] 38%|███▊      | 15/40 [00:07<00:03,  6.36it/s] 42%|████▎     | 17/40 [00:07<00:02,  7.83it/s] 48%|████▊     | 19/40 [00:07<00:02,  9.25it/s] 52%|█████▎    | 21/40 [00:07<00:01, 10.53it/s] 57%|█████▊    | 23/40 [00:07<00:01, 11.64it/s] 62%|██████▎   | 25/40 [00:07<00:01, 12.54it/s] 68%|██████▊   | 27/40 [00:07<00:00, 13.27it/s] 72%|███████▎  | 29/40 [00:08<00:00, 13.82it/s] 78%|███████▊  | 31/40 [00:08<00:00, 14.22it/s] 82%|████████▎ | 33/40 [00:08<00:00, 14.54it/s] 88%|████████▊ | 35/40 [00:08<00:00, 14.75it/s] 92%|█████████▎| 37/40 [00:08<00:00, 14.90it/s] 98%|█████████▊| 39/40 [00:08<00:00, 15.02it/s]100%|██████████| 40/40 [00:08<00:00,  4.55it/s]
-Sampling indices...
-Pass 2: processing selected rows...
-  0%|          | 0/40 [00:00<?, ?it/s]
-0it [00:00, ?it/s][A
-260it [00:00, 2598.15it/s][A
-525it [00:00, 2625.42it/s][A
-791it [00:00, 2636.81it/s][A
-1057it [00:00, 2643.25it/s][A
-1323it [00:00, 2645.79it/s][A
-1589it [00:00, 2647.18it/s][A
-1854it [00:00, 2646.80it/s][A
-2120it [00:00, 2648.44it/s][A
-2385it [00:00, 2634.89it/s][A
-2649it [00:01, 2613.38it/s][A
-2914it [00:01, 2623.65it/s][A
-3180it [00:01, 2631.64it/s][A
-3445it [00:01, 2636.81it/s][A
-3709it [00:01, 2627.36it/s][A
-3974it [00:01, 2631.91it/s][A
-4240it [00:01, 2637.59it/s][A4428it [00:01, 2635.38it/s]
-  2%|▎         | 1/40 [00:05<03:29,  5.38s/it]
-0it [00:00, ?it/s][A
-262it [00:00, 2614.06it/s][A
-526it [00:00, 2626.40it/s][A
-790it [00:00, 2632.32it/s][A
-1054it [00:00, 2635.22it/s][A
-1319it [00:00, 2637.20it/s][A
-1584it [00:00, 2638.25it/s][A
-1848it [00:00, 2638.45it/s][A
-2112it [00:00, 2638.34it/s][A
-2377it [00:00, 2640.24it/s][A
-2642it [00:01, 2639.68it/s][A
-2908it [00:01, 2643.13it/s][A
-3173it [00:01, 2643.76it/s][A
-3438it [00:01, 2643.00it/s][A
-3703it [00:01, 2643.72it/s][A
-3968it [00:01, 2643.97it/s][A
-4233it [00:01, 2645.09it/s][A4369it [00:01, 2639.87it/s]
-  5%|▌         | 2/40 [00:10<03:23,  5.34s/it]
-0it [00:00, ?it/s][A
-262it [00:00, 2617.24it/s][A
-526it [00:00, 2624.72it/s][A
-790it [00:00, 2631.62it/s][A
-1055it [00:00, 2636.40it/s][A
-1320it [00:00, 2639.84it/s][A
-1585it [00:00, 2640.25it/s][A
-1850it [00:00, 2639.38it/s][A
-2115it [00:00, 2641.00it/s][A
-2380it [00:00, 2642.35it/s][A
-2645it [00:01, 2643.38it/s][A
-2910it [00:01, 2643.46it/s][A
-3175it [00:01, 2644.28it/s][A
-3440it [00:01, 2644.77it/s][A
-3705it [00:01, 2644.12it/s][A
-3970it [00:01, 2643.97it/s][A
-4235it [00:01, 2643.48it/s][A4404it [00:01, 2640.62it/s]
-  8%|▊         | 3/40 [00:16<03:17,  5.35s/it]
-0it [00:00, ?it/s][A
-263it [00:00, 2620.77it/s][A
-527it [00:00, 2628.48it/s][A
-791it [00:00, 2633.69it/s][A
-1056it [00:00, 2638.57it/s][A
-1321it [00:00, 2639.45it/s][A
-1585it [00:00, 2638.76it/s][A
-1850it [00:00, 2639.52it/s][A
-2114it [00:00, 2638.98it/s][A
-2378it [00:00, 2634.22it/s][A
-2643it [00:01, 2636.62it/s][A
-2908it [00:01, 2638.29it/s][A
-3172it [00:01, 2637.30it/s][A
-3436it [00:01, 2635.72it/s][A
-3700it [00:01, 2635.85it/s][A
-3964it [00:01, 2635.06it/s][A3982it [00:01, 2635.50it/s]
- 10%|█         | 4/40 [00:20<03:05,  5.15s/it] 15%|█▌        | 6/40 [00:21<01:24,  2.47s/it] 20%|██        | 8/40 [00:21<00:46,  1.45s/it] 25%|██▌       | 10/40 [00:21<00:27,  1.07it/s] 30%|███       | 12/40 [00:21<00:17,  1.57it/s] 35%|███▌      | 14/40 [00:21<00:11,  2.20it/s] 40%|████      | 16/40 [00:22<00:08,  2.96it/s] 45%|████▌     | 18/40 [00:22<00:05,  3.84it/s] 50%|█████     | 20/40 [00:22<00:04,  4.80it/s] 55%|█████▌    | 22/40 [00:22<00:03,  5.78it/s] 60%|██████    | 24/40 [00:22<00:02,  6.72it/s] 65%|██████▌   | 26/40 [00:22<00:01,  7.58it/s] 70%|███████   | 28/40 [00:23<00:01,  8.32it/s] 75%|███████▌  | 30/40 [00:23<00:01,  8.92it/s] 80%|████████  | 32/40 [00:23<00:00,  9.40it/s] 85%|████████▌ | 34/40 [00:23<00:00,  9.76it/s] 90%|█████████ | 36/40 [00:23<00:00, 10.03it/s] 95%|█████████▌| 38/40 [00:24<00:00, 10.23it/s]100%|██████████| 40/40 [00:24<00:00, 10.37it/s]100%|██████████| 40/40 [00:24<00:00,  1.65it/s]
-/mnt/home/amoran/GW_pop_cosmo_inference/scripts/reweight_inj.py:207: PerformanceWarning: 
-your performance may suffer as PyTables will pickle object types that it cannot
-map directly to c-types [inferred_type->mixed,key->block0_values] [items->Index(['m1', 'q', 'dl', 'pdraw'], dtype='str')]
-
-  df_samples.to_hdf(outfile, key="samples", mode="w")
-Generating mock PE...
-Warning: Effective sample size (2.5) < requested size (800)
-Warning: Effective sample size (474.2) < requested size (800)
-Warning: Effective sample size (460.3) < requested size (800)
-Warning: Effective sample size (52.2) < requested size (800)
-Warning: Effective sample size (474.7) < requested size (800)
-Warning: Effective sample size (134.6) < requested size (800)
-Warning: Effective sample size (6.8) < requested size (800)
-Warning: Effective sample size (717.1) < requested size (800)
-Warning: Effective sample size (332.2) < requested size (800)
-Warning: Effective sample size (545.0) < requested size (800)
-Warning: Effective sample size (499.5) < requested size (800)
-Warning: Effective sample size (674.9) < requested size (800)
-Warning: Effective sample size (15.2) < requested size (800)
-Warning: Effective sample size (19.5) < requested size (800)
-Warning: Effective sample size (1.5) < requested size (800)
-Warning: Effective sample size (1.2) < requested size (800)
-Warning: Effective sample size (202.8) < requested size (800)
-Warning: Effective sample size (512.5) < requested size (800)
-Warning: Effective sample size (89.6) < requested size (800)
-Warning: Effective sample size (1.0) < requested size (800)
-Warning: Effective sample size (505.1) < requested size (800)
-Warning: Effective sample size (8.7) < requested size (800)
-Warning: Effective sample size (2.4) < requested size (800)
-Warning: Effective sample size (174.4) < requested size (800)
-Warning: Effective sample size (21.3) < requested size (800)
-Warning: Effective sample size (566.8) < requested size (800)
-Warning: Effective sample size (1.8) < requested size (800)
-Warning: Effective sample size (25.7) < requested size (800)
-Warning: Effective sample size (95.3) < requested size (800)
-Warning: Effective sample size (437.1) < requested size (800)
-Warning: Effective sample size (12.9) < requested size (800)
-Warning: Effective sample size (663.8) < requested size (800)
-Warning: Effective sample size (13.2) < requested size (800)
-Warning: Effective sample size (156.2) < requested size (800)
-Warning: Effective sample size (130.7) < requested size (800)
-Warning: Effective sample size (151.0) < requested size (800)
-Warning: Effective sample size (25.7) < requested size (800)
-Warning: Effective sample size (755.3) < requested size (800)
-Warning: Effective sample size (129.2) < requested size (800)
-Warning: Effective sample size (179.3) < requested size (800)
-Warning: Effective sample size (386.8) < requested size (800)
-Warning: Effective sample size (4.6) < requested size (800)
-Warning: Effective sample size (233.3) < requested size (800)
-Warning: Effective sample size (441.9) < requested size (800)
-Warning: Effective sample size (1.1) < requested size (800)
-Warning: Effective sample size (301.0) < requested size (800)
-Warning: Effective sample size (717.6) < requested size (800)
-Warning: Effective sample size (121.9) < requested size (800)
-Warning: Effective sample size (397.3) < requested size (800)
-Warning: Effective sample size (29.1) < requested size (800)
-Warning: Effective sample size (639.2) < requested size (800)
-Warning: Effective sample size (441.9) < requested size (800)
-Warning: Effective sample size (686.9) < requested size (800)
-Warning: Effective sample size (283.4) < requested size (800)
-Warning: Effective sample size (2.3) < requested size (800)
-Warning: Effective sample size (375.7) < requested size (800)
-Warning: Effective sample size (36.8) < requested size (800)
-Warning: Effective sample size (227.9) < requested size (800)
-Warning: Effective sample size (11.1) < requested size (800)
-Warning: Effective sample size (97.9) < requested size (800)
-Warning: Effective sample size (623.8) < requested size (800)
-Warning: Effective sample size (11.4) < requested size (800)
-Warning: Effective sample size (732.1) < requested size (800)
-Warning: Effective sample size (38.6) < requested size (800)
-Warning: Effective sample size (385.5) < requested size (800)
-Warning: Effective sample size (498.1) < requested size (800)
-Warning: Effective sample size (680.1) < requested size (800)
-Warning: Effective sample size (266.6) < requested size (800)
-Warning: Effective sample size (21.0) < requested size (800)
-Warning: Effective sample size (406.2) < requested size (800)
-Warning: Effective sample size (54.6) < requested size (800)
-Warning: Effective sample size (561.9) < requested size (800)
-Warning: Effective sample size (528.5) < requested size (800)
-Warning: Effective sample size (89.5) < requested size (800)
-Warning: Effective sample size (7.5) < requested size (800)
-Warning: Effective sample size (15.9) < requested size (800)
-Warning: Effective sample size (1.3) < requested size (800)
-Warning: Effective sample size (667.5) < requested size (800)
-Warning: Effective sample size (445.2) < requested size (800)
-Warning: Effective sample size (34.8) < requested size (800)
-Warning: Effective sample size (209.4) < requested size (800)
-Warning: Effective sample size (10.6) < requested size (800)
-Warning: Effective sample size (140.4) < requested size (800)
-Warning: Effective sample size (2.0) < requested size (800)
-Warning: Effective sample size (4.5) < requested size (800)
-Warning: Effective sample size (357.3) < requested size (800)
-Warning: Effective sample size (19.8) < requested size (800)
-Warning: Effective sample size (136.3) < requested size (800)
-Warning: Effective sample size (317.6) < requested size (800)
-Warning: Effective sample size (2.9) < requested size (800)
-Warning: Effective sample size (3.0) < requested size (800)
-Warning: Effective sample size (663.8) < requested size (800)
-Warning: Effective sample size (229.2) < requested size (800)
-Warning: Effective sample size (628.8) < requested size (800)
-Warning: Effective sample size (713.4) < requested size (800)
-Warning: Effective sample size (14.3) < requested size (800)
-Warning: Effective sample size (277.0) < requested size (800)
-Warning: Effective sample size (328.7) < requested size (800)
-Warning: Effective sample size (1.2) < requested size (800)
-Warning: Effective sample size (671.5) < requested size (800)
-Warning: Effective sample size (292.5) < requested size (800)
-Warning: Effective sample size (773.5) < requested size (800)
-Warning: Effective sample size (577.0) < requested size (800)
-Warning: Effective sample size (3.0) < requested size (800)
-Warning: Effective sample size (37.8) < requested size (800)
-Warning: Effective sample size (11.9) < requested size (800)
-array shapes (we want nevents, nsamples):  (10000, 800) (10000, 800) (10000, 800) (10000, 800)

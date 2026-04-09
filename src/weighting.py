@@ -267,6 +267,7 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, q_obs, sigma_q,dl_true, #lo
     thetas_final= rng.choice(thetas, size=size, p=weights)
 
     scale = np.sqrt(ndet)
+    #a_rho = (0.0 - rho_obs) / scale
     rhos = norm.rvs(loc=rho_obs, scale=scale, size=size, random_state=rng)
 
     #dL = dL_fid x (Θ / Θ_fid) x ρ_fid (M, q, dL_fid, Θ_fid)  / ρ
