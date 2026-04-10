@@ -12,4 +12,4 @@ unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python real_dat_run.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/confg_realTC3.ini
+srun python real_dat_run.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/confg_realTC4.ini

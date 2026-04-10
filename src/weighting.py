@@ -99,18 +99,28 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
         elif 'C01:Mixed' in f.keys():
             # O3b files
             samples = np.array(f['C01:Mixed/posterior_samples'])
-        elif 'PrecessingSpinIMRHM' in f.keys(): #what waveform approximation did we use
+        elif 'PrecessingSpinIMRHM' in f.keys(): # 2.1
             samples = np.array(f['PrecessingSpinIMRHM/posterior_samples'])        
+        elif 'C00:Mixed' in f.keys():
+            # 04
+            samples = np.array(f['C00:Mixed']['posterior_samples'])
+        elif 'C00:NRSur7dq4' in f.keys(): #other bit of 04
+            samples = np.array(f['C00:NRSur7dq4']['posterior_samples']) 
         else:   
             print(f"Available keys in file {file}: {list(f.keys())}")
             return None
+
     zs=samples['redshift'] [()]
     mask = samples['redshift'] < zmax
     m1_det = samples['mass_1'][()][mask]
     qs = samples['mass_ratio'][()][mask]
     dLs = samples['luminosity_distance'][()][mask] / 1e3
-        
-    prior = dLs**2 * m1_det
+
+    if 'log_prior' in samples.dtype.names:
+        log_prior = samples['log_prior'][()][mask]
+        prior = np.exp(log_prior)
+    else:
+        prior = dLs**2 * m1_det
     
     return m1_det, qs, dLs, prior
 
@@ -140,31 +150,102 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
     """
     if rng is None:
         rng = np.random.default_rng()
+    try:
+        with h5py.File(file, 'r') as f:
+            if 'injections' in f:
+                mode = 'hdf5_old'
+            else:
+                mode = 'unknown'
+    except Exception:
+        mode = 'pandas'
 
-    with h5py.File(file, 'r') as f:
-        m1s_sel = np.array(f['injections/mass1_source'])
-        qs_sel = np.array(f['injections/mass2_source'])/m1s_sel
-        zs_sel = np.array(f['injections/redshift'])
-        a1s_sel = np.sqrt(sum([np.array(f[f'injections/spin1{ii}'])**2 for ii in ['x', 'y', 'z']]))
-        a2s_sel = np.sqrt(sum([np.array(f[f'injections/spin2{ii}'])**2 for ii in ['x', 'y', 'z']]))
+    # --- load data ---
+    if mode == 'hdf5_old':
+        with h5py.File(file, 'r') as f:
+            m1s_sel = np.array(f['injections/mass1_source'])
+            qs_sel = np.array(f['injections/mass2_source'])/m1s_sel
+            zs_sel = np.array(f['injections/redshift'])
+            a1s_sel = np.sqrt(sum([np.array(f[f'injections/spin1{ii}'])**2 for ii in ['x', 'y', 'z']]))
+            a2s_sel = np.sqrt(sum([np.array(f[f'injections/spin2{ii}'])**2 for ii in ['x', 'y', 'z']]))
+            costilt1s_sel  = (
+                np.array(f[f'injections/spin1z']) / a1s_sel)
+            costilt2s_sel  = (
+                np.array(f[f'injections/spin2z']) / a2s_sel)
+
+
+            pdraw_sel = np.array(f['injections/mass1_source_mass2_source_sampling_pdf'])*np.array(f['injections/redshift_sampling_pdf'])*m1s_sel
+
+            #pdraw_sel *= (np.array(f['injections/spin1x_spin1y_spin1z_sampling_pdf']) * np.array(f['injections/spin2x_spin2y_spin2z_sampling_pdf']) * (2 * np.pi * a1s_sel**2 * 2 * np.pi * a2s_sel**2))
+            pycbc_far = np.array(f['injections/far_pycbc_hyperbank'])
+            pycbc_bbh_far = np.array(f['injections/far_pycbc_bbh'])
+            gstlal_far = np.array(f['injections/far_gstlal'])
+            mbta_far = np.array(f['injections/far_mbta'])
+
+            detected = (pycbc_far < far_threshold) | (pycbc_bbh_far < far_threshold) | (gstlal_far < far_threshold) | (mbta_far < far_threshold) 
+            ndraw = f.attrs['n_accepted'] + f.attrs['n_rejected']
+
+            T = (f.attrs['analysis_time_s'])/(3600.0*24.0*365.25)
+
+            pdraw_sel /= T
+
+            m1s_sel = m1s_sel[detected]
+            qs_sel = qs_sel[detected]
+            zs_sel = zs_sel[detected]
+            a1s_sel = a1s_sel[detected]
+            a2s_sel = a2s_sel[detected]
+            costilt1s_sel = costilt1s_sel[detected]
+            costilt2s_sel = costilt2s_sel[detected]
+            pdraw_sel = pdraw_sel[detected]
+
+            if desired_pop_wt is None:
+                pop_wt = pdraw_sel
+            else:
+                pop_wt = desired_pop_wt(m1s_sel, qs_sel, zs_sel)
+
+            unnorm_wt = pop_wt/pdraw_sel
+            sum_norm_wt = unnorm_wt / np.sum(unnorm_wt)
+            pdraw_wt = pop_wt / (np.sum(unnorm_wt) / ndraw)
+
+            if nsamp is not None:
+                inds = rng.choice(len(m1s_sel), size=nsamp, p=sum_norm_wt)
+            else:
+                inds = np.arange(len(m1s_sel))
+            m1s_sel_cut = m1s_sel[inds]
+            qs_sel_cut = qs_sel[inds]
+            zs_sel_cut = zs_sel[inds]
+            a1s_sel_cut = a1s_sel[inds]
+            a2s_sel_cut = a2s_sel[inds]
+            costilt1s_sel_cut = costilt1s_sel[inds]
+            costilt2s_sel_cut = costilt2s_sel[inds]
+            pdraw_sel_cut = pdraw_wt[inds]
+            ndraw_cut = np.zeros(len(a2s_sel_cut))+ndraw
+    else: #for pd format
+        f = pd.read_hdf(file, key='events')
+        m1s_sel = np.array(f['mass1_source'])
+        qs_sel = np.array(f['mass2_source'])/m1s_sel
+        zs_sel = np.array(f['z'])
+        a1s_sel = np.sqrt(sum([np.array(f[f'spin1{ii}'])**2 for ii in ['x', 'y', 'z']]))
+        a2s_sel = np.sqrt(sum([np.array(f[f'spin2{ii}'])**2 for ii in ['x', 'y', 'z']]))
         costilt1s_sel  = (
-            np.array(f[f'injections/spin1z']) / a1s_sel)
+            np.array(f[f'spin1z']) / a1s_sel)
         costilt2s_sel  = (
-            np.array(f[f'injections/spin2z']) / a2s_sel)
+            np.array(f[f'spin2z']) / a2s_sel)
 
 
-        pdraw_sel = np.array(f['injections/mass1_source_mass2_source_sampling_pdf'])*np.array(f['injections/redshift_sampling_pdf'])*m1s_sel
+        pdraw_sel = (np.exp(np.array(f['lnpdraw_mass1_source']))*
+                     np.exp(np.array(f['lnpdraw_mass2_source_GIVEN_mass1_source']))*
+                    np.exp(np.array(f['lnpdraw_z']))*m1s_sel
+                )
+        #pdraw_sel *= (np.array(f['spin1x_spin1y_spin1z_sampling_pdf']) * np.array(f['spin2x_spin2y_spin2z_sampling_pdf']) * (2 * np.pi * a1s_sel**2 * 2 * np.pi * a2s_sel**2))
+        pycbc_far = np.array(f['pycbc_far'])
+        cwb_bbh_far = np.array(f['cwb-bbh_far'])
+        gstlal_far = np.array(f['gstlal_far'])
+        mbta_far = np.array(f['mbta_far'])
 
-        #pdraw_sel *= (np.array(f['injections/spin1x_spin1y_spin1z_sampling_pdf']) * np.array(f['injections/spin2x_spin2y_spin2z_sampling_pdf']) * (2 * np.pi * a1s_sel**2 * 2 * np.pi * a2s_sel**2))
-        pycbc_far = np.array(f['injections/far_pycbc_hyperbank'])
-        pycbc_bbh_far = np.array(f['injections/far_pycbc_bbh'])
-        gstlal_far = np.array(f['injections/far_gstlal'])
-        mbta_far = np.array(f['injections/far_mbta'])
-
-        detected = (pycbc_far < far_threshold) | (pycbc_bbh_far < far_threshold) | (gstlal_far < far_threshold) | (mbta_far < far_threshold) 
-        ndraw = f.attrs['n_accepted'] + f.attrs['n_rejected']
-
-        T = (f.attrs['analysis_time_s'])/(3600.0*24.0*365.25)
+        detected = (pycbc_far < far_threshold) | (cwb_bbh_far < far_threshold) | (gstlal_far < far_threshold) | (mbta_far < far_threshold)
+        with h5py.File(file, 'r') as obj:
+            ndraw = obj.attrs['total_generated']
+            T=obj.attrs['total_analysis_time']
 
         pdraw_sel /= T
 
@@ -199,9 +280,10 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
         costilt2s_sel_cut = costilt2s_sel[inds]
         pdraw_sel_cut = pdraw_wt[inds]
         ndraw_cut = np.zeros(len(a2s_sel_cut))+ndraw
+        
+    return m1s_sel_cut, qs_sel_cut, zs_sel_cut, a1s_sel_cut, a2s_sel_cut, costilt1s_sel_cut, costilt2s_sel_cut, pdraw_sel_cut, ndraw_cut
 
-        return m1s_sel_cut, qs_sel_cut, zs_sel_cut, a1s_sel_cut, a2s_sel_cut, costilt1s_sel_cut, costilt2s_sel_cut, pdraw_sel_cut, ndraw_cut
-    
+
 def dm1sz_dm1ddl(z, cosmology=None):
     if not cosmology:
         #return (1+z) / (Planck18.comoving_distance(z).to(u.Gpc).value + (1+z)*Planck18.hubble_distance.to(u.Gpc).value / Planck18.efunc(z))
