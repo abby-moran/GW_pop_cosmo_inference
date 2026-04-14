@@ -6,6 +6,8 @@ import h5py
 import intensity_models
 import jax.numpy as jnp
 import numpy as np
+import os
+import re
 import intensity_models
 from inspect import getfullargspec
 from utils import chi_effective_prior_from_isotropic_spins
@@ -116,9 +118,13 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
     qs = samples['mass_ratio'][()][mask]
     dLs = samples['luminosity_distance'][()][mask] / 1e3
 
-    if 'log_prior' in samples.dtype.names:
-        log_prior = samples['log_prior'][()][mask]
-        prior = np.exp(log_prior)
+    filename = os.path.basename(file)
+    parts = re.split("_|-", filename)
+    data_release=parts[1]
+
+    if data_release=='GWTC4p0':
+        dvcdz= Planck18.differential_comoving_volume(zs[mask]).value
+        prior =dvcdz*m1_det  #*dLs**2
     else:
         prior = dLs**2 * m1_det
     
