@@ -123,6 +123,7 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
     data_release=parts[1]
 
     if data_release=='GWTC4p0':
+        # uniform in comoving volume: https://dcc.ligo.org/public/0196/P2400386/011/GWTC-4.0_results_v11.pdf
         dvcdz= Planck18.differential_comoving_volume(zs[mask]).value
         prior =dvcdz*m1_det  #*dLs**2
     else:
