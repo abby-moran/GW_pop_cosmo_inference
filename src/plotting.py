@@ -5,6 +5,8 @@ import os
 import intensity_models
 import pandas as pd
 import seaborn as sns
+import jax
+import jax.numpy as jnp
 
 def load_posterior_samples(nc_file, n_draws=None, seed=0):
     fit = az.from_netcdf(nc_file)
@@ -29,44 +31,6 @@ def load_posterior_samples(nc_file, n_draws=None, seed=0):
 
     return params
 
-def compute_ppd_grids(params, m1_grid, q_grid, z_grid):
-    N = len(next(iter(params.values())))
-
-    p_m1 = np.zeros((N, len(m1_grid)))
-    p_q  = np.zeros((N, len(q_grid)))
-    p_z  = np.zeros((N, len(z_grid)))
-
-    for i in range(N):
-        #for each draw of the posterior, calcualte the probabilities of q, m, z at each point on the 
-        # grid, slicing across reference values of the other parameters
-        sample = {k: v[i] for k, v in params.items()}
-
-        sample["mbhmax"] = sample["mpisn"] + sample["dmbhmax"]
-        sample["fpl"] = np.exp(sample["log_fpl"])
-        sample["kappa"] = sample["lam"] + sample["dkappa"]
-
-        cosmo = intensity_models.FlatwCDMCosmology(
-            sample["h"], sample["Om"], sample["w"], zmax=sample["zmax"])
-        log_dN = intensity_models.build_population_model(sample)
-
-        # m1
-        log_vals = log_dN(m1_grid, 0.5, 0.2)
-        p = np.exp(log_vals - np.max(log_vals))
-        p_m1[i] = p / np.trapezoid(p, m1_grid)
-
-        # q
-        log_vals = log_dN(20.0, q_grid, 0.2)
-        p = np.exp(log_vals - np.max(log_vals))
-        p_q[i] = p / np.trapezoid(p, q_grid)
-
-        # z
-        log_vals = (log_dN(20.0, 0.5, z_grid)+ np.log(cosmo.dVCdz(z_grid))
-            - np.log(cosmo.ddL_dz(z_grid)) - 2*np.log1p(z_grid))
-        p = np.exp(log_vals - np.max(log_vals))
-        p_z[i] = p / np.trapezoid(p, z_grid)
-
-    return p_m1, p_q, p_z
-
 def compute_or_load_ppd(cache_file, compute_fn):
     if os.path.exists(cache_file):
         data = np.load(cache_file)
@@ -87,68 +51,115 @@ def downsample_per_event(arr, n=200, seed=0):
             out.append(row)
     return np.concatenate(out)
 
-def detected_ppd_from_existing(params, m1s_det_sel, qs_sel, dls_sel, pdraw_sel):
-    cosmo_ref = intensity_models.FlatwCDMCosmology(0.7, 0.3, -1.0, zmax=5.0)
+def compute_pq_draws(params, m1_grid, q_grid, z_grid=None, n_draws=100, rng=None):
+    rng = np.random.default_rng(rng)
     N = len(next(iter(params.values())))
+    draw_idx = rng.choice(N, size=min(n_draws, N), replace=False)
 
-    zs_sel = cosmo_ref.z_of_dL(dls_sel)
-    m1s_src = m1s_det_sel / (1 + zs_sel)
+    pq_draws = []
 
-    weights = []
-
-    for i in range(N):
+    for i in draw_idx:
         sample = {k: v[i] for k, v in params.items()}
+        pq = pq_for_one_draw(sample, m1_grid, q_grid, z_grid=z_grid)
+        pq_draws.append(pq)
 
-        sample["mbhmax"] = sample["mpisn"] + sample["dmbhmax"]
-        sample["fpl"] = np.exp(sample["log_fpl"])
-        sample["kappa"] = sample["lam"] + sample["dkappa"]
+    return np.array(pq_draws), draw_idx
 
-        cosmo = intensity_models.FlatwCDMCosmology(
-            sample["h"], sample["Om"], sample["w"], zmax=sample["zmax"])
+def pq_for_one_draw(sample, m1_grid, q_grid, z_grid=None):
+    """
+    Compute p(q) for one hyperposterior draw by marginalizing over m1
+    and optionally over z.
+    """
 
-        log_dN = intensity_models.build_population_model(sample)
-        # weight by the selection integral for each sample
-        log_w = (log_dN(m1s_src, qs_sel, zs_sel) - np.log(pdraw_sel)- 2*np.log1p(zs_sel)
-            + np.log(cosmo.dVCdz(zs_sel)) - np.log(cosmo.ddL_dz(zs_sel)))
+    model = intensity_models.build_population_model(sample)
 
-        w = np.exp(log_w - np.max(log_w))
-        w /= np.sum(w)
+    m1_grid = jnp.asarray(m1_grid)
+    q_grid  = jnp.asarray(q_grid)
+    z_grid  = jnp.asarray(z_grid)
 
-        weights.append(w)
+    # evaluate log density on full grid:
+    # shape = (nq, nz, nm1)
 
-    return np.array(weights)
-def plot_band_with_data(ax, grid, arr, data, label=None):
+    def eval_qz(q, z):
+        return model(m1_grid, q, z)
+
+    eval_z = jax.vmap(eval_qz, in_axes=(None, 0))      # over z
+    eval_q = jax.vmap(eval_z, in_axes=(0, None))       # over q
+
+    logvals = eval_q(q_grid, z_grid)
+
+    # finite mask
+    finite = jnp.isfinite(logvals)
+
+    # replace -inf with large negative
+    safe = jnp.where(finite, logvals, -1e30)
+
+    # stabilize exponentials along m1 axis
+    maxv = jnp.max(safe, axis=2, keepdims=True)
+
+    vals = jnp.exp(safe - maxv)
+    vals = jnp.where(finite, vals, 0.0)
+
+    # integrate over m1, z
+    int_m1 = jnp.trapezoid(vals, m1_grid, axis=2)
+    int_z = jnp.trapezoid(int_m1, z_grid, axis=1)
+
+    # normalize pq by q integral 
+    pq = int_z / jnp.trapezoid(int_z, q_grid)
+
+    return pq
+
+def compute_pq_draws(params, m1_grid, q_grid, z_grid=None, n_draws=100, rng=None):
+    rng = np.random.default_rng(rng)
+    N = len(next(iter(params.values())))
+    draw_idx = rng.choice(N, size=min(n_draws, N), replace=False)
+
+    pq_draws = []
+
+    for i in draw_idx:
+        sample = {k: v[i] for k, v in params.items()}
+        pq = pq_for_one_draw(sample, m1_grid, q_grid, z_grid=z_grid)
+        pq_draws.append(pq)
+
+    return np.array(pq_draws), draw_idx
+
+def plot_band_with_data(ax, grid, arr, data=None, label=None):
     lo, med, hi = np.percentile(arr, [5, 50, 95], axis=0)
 
     ax.fill_between(grid, lo, hi, alpha=0.3)
     ax.plot(grid, med, label=label)
 
     # histogram of observed data
-    ax.hist(data, bins=50, density=True, histtype='step', linewidth=1.5, label='data')
+    if data is not None:
+        ax.hist(data, bins=50, density=True, histtype='step', linewidth=1.5, label='data')
 
-def make_ppd_plot(nc_file, pe_samples, m1s_det_sel=None, qs_sel=None, dls_sel=None, detected_ppd=None,
+def make_ppd_plot(nc_file, pe_samples=None, m1s_det_sel=None, qs_sel=None, dls_sel=None, detected_ppd=None,
                   cache_file="ppd_cache.npz", ndraws=300):
 
     params = load_posterior_samples(nc_file, n_draws=ndraws)
 
-    m1_grid = np.linspace(5, 200, 250)
-    q_grid  = np.linspace(0.2, 1.0, 250)
-    z_grid  = np.linspace(0.01, 2.0, 250)
+    m1_grid = np.linspace(5, 200, 200)
+    q_grid  = np.linspace(0.2, 1.0, 200)
+    z_grid  = np.linspace(0.01, 2.0, 200)
 
     def compute():
         return compute_ppd_grids(params, m1_grid, q_grid, z_grid)
 
     p_m1, p_q, p_z = compute_or_load_ppd(cache_file, compute)
+    cosmo_ref = intensity_models.FlatwCDMCosmology(0.7, 0.3, -1.0, zmax=5.0)
 
     #PE samples
-    m1s, qs, dls = pe_samples
+    if pe_samples is not None:
+        m1s, qs, dls = pe_samples
 
-    m1_obs = downsample_per_event(m1s).flatten()
-    q_obs  = downsample_per_event(qs).flatten()
+        m1_obs = downsample_per_event(m1s).flatten()
+        q_obs  = downsample_per_event(qs).flatten()
 
-    cosmo_ref = intensity_models.FlatwCDMCosmology(0.7, 0.3, -1.0, zmax=5.0)
-    z_obs = cosmo_ref.z_of_dL(dls.flatten())
-
+        z_obs = cosmo_ref.z_of_dL(dls.flatten())
+    else:
+        m1_obs = None
+        q_obs = None
+        z_obs = None    
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
     axes[0].set_yscale('log')
     axes[0].set_xlabel('m1')
@@ -156,9 +167,9 @@ def make_ppd_plot(nc_file, pe_samples, m1s_det_sel=None, qs_sel=None, dls_sel=No
     axes[1].set_xlabel('q')
     axes[2].set_xlabel('z')
 
-    plot_band_with_data(axes[0], m1_grid, p_m1, m1_obs, label="intrinsic")
-    plot_band_with_data(axes[1], q_grid, p_q, q_obs, label="intrinsic")
-    plot_band_with_data(axes[2], z_grid, p_z,z_obs,label="intrinsic")
+    plot_band_with_data(axes[0], m1_grid, p_m1,data= m1_obs, label="intrinsic")
+    plot_band_with_data(axes[1], q_grid, p_q, data=q_obs, label="intrinsic")
+    plot_band_with_data(axes[2], z_grid, p_z,data=z_obs,label="intrinsic")
 
     # PPD after selection effects ('detected')
     if detected_ppd is not None:
