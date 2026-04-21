@@ -8,7 +8,7 @@ import numpy as np
 import os.path as op
 import sys
 import pandas as pd
-import paths
+sys.path.append('../src/')
 import jax.numpy as jnp
 from tqdm import tqdm, trange
 import weighting
@@ -17,7 +17,6 @@ import intensity_models
 from inspect import getfullargspec
 import scipy
 import fisher_snrs
-from fisher_snrs import compute_snrs
 #import mock_injections
 #from mock_injections import *
 import matplotlib.pyplot as plt
@@ -34,7 +33,7 @@ SENSITIVITIES = {'aligo': lalsim.SimNoisePSDaLIGODesignSensitivityP1200087,
                 'CE': lalsim.SimNoisePSDCosmicExplorerP1600143}
 
 population_parameters = dict()
-config_file = '../reproduce/configs/c2_zp5.txt'
+config_file='pop_configs/mock_GWTC5_evo.txt'
 #outfile = 'new_mock_inj_cut.h5'#'mock_injections_o3_zp1.h5'
 
 population_parameters = dict()
@@ -47,7 +46,7 @@ with open(config_file) as param_file:
         except ValueError:
             pass
 snr_threshold = 1
-sensitivity='o3_PSD'
+sensitivity='aplus_PSD'
 detectors = population_parameters.pop('detectors', 'H1').split(',')
 custom_cosmo = intensity_models.FlatwCDMCosmology(population_parameters['h'], population_parameters['Om'], population_parameters['w'], population_parameters['zmax'])
 population_parameters['cosmo'] = custom_cosmo
@@ -118,13 +117,6 @@ def make_frequency_grid(fmin=20., fmax=2048., deltaf=0.25):
     fs = np.arange(fmin, fmax + deltaf, deltaf)
     return jnp.array(fs), fs[1] - fs[0]
 
-def load_psd(sensitivity, freq_common):
-    freqs_psd, sens = np.loadtxt(ASD_FILES[sensitivity], unpack=True)
-    psd = sens if sensitivity == "o3_PSD" else sens**2
-    psd_interp = interp1d(freqs_psd, psd, bounds_error=False,
-                          fill_value=np.inf)
-    return jnp.array(psd_interp(np.array(freq_common)))
-
 def build_snr_grid(df_grid, m1_grid, q_grid, detectors, sensitivity, batch_num=400):
     Ngrid = len(df_grid['m1'])
     snr_out = np.zeros(Ngrid)
@@ -153,7 +145,7 @@ def build_snr_grid(df_grid, m1_grid, q_grid, detectors, sensitivity, batch_num=4
     return snr_out.reshape(len(m1_grid), len(q_grid))
 
 if __name__ == "__main__":
-    N_m1=1200
+    N_m1=1000
     m1_src_max = 450
     z_max = population_parameters["zmax"]
     
@@ -190,4 +182,4 @@ if __name__ == "__main__":
         'dm1sz_dm1ddl': jnp.ones(Ngrid),
     }
     SNRgrid=build_snr_grid(df_grid, m1_grid, q_grid, detectors, sensitivity)
-    np.savez("snr_grid_326.npz", m1_grid=m1_grid, q_grid=q_grid, snr_grid=SNRgrid, dL_fid=1.0) # dL in Gpc
+    np.savez("snr_grid_aplus.npz", m1_grid=m1_grid, q_grid=q_grid, snr_grid=SNRgrid, dL_fid=1.0) # dL in Gpc

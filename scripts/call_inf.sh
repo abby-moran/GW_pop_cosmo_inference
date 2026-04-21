@@ -2,7 +2,7 @@
 #SBATCH -p gpu
 #SBATCH --gpus=2
 #SBATCH --ntasks=1
-#SBATCH --mem=16G
+#SBATCH --mem=32G
 #SBATCH --time=0-20
 #SBATCH --constraint=a100
 
@@ -13,4 +13,4 @@ unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/confg_realTC4.ini
+srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/confg_mocko5_evo_zmax19.ini

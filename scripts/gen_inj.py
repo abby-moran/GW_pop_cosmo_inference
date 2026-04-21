@@ -239,7 +239,7 @@ if __name__ == "__main__":
         
         df_det = df_det[df_det['SNR'] > snr_threshold]
         df_det=df_det.drop(columns=['SNR_0'])
-
+        print(len(df_det))
         if i==0:
             df_det.to_hdf(output_file, key='true_parameters', mode='a', format='table', append=False)
         else:
