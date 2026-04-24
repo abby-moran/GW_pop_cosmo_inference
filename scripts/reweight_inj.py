@@ -212,27 +212,17 @@ def gen_mock_PE(obs_file, log_SNR_fun, population_parameters, cosmo, nsamples=20
 if __name__ == "__main__":
     rng = np.random.default_rng(251286134409181405721219170031242732711)
 
-    #inj_file='../src/c2_zp5_Thbeta.h5'
-    #obs_file = '../src/data/obsc2_zm55_err.h5'
-    #sel_file = '../src/sel_c2_zm55_err.h5'
-    #pe_file='../src/pe_c2_zm55_err_500samp.h5'
-    #ndet=1
-    #write_obs=True
-    #new_sel=True
     if ndet>0:
         jitter=True
     else:
         jitter=False
-    #nsamples=500
 
-    #detection_threshold = 8
     chunk_size = int(2e6) # memory limit
     num_tot = int(5e7) #how many to reweight, should be les than n_total
     n_total=int(8e7) # how many of our total injectinos to consider, right now its too long so only use some
     
     population_parameters, cosmo = get_pop_params(pop_config_file)
 
-    #grid = np.load(snr_grid_file)
     m1_grid  = grid["m1_grid"]
     q_grid   = grid["q_grid"]
     snr_grid = grid["snr_grid"]

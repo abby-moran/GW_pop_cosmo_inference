@@ -29,7 +29,7 @@ sensitivity_path = f"{os.path.dirname(__file__)}/sensitivity_files"
 #jimGW_detectors = jimgw.single_event.detector.detector_preset
 
 ASD_FILES = {"CE": f"{sensitivity_path}/LIGO-P1600143-v18-CE-ASD.txt",
-            "aplus": f"{sensitivity_path}/AplusDesign.txt",
+            "aplus_PSD": f"{sensitivity_path}/aplus_PSD.txt",
             "aligo": f"{sensitivity_path}/aligo_O4high.txt",
             'o3_PSD': f"{sensitivity_path}/H1_o3_PSD.txt"}
 

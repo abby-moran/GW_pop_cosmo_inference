@@ -389,79 +389,7 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, q_obs, sigma_q,dl_true, #lo
 
     log_prior_wt = np.zeros(size_final)
     return m1s, qs, dls, log_prior_wt
-
-def draw_mock_samples(log_mc_obs, sigma_log_mc, log_q_obs, sigma_log_q, dl_true,
-                           theta_obs, sigma_theta, rho_obs, rho_fun,
-                           size=1, rng=None, dl_fid=1, theta_fid=1, ndet=1, m_max=500, detection_threshold=8):
-    if rng is None:
-        rng = np.random.default_rng()
-
-    draw_size = 5*size
-    num_looped=0
-    while True: 
-
-        # Step 1: sample log_q from truncated normal, then correct for truncation (like logq_add_err)
-        a_q = (-9 - log_q_obs) / sigma_log_q
-        b_q = (0.0 - log_q_obs) / sigma_log_q
-        log_qs_raw = truncnorm.rvs(a_q, b_q, loc=log_q_obs, scale=sigma_log_q, size= draw_size, random_state=rng)
-        w_q = norm.cdf(-log_q_obs / sigma_log_q) / norm.cdf(-log_qs_raw / sigma_log_q)
-        w_q = w_q / w_q.sum()
-        log_qs = rng.choice(log_qs_raw, size=draw_size, p=w_q, replace=True)
-        qs = np.exp(log_qs)
-
-        # Step 2: sample log_mc from truncated normal (upper bound from m_max)
-        max_logmc = np.log(get_mc(m_max, qs))
-        b_mc = (max_logmc - log_mc_obs) / sigma_log_mc
-        log_mcs = truncnorm.rvs(-np.inf, b_mc, loc=log_mc_obs, scale=sigma_log_mc, size=draw_size, random_state=rng)
-        mcs = np.exp(log_mcs)
-        m1s = mcs / (qs**(3/5) / (1 + qs)**(1/5))
-
-        # Step 3: sample theta from truncated normal, then correct for truncation (like Theta_add_err)
-        a_th = (0.0 - theta_obs) / sigma_theta
-        b_th = (1.0 - theta_obs) / sigma_theta
-        thetas_raw = truncnorm.rvs(a_th, b_th, loc=theta_obs, scale=sigma_theta, size=draw_size, random_state=rng)
-        w_th = (norm.cdf((1 - theta_obs) / sigma_theta) - norm.cdf(-theta_obs / sigma_theta)) / \
-            (norm.cdf((1 - thetas_raw) / sigma_theta) - norm.cdf(-thetas_raw / sigma_theta))
-        w_th = w_th / w_th.sum()
-        thetas = rng.choice(thetas_raw, size=draw_size, p=w_th, replace=True)
-
-        # Step 4: sample rho
-        rhos_0 = norm.rvs(loc=rho_obs, scale=np.sqrt(ndet), size=2*draw_size, random_state=rng)
-        w_rho = (1 - norm.cdf((detection_threshold - rho_obs) / np.sqrt(ndet))) / \
-              (1 - norm.cdf((detection_threshold - rhos_0) / np.sqrt(ndet)))
-        w_rho = w_rho / w_rho.sum()
-        rhos = rng.choice(rhos_0, size=draw_size, p=w_rho, replace=True)
-
-
-        # Step 5: derive dL
-        points = np.column_stack([m1s, qs])
-        snr_fid = np.exp(rho_fun(points))
-        dls = dl_fid * thetas / theta_fid * snr_fid / rhos
-
-        # Step 6: joint reweight by dL Jacobian only, exactly as in working code
-        w_dl = 1/ (thetas * snr_fid * dl_fid)#dls**2 
-        w_dl = np.where(np.isfinite(w_dl) & (dls > 0) & (rhos > 0), w_dl, 0.0)
-        w_dl = w_dl / w_dl.sum()
-        ess = 1.0 / np.sum(w_dl**2)
-        if ess >= size or num_looped>8:
-            break
-        draw_size *= 2
-        num_looped += 1
-
-    if ess < size:
-        print(f"Warning: Effective sample size ({ess:.1f}) < requested size ({size})")
-
-    # Step 7: resample all jointly
-    idx = rng.choice(draw_size, size=size, p=w_dl, replace=True)
-    m1s_out = m1s[idx]
-    qs_out = qs[idx]
-    dls_out = dls[idx]
-
-    prior_wt = 1.0 / (m1s_out * qs_out)
-
-    return m1s_out, qs_out, dls_out, prior_wt
     
-
 
 class PowerLawPDF(object):
     def __init__(self, alpha, a, b):

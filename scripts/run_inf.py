@@ -52,7 +52,7 @@ if __name__ == "__main__":
     #nmcmc =  1800
     #nchain = 1
     random_seed = 1652819403
-
+    print("loading in prior file: ", prior)
     prior = get_priors_from_file(prior)
     pe_samples_mock = pd.read_hdf(pe_file, key='samples').iloc[evt_start:evt_end]# 1.5 to 2.5 k on the 1k tests
     print(f'loaded in {pe_file}, events {evt_start} to {evt_end}')
