@@ -112,7 +112,7 @@ class LogDNDMPISN(object):
     log_dN_grid: object = dataclasses.field(init=False)
  
     def __post_init__(self):
-        min_bh_mass = 3.0
+        min_bh_mass = 1.5
         min_co_mass = 1.0
         max_bh_mass = 100.0
         max_co_mass = 100.0
