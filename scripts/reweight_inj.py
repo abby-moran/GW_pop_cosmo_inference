@@ -65,10 +65,12 @@ base_dir = Path("pop_configs")
 pop_file=run.get("pop_config_file")
 pop_config_file = base_dir / cfg["run"]["pop_config_file"]
 pop_config_file = pop_config_file.resolve()
+
+m_min=run.getint("m_min", fallback=0)
     
-def get_mock_obs(df, out_file, cosmo, detection_threshold=8, 
+def get_mock_obs(df, out_file, cosmo, rho_fun, detection_threshold=8, 
                  jitter_SNR=True, ndet=1, append_tf=False, evt_offset=0,
-                 detection_rng=None, mc_scale=None, q_scale=None, th_scale=None):
+                 detection_rng=None, mc_scale=None, q_scale=None, th_scale=None, m_min=5):
     """
     takes in an event dataframe df and generates a file which will store the values we'd actulaly observe from the events
 
@@ -111,25 +113,41 @@ def get_mock_obs(df, out_file, cosmo, detection_threshold=8,
     sigma_q=[]
     theta_obs=[]
     sigma_theta=[]
+    passed_indices = []  # track original df indices that survive mass cut
     for i, row in tqdm(inj_det.iterrows()):
         uncert = mock_observations.Uncertainties.from_snr(row['SNR_OBS'],
                                         mc_scale=mc_scale, q_scale=q_scale, th_scale=th_scale)
-        slmc =uncert.sigma_log_mc   
-        log_mc_obs.append(norm.rvs(loc=np.log(row['mc_det']), scale=slmc,  random_state=noise_rng))
-        sigma_log_mc.append(slmc)
+        slmc = uncert.sigma_log_mc
+        log_mc_obs_i = norm.rvs(loc=np.log(row['mc_det']), scale=slmc, random_state=noise_rng)
+        m1_det = np.exp(log_mc_obs_i)
 
-        sq=uncert.sigma_q
+        sq = uncert.sigma_q
         a = (0.0 - row['q']) / sq
         b = (1 - row['q']) / sq
-        q_obs.append(truncnorm.rvs(a, b, loc=row['q'], scale=sq,  random_state=noise_rng))
-        sigma_q.append(sq)
+        q_obs_i = truncnorm.rvs(a, b, loc=row['q'], scale=sq, random_state=noise_rng)
 
-        sigma_theta.append(uncert.sigma_theta)
-        # Θ_obs ~ N[0, 0.25](Θ_true, σΘ),
-        # modeled after DOI 10.3847/2041-8213/ab77c9
-        a = (0.0 - row['Theta']) / sigma_theta[-1]
-        b = (1 - row['Theta']) / sigma_theta[-1]
-        theta_obs.append(truncnorm.rvs(a, b, loc=row['Theta'], scale= sigma_theta[-1],  random_state=noise_rng))
+        sth = uncert.sigma_theta  
+        a = (0.0 - row['Theta']) / sth  
+        b = (1 - row['Theta']) / sth
+        theta_obs_i = truncnorm.rvs(a, b, loc=row['Theta'], scale=sth, random_state=noise_rng)
+        
+        z_obs = weighting.get_z_obs_true(m1_det, q_obs_i, theta_obs_i, row['SNR_OBS'], rho_fun, cosmo, ndet=ndet)
+        m1_src = m1_det / (1 + z_obs)
+        m2_src = m1_src * q_obs_i
+        if m1_src < m_min or m2_src < m_min:
+            continue  # skip this event
+
+        passed_indices.append(i)  # survived mass cut — record original index
+        log_mc_obs.append(log_mc_obs_i)
+        sigma_log_mc.append(slmc)
+        q_obs.append(q_obs_i)
+        sigma_q.append(sq)
+        sigma_theta.append(sth)
+        theta_obs.append(theta_obs_i)
+
+    # Trim inj_det to only events that passed the mass cut
+    inj_det = inj_det.loc[passed_indices].copy()
+    detected_indices = pd.Index(passed_indices)
     
     inj_det['log_mc_obs'] = log_mc_obs
     inj_det['sigma_log_mc'] = sigma_log_mc
@@ -319,10 +337,10 @@ if __name__ == "__main__":
             df_det_chunk = df_det_chunk.reset_index(drop=True)
 
             detected_indices, evt_names = get_mock_obs(
-                df_det_chunk, obs_file, cosmo, ndet=ndet,
+                df_det_chunk, obs_file, cosmo, log_snr_interp, ndet=ndet,
                 jitter_SNR=jitter, detection_threshold=detection_threshold,
                 append_tf=not first_chunk, evt_offset=evt_offset,
-                mc_scale=mc_scale, q_scale=q_scale, th_scale=th_scale
+                mc_scale=mc_scale, q_scale=q_scale, th_scale=th_scale, m_min=m_min
             )
 
             det_mask  = df_det_chunk.index.isin(detected_indices)

@@ -302,6 +302,18 @@ def dm1sz_dm1ddl(z, cosmology=None):
         ddl_dz = cosmology.ddL_dz((z))
         return  dm1s_dm1d * (ddl_dz)**-1
 
+def get_z_obs_true(m1, q_obs, theta_obs, rho_obs, rho_fun, cosmo, ndet=3, dl_fid=1, theta_fid=1):
+        
+    m1_obs=m1#np.exp(log_mc_obs)
+    
+    points = np.column_stack([m1_obs, q_obs])
+    snr_fid = np.exp(rho_fun(points))
+    if ndet==0: #for when we're doing the zero uncertainty case
+        ndet=1
+    dls = dl_fid*theta_obs/theta_fid * snr_fid*np.sqrt(ndet)/rho_obs
+    return cosmo.z_of_dL(dls)
+
+
 def get_mc(m1, q):
     return m1* (q**(3/5) / (1 + q)**(1/5))
 
@@ -315,6 +327,21 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, q_obs, sigma_q,dl_true, #lo
     """
     All inputs in detector frame 
     """
+    if sigma_log_mc==0 and sigma_q==0 and sigma_theta==0:
+        log_mcs=np.zeros(size_final)+log_mc_obs
+        qs=np.zeros_like(log_mcs)+q_obs
+        thetas=np.zeros_like(log_mcs)+theta_obs
+        mcs = np.exp(log_mc_obs)
+        m1s = mcs / (qs**(3/5) / (1 + qs)**(1/5))
+        rhos_0 = np.zeros_like(log_mcs)+rho_obs
+        points = np.column_stack([m1s, qs])
+        snr_fid = np.exp(rho_fun(points))
+        if ndet==0:
+            ndet=1
+        dls = dl_fid*thetas/theta_fid * snr_fid*np.sqrt(ndet)/rhos_0
+        log_prior_wt = np.zeros(size_final)
+        return m1s, qs, dls, log_prior_wt
+
     if rng is None:
         rng = np.random.default_rng()
     size=10*size_final
@@ -355,6 +382,8 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, q_obs, sigma_q,dl_true, #lo
         print(f"Warning: Effective sample size ({ess:.1f}) < requested size ({size})")
     thetas_final= rng.choice(thetas, size=size, p=weights)
 
+    if ndet==0:
+        ndet=1
     scale = np.sqrt(ndet)
     a_rho = (0.0 - rho_obs) / scale
     rhos_0 = truncnorm.rvs(a_rho, np.inf, loc=rho_obs, scale=scale, size=2*size, random_state=rng)
