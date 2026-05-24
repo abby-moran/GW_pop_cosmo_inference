@@ -12,4 +12,4 @@ unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python reweight_inj.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/confg_mocko5_evo_mmin3_nerr.ini
+srun python reweight_inj.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/confg_mocko5_evo_mmin5.ini

@@ -165,7 +165,7 @@ if __name__ == "__main__":
         z = zpdf.ppf(rng.uniform(low=0, high=1, size=ndraw))
         m = mpdf.ppf(rng.uniform(low=0, high=1, size=ndraw))
         
-        offset=population_parameters['mbh_min']/m
+        offset=.4/m#population_parameters['mbh_min']/m
         qpdf = scipy.stats.uniform(loc=0+offset, scale=1-offset) #goes from loc to loc+scale
         q = qpdf.ppf(rng.uniform(0, 1, size=ndraw))  
         
