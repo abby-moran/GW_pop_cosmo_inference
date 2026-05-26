@@ -57,6 +57,7 @@ obs_file = os.path.join(run_dir, cfg["run"]["obs_file"])
 pe_file = os.path.join(run_dir, cfg["run"]["output_file_PE"])
 sel_file = os.path.join(run_dir, cfg["run"]["output_sel_file"])
 ndet =run.getint("ndet")
+jitter = run.getboolean("jitter_SNR")
 
 write_obs = run.getboolean("write_obs")
 new_sel = run.getboolean("new_sel")
@@ -119,12 +120,14 @@ def get_mock_obs(df, out_file, cosmo, rho_fun, detection_threshold=8,
                                         mc_scale=mc_scale, q_scale=q_scale, th_scale=th_scale)
         slmc = uncert.sigma_log_mc
         log_mc_obs_i = norm.rvs(loc=np.log(row['mc_det']), scale=slmc, random_state=noise_rng)
-        m1_det = np.exp(log_mc_obs_i)
+        mc_obs_i = np.exp(log_mc_obs_i)
 
         sq = uncert.sigma_q
         a = (0.0 - row['q']) / sq
         b = (1 - row['q']) / sq
         q_obs_i = truncnorm.rvs(a, b, loc=row['q'], scale=sq, random_state=noise_rng)
+
+        m1_det=weighting.get_m1(mc_obs_i, q_obs_i)
 
         sth = uncert.sigma_theta  
         a = (0.0 - row['Theta']) / sth  
@@ -165,7 +168,7 @@ def get_mock_obs(df, out_file, cosmo, rho_fun, detection_threshold=8,
     return detected_indices, np.array(inj_det['evt'].tolist())
 
 def gen_mock_PE(obs_file, log_SNR_fun, population_parameters, cosmo, nsamples=200, 
-                outfile=None, ndet=1, append_tf=False, new_sel=True):
+                outfile=None, ndet=1, append_tf=False, new_sel=True, jitter=True):
     """
     takes a file which constains observed values, and samples assuming Gaussians and outputs that in a file. 
     Need an SNR scaling relation log_SNR_fun
@@ -193,12 +196,11 @@ def gen_mock_PE(obs_file, log_SNR_fun, population_parameters, cosmo, nsamples=20
                 #e['sigma_log_q'].iloc[0],
                 e['q_obs'].iloc[0], 
                 e['sigma_q'].iloc[0],
-                e['dl'].iloc[0],
                 
                 e['theta_obs'].iloc[0],
                 e['sigma_theta'].iloc[0],
                 e['SNR_OBS'].iloc[0], 
-                log_SNR_fun, cosmo, ndet=ndet, size_final=nsamples)
+                log_SNR_fun, cosmo, ndet=ndet, size_final=nsamples, jitter_SNR=jitter)
             
             m1_event.append(samples[0])
             q_event.append(samples[1])
@@ -230,12 +232,12 @@ def gen_mock_PE(obs_file, log_SNR_fun, population_parameters, cosmo, nsamples=20
 if __name__ == "__main__":
     rng = np.random.default_rng(251286134409181405721219170031242732711)
 
-    if ndet > 0:
-        jitter = True
-    else:
-        jitter = False
+    #if ndet > 0:
+    #    jitter = True
+    #else:
+    #    jitter = False
 
-    # --- load from config instead of hardcoding ---
+    # load from config 
     chunk_size = run.getint("chunk_size", fallback=int(2e6))  # memory limit per read
     num_tot    = run.getint("num_tot",    fallback=int(5e7))   # how many to reweight
     n_total    = run.getint("n_total",    fallback=int(8e7))   # total injections to consider
@@ -252,8 +254,7 @@ if __name__ == "__main__":
     snr_grid = grid["snr_grid"]
     dL_fid   = float(grid["dL_fid"])
     log_snr_interp = RegularGridInterpolator(
-        (m1_grid, q_grid), np.log(snr_grid), bounds_error=False, fill_value=-np.inf
-    )
+        (m1_grid, q_grid), np.log(snr_grid), bounds_error=False, fill_value=-np.inf)
 
     log_dN_obj  = intensity_models.LogDNDMDQDV
     pop_params  = {key: population_parameters[key]
@@ -360,7 +361,7 @@ if __name__ == "__main__":
     print("Generating mock PE...")
     m1s, qs, dls, pdraws, evts = gen_mock_PE(
         obs_file, log_snr_interp, population_parameters, cosmo,
-        outfile=pe_file, ndet=ndet, nsamples=nsamples, new_sel=new_sel
+        outfile=pe_file, ndet=ndet, nsamples=nsamples, new_sel=new_sel, jitter=jitter
     )
     print("array shapes (we want nevents, nsamples): ",
           m1s.shape, qs.shape, dls.shape, pdraws.shape)

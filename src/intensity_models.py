@@ -273,7 +273,7 @@ class LogDNDMDQDV(object):
     qref: object = 1.0
     zref: object = 0.001
     zmax: object = 20
-    mbh_min: object = 5.0
+    mbh_min: object = 3.0
     delta_m: object = 2.5
     log_dndm: object = dataclasses.field(init=False)
     log_dndv: object = dataclasses.field(init=False)

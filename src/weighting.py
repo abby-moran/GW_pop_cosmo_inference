@@ -320,10 +320,10 @@ def get_mc(m1, q):
 def get_m1(mc, q):
     return mc/(q**(3/5) / (1 + q)**(1/5))
     
-def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, q_obs, sigma_q,dl_true, #log_dl_obs, sigma_log_dl, 
+def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, q_obs, sigma_q, #log_dl_obs, sigma_log_dl, 
                            theta_obs, sigma_theta, rho_obs, rho_fun, cosmo,
                            size_final=1, detection_threshold=8, rng=None, dl_fid=1, theta_fid=1, ndet=1
-                           ,m_max=1000):#, m_min=5.0):
+                           ,jitter_SNR=True):#, m_min=5.0):
     """
     All inputs in detector frame 
     """
@@ -331,7 +331,7 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, q_obs, sigma_q,dl_true, #lo
         log_mcs=np.zeros(size_final)+log_mc_obs
         qs=np.zeros_like(log_mcs)+q_obs
         thetas=np.zeros_like(log_mcs)+theta_obs
-        mcs = np.exp(log_mc_obs)
+        mcs = np.exp(log_mcs)
         m1s = mcs / (qs**(3/5) / (1 + qs)**(1/5))
         rhos_0 = np.zeros_like(log_mcs)+rho_obs
         points = np.column_stack([m1s, qs])
@@ -383,8 +383,9 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, q_obs, sigma_q,dl_true, #lo
     thetas_final= rng.choice(thetas, size=size, p=weights)
 
     if ndet==0:
-        ndet=1
-    scale = np.sqrt(ndet)
+        scale = np.sqrt(1)
+    else:
+        scale = np.sqrt(ndet)
     a_rho = (0.0 - rho_obs) / scale
     rhos_0 = truncnorm.rvs(a_rho, np.inf, loc=rho_obs, scale=scale, size=2*size, random_state=rng)
     weights =  norm.cdf(rho_obs / scale) / norm.cdf(rhos_0 / scale)
@@ -394,12 +395,10 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, q_obs, sigma_q,dl_true, #lo
         print(f"Warning: Effective sample size on rho ({ess:.1f}) < requested size ({size})")
     rhos= rng.choice(rhos_0, size=size, p=weights)
 
-
-
     #dL = dL_fid x (Θ / Θ_fid) x ρ_fid (M, q, dL_fid, Θ_fid)  / ρ
     points = np.column_stack([m1s, qs])
     snr_fid = np.exp(rho_fun(points))
-    dls = dl_fid*thetas_final/theta_fid * snr_fid*np.sqrt(ndet)/rhos
+    dls = dl_fid*thetas_final/theta_fid * snr_fid*scale/rhos
     
     eps=1e-30
     
