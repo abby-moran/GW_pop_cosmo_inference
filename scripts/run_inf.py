@@ -49,6 +49,8 @@ numpyro.set_host_device_count(ndevice)
 import jax
 from numpyro.infer import MCMC, NUTS, SA
 import jax.numpy as jnp
+from numpyro.infer import init_to_value, init_to_sample
+
 
 if truth_file_name:
     truth_file_path = os.path.join(run_dir, truth_file_name)
@@ -89,14 +91,14 @@ if __name__ == "__main__":
     assert not np.any(np.isnan(sel_samples['pdraw_sel'])) 
     assert not np.any(np.isinf(sel_samples['pdraw_sel']))
     
-    init_params = {k: jnp.stack([v] * nchain) for k, v in truth_params.items()} if truth_params else None
+    init_strategy = init_to_value(values=truth_params) if truth_params else init_to_sample
 
-    kernel = NUTS(intensity_models.pop_cosmo_model)
+    kernel = NUTS(intensity_models.pop_cosmo_model, init_strategy=init_strategy)
     mcmc = MCMC(kernel, num_warmup=nmcmc, num_samples=nmcmc, num_chains=nchain,
                 chain_method="parallel", progress_bar=True)
     mcmc.run(jax.random.PRNGKey(random_seed), m1s, qs, dls, pdraws, sel_samples['m1d'].to_list(), 
              sel_samples['q'].to_list(), sel_samples['dl'].to_list(), sel_samples['pdraw_sel'].to_list(),
-        ndraw, prior, init_params=init_params)
+        ndraw, prior)
     #outfile="o3_c2_zm55_err5k.npz"
     samples = az.from_numpyro(mcmc, num_chains=nchain)
     az.to_netcdf(samples, outfile)
