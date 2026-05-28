@@ -41,11 +41,25 @@ pe_file = os.path.join(run_dir, cfg["run"]["output_file_PE"])
 sel_file = os.path.join(run_dir, cfg["run"]["output_sel_file"])
 ndevice=nchain
 
+truth_params = {}
+truth_file_name = cfg["run"].get("pop_config_file", None)
+
 import numpyro
 numpyro.set_host_device_count(ndevice)
 import jax
 from numpyro.infer import MCMC, NUTS, SA
 import jax.numpy as jnp
+
+if truth_file_name:
+    truth_file_path = os.path.join(run_dir, truth_file_name)
+    print("Loading truth parameters from: ", truth_file_path)
+    with open(truth_file_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, _, val = line.partition("=")
+            truth_params[key.strip()] = jnp.array(float(val.strip()))
 
 if __name__ == "__main__":
 
@@ -75,12 +89,14 @@ if __name__ == "__main__":
     assert not np.any(np.isnan(sel_samples['pdraw_sel'])) 
     assert not np.any(np.isinf(sel_samples['pdraw_sel']))
     
+    init_params = {k: jnp.stack([v] * nchain) for k, v in truth_params.items()} if truth_params else None
+
     kernel = NUTS(intensity_models.pop_cosmo_model)
     mcmc = MCMC(kernel, num_warmup=nmcmc, num_samples=nmcmc, num_chains=nchain,
                 chain_method="parallel", progress_bar=True)
     mcmc.run(jax.random.PRNGKey(random_seed), m1s, qs, dls, pdraws, sel_samples['m1d'].to_list(), 
              sel_samples['q'].to_list(), sel_samples['dl'].to_list(), sel_samples['pdraw_sel'].to_list(),
-        ndraw, prior)
+        ndraw, prior, init_params=init_params)
     #outfile="o3_c2_zm55_err5k.npz"
     samples = az.from_numpyro(mcmc, num_chains=nchain)
     az.to_netcdf(samples, outfile)

@@ -154,12 +154,13 @@ if __name__ == "__main__":
     dL_fid   = float(grid["dL_fid"])
     
     log_snr_interp = RegularGridInterpolator((m1_grid, q_grid), np.log(snr_grid), bounds_error=False, fill_value=-np.inf)
-    num_loops=90
+    num_loops=10#90
     for i in range(num_loops):
         ndraw=int(1e7)
         zpdf = scipy.stats.uniform(loc=0, scale=population_parameters["zmax"])        
         a=(.4-population_parameters["mpisn"])/(2*population_parameters["mpisn"])
-        mpdf = scipy.stats.truncnorm(a, np.inf, loc=population_parameters["mpisn"], scale=(2*population_parameters["mpisn"]))
+        #mpdf = scipy.stats.powerlaw(.8, loc=.4, scale=np.inf, loc=population_parameters["mpisn"], scale=(2*population_parameters["mpisn"]))
+        mpdf= scipy.stats.powerlaw(.5, loc=.4, scale=2500)
         
         rng = np.random.default_rng()
         z = zpdf.ppf(rng.uniform(low=0, high=1, size=ndraw))
