@@ -325,6 +325,8 @@ class FlatwCDMCosmology(object):
         self.ddlinterp = self.dcinterp + self.dH*(1+self.zinterp)/self.E(self.zinterp)
         self.vcinterp = 4/3*np.pi*self.dcinterp*self.dcinterp*self.dcinterp
         self.dvcinterp = 4*np.pi*jnp.square(self.dcinterp)*self.dH/self.E(self.zinterp)
+        self.dlinterp_dimless = self.dlinterp / self.dH   # (c/H0)*f(z,Om,w) → just f(z,Om,w)
+        self.dcinterp_dimless = self.dcinterp / self.dH
 
     @property
     def dH(self):
@@ -360,9 +362,11 @@ class FlatwCDMCosmology(object):
         return jnp.interp(z, self.zinterp, self.ddlinterp)
 
     def z_of_dC(self, dC):
-        return jnp.interp(dC, self.dcinterp, self.zinterp)
+        return jnp.interp(dC / self.dH, self.dcinterp_dimless, self.zinterp)
+        #eturn jnp.interp(dC, self.dcinterp, self.zinterp)
     def z_of_dL(self, dL):
-        return jnp.interp(dL, self.dlinterp, self.zinterp)
+        return jnp.interp(dL / self.dH, self.dlinterp_dimless, self.zinterp)
+        #return jnp.interp(dL, self.dlinterp, self.zinterp)
 
 coords = {
     'm_grid': np.exp(np.linspace(np.log(1), np.log(150), 128)),

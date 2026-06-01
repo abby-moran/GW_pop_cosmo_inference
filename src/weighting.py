@@ -402,7 +402,7 @@ def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, q_obs, sigma_q, #log_dl_obs
     
     eps=1e-30
     
-    reweight_fact=dls/rhos *m1s * jsst.beta.pdf(thetas_final, 2, 4)#*qs
+    reweight_fact=dls/rhos *m1s * jsst.beta.pdf(thetas_final, 2, 4) #*qs
     reweight_fact=jnp.nan_to_num(reweight_fact, nan=0, neginf=-1e40, posinf=1e40)
     reweight_fact=reweight_fact/np.sum(reweight_fact)
     ess = 1.0 / np.sum(reweight_fact**2)
