@@ -154,7 +154,7 @@ if __name__ == "__main__":
     dL_fid   = float(grid["dL_fid"])
     
     log_snr_interp = RegularGridInterpolator((m1_grid, q_grid), np.log(snr_grid), bounds_error=False, fill_value=-np.inf)
-    num_loops=10#90
+    num_loops=140
     for i in range(num_loops):
         ndraw=int(1e7)
         zpdf = scipy.stats.uniform(loc=0, scale=population_parameters["zmax"])        
