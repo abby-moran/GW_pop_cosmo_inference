@@ -14,8 +14,9 @@ from weighting import get_pop_params
 import mock_observations
 from scipy.stats import norm, truncnorm
 import argparse
-from scipy.special import logsumexp
 from functools import partial
+import jax.scipy as jss
+
 
 import jax.numpy as jnp
 from tqdm import tqdm
@@ -26,7 +27,6 @@ from weighting import dm1sz_dm1ddl
 import configparser
 import ast
 from pathlib import Path
-import jax.scipy as jss
 
 #  read .ini file
 parser = argparse.ArgumentParser()
@@ -231,7 +231,6 @@ def gen_mock_PE(obs_file, log_SNR_fun, population_parameters, cosmo, nsamples=20
         df_samples.to_hdf(outfile, key="samples", mode="w")
 
     return(m1s, qs, dls, pdraws, evts)
-
 def jax_interp_log_snr(m1_grid, q_grid, log_snr_grid, m1s, qs):
     ix = jnp.clip(jnp.searchsorted(m1_grid, m1s) - 1, 0, m1_grid.shape[0] - 2)
     iy = jnp.clip(jnp.searchsorted(q_grid,  qs)  - 1, 0, q_grid.shape[0]  - 2)
@@ -252,9 +251,12 @@ def _sample_truncnorm(key, loc, scale, a, b, shape):
 def draw_samples_single_event_jax(key, log_mc_obs, sigma_log_mc, q_obs, sigma_q,
                                    theta_obs, sigma_theta, rho_obs,
                                    m1_grid, q_grid, log_snr_grid,
-                                   size_final, ndet, dl_fid=1.0, theta_fid=1.0):
+                                   size_final, ndet, dl_fid=1.0, theta_fid=1.0, jitter=True):
     size  = 10 * size_final
-    scale = jnp.sqrt(jnp.maximum(ndet, 1.0))
+    if jitter==False:
+        scale=0
+    else:
+        scale = jnp.sqrt(jnp.maximum(ndet, 1.0))
     k = jax.random.split(key, 8)
 
     # ── q ────────────────────────────────────────────────────────────────
@@ -296,7 +298,7 @@ def draw_samples_single_event_jax(key, log_mc_obs, sigma_log_mc, q_obs, sigma_q,
 
     # ── dL + final reweight ───────────────────────────────────────────────
     snr_fid  = jnp.exp(jax_interp_log_snr(m1_grid, q_grid, log_snr_grid, m1s, qs))
-    dls      = dl_fid * thetas / theta_fid * snr_fid * scale / rhos
+    dls      = dl_fid * thetas / theta_fid * snr_fid * jnp.sqrt(jnp.maximum(ndet, 1.0)) / rhos
     reweight = dls / rhos * m1s * jss.stats.beta.pdf(thetas, 2, 4)
     reweight = jnp.nan_to_num(reweight, nan=0.0, posinf=0.0)
     reweight = reweight / reweight.sum()
@@ -305,16 +307,15 @@ def draw_samples_single_event_jax(key, log_mc_obs, sigma_log_mc, q_obs, sigma_q,
     idx = jnp.searchsorted(cdf_rw, u_rw)
     return m1s[idx], qs[idx], dls[idx]
 
-@partial(jax.jit, static_argnums=(11, 12))
+@partial(jax.jit, static_argnums=(11, 12, 13))
 def batched_draw(keys, log_mc_obs, sigma_log_mc, q_obs, sigma_q,
                  theta_obs, sigma_theta, rho_obs,
-                 m1_grid, q_grid, log_snr_grid, size_final, ndet):
+                 m1_grid, q_grid, log_snr_grid, size_final, ndet, jitter=True):
     return jax.vmap(
         lambda key, lmc, slmc, q, sq, th, sth, rho:
             draw_samples_single_event_jax(key, lmc, slmc, q, sq, th, sth, rho,
-                                          m1_grid, q_grid, log_snr_grid, size_final, ndet)
+                                          m1_grid, q_grid, log_snr_grid, size_final, ndet, jitter=jitter)
     )(keys, log_mc_obs, sigma_log_mc, q_obs, sigma_q, theta_obs, sigma_theta, rho_obs)
-
 
 if __name__ == "__main__":
     rng = np.random.default_rng(251286134409181405721219170031242732711)
@@ -340,10 +341,8 @@ if __name__ == "__main__":
     q_grid   = grid["q_grid"]
     snr_grid = grid["snr_grid"]
     dL_fid   = float(grid["dL_fid"])
-    #log_snr_interp=jax_interp_log_snr(m1_grid, q_grid, log_snr_grid, m1s, qs)
     log_snr_interp = RegularGridInterpolator(
         (m1_grid, q_grid), np.log(snr_grid), bounds_error=False, fill_value=-np.inf)
-
 
     log_dN_obj  = intensity_models.LogDNDMDQDV
     pop_params  = {key: population_parameters[key]
@@ -352,9 +351,8 @@ if __name__ == "__main__":
     log_dN_func = log_dN_obj(**pop_params)
 
     if write_obs:
-        print("Pass 1 (combined): computing log_Z...")
-        log_Z = -np.inf
-
+        print("Pass 1: finding global log_w_max...")
+        log_w_max = -np.inf
         for start in tqdm(range(0, n_total, chunk_size)):
             chunk = pd.read_hdf(inj_file, key='true_parameters',
                                 start=start, stop=start + chunk_size)
@@ -366,13 +364,30 @@ if __name__ == "__main__":
                     - 2 * jnp.log1p(chunk['z'].values)
                     - jnp.log(chunk['pdraw_cosmo'].values)
                     - jnp.log(cosmo.ddL_dz(chunk['z'].values)))
-            finite_mask = np.isfinite(np.array(log_w))
-            if finite_mask.any():
-                log_Z = np.logaddexp(log_Z, logsumexp(np.array(log_w)[finite_mask]))
+            chunk_max = float(np.nanmax(log_w))
+            if chunk_max > log_w_max:
+                log_w_max = chunk_max
 
-        print(f"  log_Z = {log_Z:.4f}")
+        print(f"  log_w_max = {log_w_max:.4f}")
 
-        print("Pass 2: sampling and processing...")
+        print("Pass 2: computing global normalizer...")
+        Z = 0.0
+        for start in tqdm(range(0, n_total, chunk_size)):
+            chunk = pd.read_hdf(inj_file, key='true_parameters',
+                                start=start, stop=start + chunk_size)
+            chunk['dm1sz_dm1ddl2'] = dm1sz_dm1ddl(chunk['z'].to_numpy(), cosmology=cosmo)
+            chunk['pdraw_cosmo']   = chunk['pdraw_mqz'] * chunk['dm1sz_dm1ddl2']
+            log_dN_vals = log_dN_func(chunk['m1'].values, chunk['q'].values, chunk['z'].values)
+            log_w = (log_dN_vals
+                    + jnp.log(cosmo.dVCdz(chunk['z'].values))
+                    - 2 * jnp.log1p(chunk['z'].values)
+                    - jnp.log(chunk['pdraw_cosmo'].values)
+                    - jnp.log(cosmo.ddL_dz(chunk['z'].values)))
+            Z += float(np.nansum(np.exp(np.array(log_w) - log_w_max)))
+
+        print(f"  Z = {Z:.4e}")
+
+        print("Pass 3: sampling and processing...")
         first_chunk = True
         evt_offset  = 0
         mc_scale = population_parameters.get('mc_scale', None)
@@ -391,18 +406,20 @@ if __name__ == "__main__":
                     - jnp.log(chunk['pdraw_cosmo'].values)
                     - jnp.log(cosmo.ddL_dz(chunk['z'].values)))
 
-            log_w_arr = np.array(log_w)
-            p_chunk = np.nan_to_num(np.exp(log_w_arr - log_Z), nan=0.0)
-            n_chunk = int(np.round(p_chunk.sum() * num_tot))
-            if n_chunk == 0:
-                continue
-            #ess = 1.0 / np.sum((p_chunk / p_chunk.sum())**2)
-            #if ess < n_chunk:
-            #    print(f"Warning: Effective sample size ({ess:.1f}) < requested size ({chunk})")
-            chunk_sampled = np.sort(np.random.choice(len(chunk), p=p_chunk / p_chunk.sum(), size=n_chunk))
+            # each chunk gets a globally-consistent fraction of the total samples
+            w_chunk  = np.nan_to_num(np.exp(np.array(log_w) - log_w_max), nan=0.0)
+            p_chunk  = w_chunk / Z                          # probabilities within this chunk, sum across all chunks = 1
+            n_chunk  = int(np.round(p_chunk.sum() * num_tot))  # expected samples from this chunk
+            #if n_chunk == 0:
+            #    continue
+
+            chunk_sampled = np.sort(
+                np.random.choice(len(chunk), p=p_chunk / p_chunk.sum(), size=n_chunk)
+            )  # sample within chunk using local renorm — valid because n_chunk already encodes the global share
 
             df_det_chunk = chunk.iloc[chunk_sampled].copy()
-            df_det_chunk['pdraw_sel'] = p_chunk[chunk_sampled] * chunk['pdraw_cosmo'].values[chunk_sampled]
+            df_det_chunk['pdraw_sel'] = (w_chunk[chunk_sampled]
+                                        * chunk['pdraw_cosmo'].values[chunk_sampled])
             df_det_chunk['dl']    = cosmo.dL(df_det_chunk['z'].to_numpy())
             df_det_chunk['m1d']   = df_det_chunk['m1'] * (1 + df_det_chunk['z'])
             df_det_chunk['ndraw'] = num_tot
@@ -424,10 +441,10 @@ if __name__ == "__main__":
                             append=not first_chunk, format='table')
 
             evt_offset += det_mask.sum()
-            first_chunk = False
+            first_chunk  = False
 
-        else:
-            print("Using old obs file")
+    else:
+        print("Using old obs file")
 
     print("Generating mock PE...")
     pe_samples_full = pd.read_hdf(obs_file, 'observations', start=0, stop =10000)
@@ -472,6 +489,7 @@ if __name__ == "__main__":
             log_snr_grid_jax,
             nsamples,
             ndet,
+            jitter=jitter
         )
 
         all_m1s.append(np.array(out[0]))
@@ -482,15 +500,6 @@ if __name__ == "__main__":
     qs  = np.concatenate(all_qs, axis=0)
     dls = np.concatenate(all_dls, axis=0)
     pdraws=np.zeros_like(m1s)
-    #m1s, qs, dls = batched_draw(
-    #    keys, log_mc_obs_arr, sigma_log_mc_arr, q_obs_arr, sigma_q_arr,
-    #    theta_obs_arr, sigma_theta_arr, rho_obs_arr,
-    #    m1_grid_jax, q_grid_jax, log_snr_grid_jax, nsamples, ndet
-    #)
-    #m1s, qs, dls, pdraws, evts = gen_mock_PE(
-    #    obs_file, log_snr_interp, population_parameters, cosmo,
-    #    outfile=pe_file, ndet=ndet, nsamples=nsamples, new_sel=new_sel, jitter=jitter
-    #)
 
     df_samples = pd.DataFrame({'m1': list(m1s),       # each element is an array of nsamples
                                     'q': list(qs), 'dl': list(dls), 'pdraw': list(pdraws)})

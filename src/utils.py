@@ -406,10 +406,19 @@ def get_priors_from_file(filename):
         prior[param] = func
     return prior
 
-def sample_parameters_from_dict(prior):
+def sample_parameters_from_dict(prior, grid_params=None):
+    """
+    grid_params: optional dict of {param_name: jnp.array of grid values}
+    e.g. {'h': jnp.array([0.60, 0.65, 0.674, 0.70, 0.75])}
+    """
+    grid_params = grid_params or {}
     samples = dict()
     for param in prior:
-        if isinstance(prior[param], float):
+        if param in grid_params:
+            grid = grid_params[param]
+            idx = numpyro.sample(f'{param}_idx', dist.Categorical(probs=jnp.ones(len(grid)) / len(grid)))
+            samples[param] = numpyro.deterministic(param, grid[idx])
+        elif isinstance(prior[param], float):
             samples[param] = numpyro.deterministic(param, prior[param])
         else:
             samples[param] = numpyro.sample(param, prior[param])

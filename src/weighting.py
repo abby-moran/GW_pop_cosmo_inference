@@ -323,11 +323,11 @@ def get_m1(mc, q):
 def draw_mock_samples_mine(log_mc_obs, sigma_log_mc, q_obs, sigma_q, #log_dl_obs, sigma_log_dl, 
                            theta_obs, sigma_theta, rho_obs, rho_fun, cosmo,
                            size_final=1, detection_threshold=8, rng=None, dl_fid=1, theta_fid=1, ndet=1
-                           ,jitter_SNR=True):#, m_min=5.0):
+                           ,sample_params=True):#, m_min=5.0):
     """
     All inputs in detector frame 
     """
-    if sigma_log_mc==0 and sigma_q==0 and sigma_theta==0:
+    if sample_params==False:
         log_mcs=np.zeros(size_final)+log_mc_obs
         qs=np.zeros_like(log_mcs)+q_obs
         thetas=np.zeros_like(log_mcs)+theta_obs

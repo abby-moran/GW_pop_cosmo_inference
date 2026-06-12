@@ -107,7 +107,7 @@ class LogDNDMPISN(object):
     mpisn: object
     mbhmax: object
     sigma: object
-    n_m: object = 1800
+    n_m: object = 256
     mbh_grid: object = dataclasses.field(init=False)
     log_dN_grid: object = dataclasses.field(init=False)
  
@@ -224,8 +224,8 @@ class LogDNDM(object):
         log_high_mass_tail = -self.c*jnp.log(jnp.divide(m, mbhmax_at_samples))    
         log_dNdm = jnp.logaddexp(log_dNdm, jnp.log(self.fpl) + log_dNdmbhmax_at_samples + log_high_mass_tail  + log_smooth_turnon(m, mbhmax_at_samples))
         log_dNdm = jnp.where(m < self.mbh_min, -np.inf, log_dNdm)
-        #logwindow = mmin_log_smooth_turnon(m, delta_m=self.delta_m, mmin= self.mbh_min)
-        log_dNdm = log_dNdm# + logwindow
+        logwindow = mmin_log_smooth_turnon(m, delta_m=self.delta_m, mmin= self.mbh_min)
+        log_dNdm = log_dNdm + logwindow
         return log_dNdm 
 
 @dataclass
@@ -395,7 +395,7 @@ def build_population_model(sample):
         beta=sample['beta'], lam=sample['lam'], kappa=sample['kappa'], zp=sample['zp'],
         zmax=sample['zmax'], mbh_min=sample['mbh_min'], delta_m=sample['delta_m']
     )
-
+#H_GRID = jnp.linspace(0.60, .8, 50)
     
 def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel, Ndraw, priors=None):
     """
@@ -406,11 +406,12 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     log_pdraw_sel = jnp.log(pdraw_sel)
     #log_pdraw = jnp.log(pdraw)
     nobs = m1s_det.shape[0]
+    
     nsamp = m1s_det.shape[1]
 
     nsel = m1s_det_sel.shape[0]
 
-    sample = sample_parameters_from_dict(priors)
+    sample = sample_parameters_from_dict(priors)#, grid_params={'h': H_GRID})
     deterministic_parameters = get_deterministic_parameters(sample)
     sample.update(deterministic_parameters) #sample from hyperparameters, set up cosmology (cosmo) and population model (dN)
 
@@ -426,8 +427,12 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     log_wts = log_dN(m1s, qs, zs)  - log_pdraw -2*jnp.log1p(zs) - jnp.log(cosmo.ddL_dz(zs)) + jnp.log(cosmo.dVCdz(zs)) 
     # dLdz/1+z is to deal with pdraw being in detector frame mass, dL
     log_like_per_event = jss.logsumexp(log_wts, axis=1) - jnp.log(nsamp)  # shape (nobs,)
+    #m = jnp.max(log_wts, axis=1, keepdims=True)
+    #log_like_per_event = (
+    #    jnp.squeeze(m, axis=1)
+    #    + jnp.log(jnp.mean(jnp.exp(log_wts - m), axis=1)))
 
-    log_like_per_event = jnp.nan_to_num(log_like_per_event, nan=-1e30, posinf=1e30, neginf=-1e30)
+    log_like_per_event = jnp.nan_to_num(log_like_per_event, nan=0, posinf=1e30, neginf=-1e30)
     _ = numpyro.deterministic("loglik_array_dim", log_like_per_event)
 
     log_like = jnp.sum(log_like_per_event)
@@ -450,7 +455,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     # get some derived quantities for later
     # effective sample size for weights
     #_ = numpyro.deterministic('neff', jnp.exp(2*jss.logsumexp(log_wts, axis=1) - jss.logsumexp(2*log_wts, axis=1)))
-    
+ 
     #N eff cuts
     neff = jnp.exp(2 * jss.logsumexp(log_wts, axis=1) - jss.logsumexp(2 * log_wts, axis=1))
     min_neff = jnp.min(neff)

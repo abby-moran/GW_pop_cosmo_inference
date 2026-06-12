@@ -37,11 +37,18 @@ cfg.read(args.config)
 base_runs_dir = "../runs"
 run_name = cfg["run"]["run_dir"]
 
-#timestamp = datetime.now().strftime("%Y%m%d")
 os.makedirs(base_runs_dir, exist_ok=True)
 run_dir = os.path.join(base_runs_dir, f"{run_name}")
 os.makedirs(run_dir, exist_ok=False)
+
+# Real output file lives on ceph
+ceph_run_dir = os.path.abspath(os.path.join("../../ceph/GW_pop_cosmo_inference/", run_name))
+os.makedirs(ceph_run_dir, exist_ok=True)
+ceph_output_file = os.path.join(ceph_run_dir, cfg["run"]["output_file_inj"])
+
+# Symlink the local path to the ceph file
 output_file = os.path.join(run_dir, cfg["run"]["output_file_inj"])
+os.symlink(ceph_output_file, output_file)
 
 base_dir = Path("pop_configs")
 
@@ -154,13 +161,13 @@ if __name__ == "__main__":
     dL_fid   = float(grid["dL_fid"])
     
     log_snr_interp = RegularGridInterpolator((m1_grid, q_grid), np.log(snr_grid), bounds_error=False, fill_value=-np.inf)
-    num_loops=190
+    num_loops=120
     for i in range(num_loops):
         ndraw=int(1e7)
         zpdf = scipy.stats.uniform(loc=0, scale=population_parameters["zmax"])        
         a=(.4-population_parameters["mpisn"])/(2*population_parameters["mpisn"])
         #mpdf = scipy.stats.powerlaw(.8, loc=.4, scale=np.inf, loc=population_parameters["mpisn"], scale=(2*population_parameters["mpisn"]))
-        mpdf= scipy.stats.powerlaw(.5, loc=.4, scale=2500)
+        mpdf= scipy.stats.powerlaw(.5, loc=3, scale=2500)
         
         rng = np.random.default_rng()
         z = zpdf.ppf(rng.uniform(low=0, high=1, size=ndraw))
