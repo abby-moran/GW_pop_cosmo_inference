@@ -71,103 +71,102 @@ pop_config_file = base_dir / cfg["run"]["pop_config_file"]
 pop_config_file = pop_config_file.resolve()
 
 m_min=run.getint("m_min", fallback=0)
+delta_m_sel = run.getfloat("delta_m_sel", fallback=1.0)
     
 def get_mock_obs(df, out_file, cosmo, rho_fun, detection_threshold=8, 
                  jitter_SNR=True, ndet=1, append_tf=False, evt_offset=0,
-                 detection_rng=None, mc_scale=None, q_scale=None, th_scale=None, m_min=5):
+                 detection_rng=None, mc_scale=None, q_scale=None, th_scale=None, m_min=5, delta_m=1):
     """
-    takes in an event dataframe df and generates a file which will store the values we'd actulaly observe from the events
-
-    inputs
-        df: events 
-        out_file: where to store the observed values
-        cosmo: cosmology model we're using, usually FlatwCDMCosmology with population paramters
-        detection_threshold: what SNR we cut on, 8 by default
-        jitter_SNR: False if detection is perfect, otherwise should be on
-        ndet: number of mock detectors, controls how much we jitter the SNR by
-    
-    outputs a file with observed log chirp mass, log q, and Theta (finn-chernoff parameter) with corresponding uncertainties calculted from 
-    SNR scalings
+    Vectorized version: takes in an event dataframe df and generates a file which will
+    store the values we'd actually observe from the events.
     """
     if detection_rng is None:
         detection_rng = np.random.default_rng()
     
-    # unseeded rng for observation noise (different realization each run)
     noise_rng = np.random.default_rng()
 
-    #jitter = detection_rng.normal(loc=0, scale=np.sqrt(ndet), size=len(df))    
     if jitter_SNR:
-        a_rho=(0.0 - df['SNR']) / np.sqrt(ndet)
-        df['SNR_OBS'] = truncnorm.rvs(a_rho, np.inf, loc=df['SNR'], scale= np.sqrt(ndet),  random_state=noise_rng)
+        a_rho = (0.0 - df['SNR']) / np.sqrt(ndet)
+        df['SNR_OBS'] = truncnorm.rvs(a_rho, np.inf, loc=df['SNR'], scale=np.sqrt(ndet), random_state=noise_rng)
     else:
-        df['SNR_OBS'] = df['SNR'] 
+        df['SNR_OBS'] = df['SNR']
     
-    # Store which original df indices passed the SNR cut
     snr_mask = df['SNR_OBS'] > detection_threshold
-    detected_indices = df.index[snr_mask]        
-    
     inj_det = df[snr_mask].copy()
-    #inj_det = df[df['SNR_OBS'] > detection_threshold].copy()
     inj_det['mc'] = inj_det['m1'] * (inj_det['q']**(3/5) / ((1 + inj_det['q'])**(1/5)))
     inj_det['dl'] = cosmo.dL(np.array(inj_det['z'].tolist()))
     inj_det['mc_det'] = inj_det['mc'] * (1 + inj_det['z'])
-    log_mc_obs = []
-    sigma_log_mc = []
-    q_obs=[]
-    sigma_q=[]
-    theta_obs=[]
-    sigma_theta=[]
-    passed_indices = []  # track original df indices that survive mass cut
-    for i, row in tqdm(inj_det.iterrows()):
-        uncert = mock_observations.Uncertainties.from_snr(row['SNR_OBS'],
-                                        mc_scale=mc_scale, q_scale=q_scale, th_scale=th_scale)
-        slmc = uncert.sigma_log_mc
-        log_mc_obs_i = norm.rvs(loc=np.log(row['mc_det']), scale=slmc, random_state=noise_rng)
-        mc_obs_i = np.exp(log_mc_obs_i)
 
-        sq = uncert.sigma_q
-        a = (0.0 - row['q']) / sq
-        b = (1 - row['q']) / sq
-        q_obs_i = truncnorm.rvs(a, b, loc=row['q'], scale=sq, random_state=noise_rng)
+    n = len(inj_det)
+    if n == 0:
+        inj_det['log_mc_obs'] = []
+        inj_det['sigma_log_mc'] = []
+        inj_det['q_obs'] = []
+        inj_det['sigma_q'] = []
+        inj_det['theta_obs'] = []
+        inj_det['sigma_theta'] = []
+        inj_det = inj_det.reset_index(drop=True)
+        inj_det['evt'] = []
+        inj_det.to_hdf(out_file, key='observations',
+                       mode='w' if not append_tf else 'a',
+                       append=append_tf, format='table')
+        return pd.Index([]), np.array([])
 
-        m1_det=weighting.get_m1(mc_obs_i, q_obs_i)
+    rho_obs = inj_det['SNR_OBS'].to_numpy()
+    q_true = inj_det['q'].to_numpy()
+    theta_true = inj_det['Theta'].to_numpy()
+    mc_det = inj_det['mc_det'].to_numpy()
 
-        sth = uncert.sigma_theta  
-        a = (0.0 - row['Theta']) / sth  
-        b = (1 - row['Theta']) / sth
-        theta_obs_i = truncnorm.rvs(a, b, loc=row['Theta'], scale=sth, random_state=noise_rng)
-        
-        z_obs = weighting.get_z_obs_true(m1_det, q_obs_i, theta_obs_i, row['SNR_OBS'], rho_fun, cosmo, ndet=ndet)
-        m1_src = m1_det / (1 + z_obs)
-        m2_src = m1_src * q_obs_i
-        if m1_src < m_min or m2_src < m_min:
-            continue  # skip this event
+    uncert = mock_observations.Uncertainties.from_snr(rho_obs, mc_scale=mc_scale, q_scale=q_scale, th_scale=th_scale)
+    slmc = np.asarray(uncert.sigma_log_mc)
+    sq   = np.asarray(uncert.sigma_q)
+    sth  = np.asarray(uncert.sigma_theta)
 
-        passed_indices.append(i)  # survived mass cut — record original index
-        log_mc_obs.append(log_mc_obs_i)
-        sigma_log_mc.append(slmc)
-        q_obs.append(q_obs_i)
-        sigma_q.append(sq)
-        sigma_theta.append(sth)
-        theta_obs.append(theta_obs_i)
+    # --- log_mc_obs ---
+    log_mc_obs = norm.rvs(loc=np.log(mc_det), scale=slmc, random_state=noise_rng)
+    mc_obs = np.exp(log_mc_obs)
 
-    # Trim inj_det to only events that passed the mass cut
-    inj_det = inj_det.loc[passed_indices].copy()
-    detected_indices = pd.Index(passed_indices)
-    
-    inj_det['log_mc_obs'] = log_mc_obs
-    inj_det['sigma_log_mc'] = sigma_log_mc
-    inj_det['q_obs'] = q_obs
-    inj_det['sigma_q'] = sigma_q
-    inj_det['theta_obs'] = theta_obs
-    inj_det['sigma_theta'] = sigma_theta
-    
-    inj_det['z'] = inj_det['z']
+    # --- q_obs (vectorized truncnorm) ---
+    a_q = (0.0 - q_true) / sq
+    b_q = (1.0 - q_true) / sq
+    q_obs = truncnorm.rvs(a_q, b_q, loc=q_true, scale=sq, random_state=noise_rng)
+
+    # --- theta_obs (vectorized truncnorm) ---
+    a_th = (0.0 - theta_true) / sth
+    b_th = (1.0 - theta_true) / sth
+    theta_obs = truncnorm.rvs(a_th, b_th, loc=theta_true, scale=sth, random_state=noise_rng)
+
+    # --- derived quantities ---
+    m1_det = weighting.get_m1(mc_obs, q_obs)
+    z_obs = weighting.get_z_obs_true(m1_det, q_obs, theta_obs, rho_obs, rho_fun, cosmo, ndet=ndet)
+    m1_src = m1_det / (1 + z_obs)
+    m2_src = m1_src * q_obs
+
+    log_p_keep = (
+        intensity_models.mmin_log_smooth_turnon(m1_src, delta_m, m_min)
+        + intensity_models.mmin_log_smooth_turnon(m2_src, delta_m, m_min)
+    )
+    p_keep = np.asarray(jnp.exp(log_p_keep))
+
+    # --- mass-cut acceptance (vectorized) ---
+    u = noise_rng.random(n)
+    keep_mask = u <= p_keep
+
+    inj_det = inj_det[keep_mask].copy()
+    inj_det['log_mc_obs']   = log_mc_obs[keep_mask]
+    inj_det['sigma_log_mc'] = slmc[keep_mask]
+    inj_det['q_obs']        = q_obs[keep_mask]
+    inj_det['sigma_q']      = sq[keep_mask]
+    inj_det['theta_obs']    = theta_obs[keep_mask]
+    inj_det['sigma_theta']  = sth[keep_mask]
+
+    detected_indices = inj_det.index
+
     inj_det = inj_det.reset_index(drop=True)
-    inj_det['evt'] = [f'evt_{i+evt_offset:06d}' for i in inj_det.index]  # offset here
-    inj_det.to_hdf(out_file, key='observations', 
-               mode='w' if not append_tf else 'a', 
-               append=append_tf, format='table')
+    inj_det['evt'] = [f'evt_{i+evt_offset:06d}' for i in inj_det.index]
+    inj_det.to_hdf(out_file, key='observations',
+                   mode='w' if not append_tf else 'a',
+                   append=append_tf, format='table')
     return detected_indices, np.array(inj_det['evt'].tolist())
 
 def gen_mock_PE(obs_file, log_SNR_fun, population_parameters, cosmo, nsamples=200, 
@@ -429,7 +428,7 @@ if __name__ == "__main__":
                 df_det_chunk, obs_file, cosmo, log_snr_interp, ndet=ndet,
                 jitter_SNR=jitter, detection_threshold=detection_threshold,
                 append_tf=not first_chunk, evt_offset=evt_offset,
-                mc_scale=mc_scale, q_scale=q_scale, th_scale=th_scale, m_min=m_min
+                mc_scale=mc_scale, q_scale=q_scale, th_scale=th_scale, m_min=m_min, delta_m=delta_m_sel
             )
 
             det_mask  = df_det_chunk.index.isin(detected_indices)
