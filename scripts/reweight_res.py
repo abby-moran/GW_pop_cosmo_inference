@@ -16,7 +16,7 @@ from scipy.stats import norm, truncnorm
 import argparse
 from functools import partial
 import jax.scipy as jss
-
+import shutil
 
 import jax.numpy as jnp
 from tqdm import tqdm
@@ -27,6 +27,8 @@ from weighting import dm1sz_dm1ddl
 import configparser
 import ast
 from pathlib import Path
+import tempfile
+
 
 #  read .ini file
 parser = argparse.ArgumentParser()
@@ -70,7 +72,7 @@ pop_file=run.get("pop_config_file")
 pop_config_file = base_dir / cfg["run"]["pop_config_file"]
 pop_config_file = pop_config_file.resolve()
 
-m_min=run.getint("m_min", fallback=0)
+m_min=run.getfloat("m_min", fallback=0)
 delta_m_sel = run.getfloat("delta_m_sel", fallback=1.0)
     
 def get_mock_obs(df, out_file, cosmo, rho_fun, detection_threshold=8, 
@@ -169,67 +171,6 @@ def get_mock_obs(df, out_file, cosmo, rho_fun, detection_threshold=8,
                    append=append_tf, format='table')
     return detected_indices, np.array(inj_det['evt'].tolist())
 
-def gen_mock_PE(obs_file, log_SNR_fun, population_parameters, cosmo, nsamples=200, 
-                outfile=None, ndet=1, append_tf=False, new_sel=True, jitter=True):
-    """
-    takes a file which constains observed values, and samples assuming Gaussians and outputs that in a file. 
-    Need an SNR scaling relation log_SNR_fun
-
-    Output file has keys m1, q, dl, praw, evt. Each of shape nevents x nsamples
-    """
-    
-    pe_samples_full = pd.read_hdf(obs_file, 'observations')
-    pe_samples_full=pe_samples_full[0:10000]
-    
-    m1s, qs, dls, pdraws , evts= [], [], [], [], []
-    mass_obs_evt, q_err, dl_=[], [], []
-    for i, (n, e) in enumerate(pe_samples_full.groupby('evt')):
-        # preallocate arrays for this event
-        m1_event = []
-        q_event = []
-        dl_event = []
-        pdraw_event = []
-        evt=[]
-        for num in range(1):
-            samples = weighting.draw_mock_samples_mine(
-                e['log_mc_obs'].iloc[0],  # detector frame
-                e['sigma_log_mc'].iloc[0],
-                #e['log_q_obs'].iloc[0], 
-                #e['sigma_log_q'].iloc[0],
-                e['q_obs'].iloc[0], 
-                e['sigma_q'].iloc[0],
-                
-                e['theta_obs'].iloc[0],
-                e['sigma_theta'].iloc[0],
-                e['SNR_OBS'].iloc[0], 
-                log_SNR_fun, cosmo, ndet=ndet, size_final=nsamples, jitter_SNR=jitter)
-            
-            m1_event.append(samples[0])
-            q_event.append(samples[1])
-            dl_event.append(samples[2])
-            pdraw_event.append(samples[3])
-            evt.append(e['evt'])
-    
-        # store all samples for this event
-        m1s.append(np.array(m1_event).flatten())
-        qs.append(np.array(q_event).flatten())
-        dls.append(np.array(dl_event).flatten())
-        pdraws.append(np.array(pdraw_event).flatten())
-        evts.append(np.array(evt).flatten())
-    
-    # convert to arrays (shape = nevents × nsamples)
-    m1s = np.array(m1s)
-    qs = np.array(qs)
-    dls = np.array(dls)
-    pdraws = np.array(pdraws)
-    evts = np.array(evts)
-
-    if outfile is not None:
-        df_samples = pd.DataFrame({'m1': list(m1s),       # each element is an array of nsamples
-                                    'q': list(qs), 'dl': list(dls), 'pdraw': list(pdraws), 'evt': list(evts[:,0])})
-        df_samples.to_hdf(outfile, key="samples", mode="w")
-
-    return(m1s, qs, dls, pdraws, evts)
 def jax_interp_log_snr(m1_grid, q_grid, log_snr_grid, m1s, qs):
     ix = jnp.clip(jnp.searchsorted(m1_grid, m1s) - 1, 0, m1_grid.shape[0] - 2)
     iy = jnp.clip(jnp.searchsorted(q_grid,  qs)  - 1, 0, q_grid.shape[0]  - 2)
@@ -316,6 +257,15 @@ def batched_draw(keys, log_mc_obs, sigma_log_mc, q_obs, sigma_q,
                                           m1_grid, q_grid, log_snr_grid, size_final, ndet, jitter=jitter)
     )(keys, log_mc_obs, sigma_log_mc, q_obs, sigma_q, theta_obs, sigma_theta, rho_obs)
 
+@jax.jit
+def compute_log_w(m1, q, z, pdraw_cosmo):
+    log_dN_vals = log_dN_func(m1, q, z)
+    return (log_dN_vals
+            + jnp.log(cosmo.dVCdz(z))
+            - 2 * jnp.log1p(z)
+            - jnp.log(pdraw_cosmo)
+            - jnp.log(cosmo.ddL_dz(z)))
+
 if __name__ == "__main__":
     rng = np.random.default_rng(251286134409181405721219170031242732711)
 
@@ -350,39 +300,44 @@ if __name__ == "__main__":
     log_dN_func = log_dN_obj(**pop_params)
 
     if write_obs:
-        print("Pass 1: finding global log_w_max...")
+        print("Pass 1: computing weights, caching to disk...")
         log_w_max = -np.inf
+        cache_dir = tempfile.mkdtemp(prefix="logw_cache_")
+        chunk_files = []
+
         for start in tqdm(range(0, n_total, chunk_size)):
             chunk = pd.read_hdf(inj_file, key='true_parameters',
                                 start=start, stop=start + chunk_size)
             chunk['dm1sz_dm1ddl2'] = dm1sz_dm1ddl(chunk['z'].to_numpy(), cosmology=cosmo)
             chunk['pdraw_cosmo']   = chunk['pdraw_mqz'] * chunk['dm1sz_dm1ddl2']
-            log_dN_vals = log_dN_func(chunk['m1'].values, chunk['q'].values, chunk['z'].values)
-            log_w = (log_dN_vals
-                    + jnp.log(cosmo.dVCdz(chunk['z'].values))
-                    - 2 * jnp.log1p(chunk['z'].values)
-                    - jnp.log(chunk['pdraw_cosmo'].values)
-                    - jnp.log(cosmo.ddL_dz(chunk['z'].values)))
+            #log_dN_vals = log_dN_func(chunk['m1'].values, chunk['q'].values, chunk['z'].values)
+            log_w = compute_log_w(
+                jnp.asarray(chunk['m1'].values),
+                jnp.asarray(chunk['q'].values),
+                jnp.asarray(chunk['z'].values),
+                jnp.asarray(chunk['pdraw_cosmo'].values),)
+            log_w = np.asarray(log_w)
+            #log_w = np.asarray(log_dN_vals
+            #        + jnp.log(cosmo.dVCdz(chunk['z'].values))
+            #        - 2 * jnp.log1p(chunk['z'].values)
+            #        - jnp.log(chunk['pdraw_cosmo'].values)
+            #        - jnp.log(cosmo.ddL_dz(chunk['z'].values)), dtype=np.float64)
+
+            fpath = op.join(cache_dir, f"logw_{start}.npy")
+            np.save(fpath, log_w)
+            chunk_files.append(fpath)
+
             chunk_max = float(np.nanmax(log_w))
             if chunk_max > log_w_max:
                 log_w_max = chunk_max
 
         print(f"  log_w_max = {log_w_max:.4f}")
 
-        print("Pass 2: computing global normalizer...")
+        print("Pass 2: computing global normalizer (from cache, no recompute)...")
         Z = 0.0
-        for start in tqdm(range(0, n_total, chunk_size)):
-            chunk = pd.read_hdf(inj_file, key='true_parameters',
-                                start=start, stop=start + chunk_size)
-            chunk['dm1sz_dm1ddl2'] = dm1sz_dm1ddl(chunk['z'].to_numpy(), cosmology=cosmo)
-            chunk['pdraw_cosmo']   = chunk['pdraw_mqz'] * chunk['dm1sz_dm1ddl2']
-            log_dN_vals = log_dN_func(chunk['m1'].values, chunk['q'].values, chunk['z'].values)
-            log_w = (log_dN_vals
-                    + jnp.log(cosmo.dVCdz(chunk['z'].values))
-                    - 2 * jnp.log1p(chunk['z'].values)
-                    - jnp.log(chunk['pdraw_cosmo'].values)
-                    - jnp.log(cosmo.ddL_dz(chunk['z'].values)))
-            Z += float(np.nansum(np.exp(np.array(log_w) - log_w_max)))
+        for fpath in chunk_files:
+            log_w = np.load(fpath)
+            Z += float(np.nansum(np.exp(log_w - log_w_max)))
 
         print(f"  Z = {Z:.4e}")
 
@@ -393,28 +348,20 @@ if __name__ == "__main__":
         q_scale  = population_parameters.get('q_scale',  None)
         th_scale = population_parameters.get('th_scale', None)
 
-        for start in tqdm(range(0, n_total, chunk_size)):
+        for idx, start in enumerate(tqdm(range(0, n_total, chunk_size))):
             chunk = pd.read_hdf(inj_file, key='true_parameters',
                                 start=start, stop=start + chunk_size)
             chunk['dm1sz_dm1ddl2'] = dm1sz_dm1ddl(chunk['z'].to_numpy(), cosmology=cosmo)
             chunk['pdraw_cosmo']   = chunk['pdraw_mqz'] * chunk['dm1sz_dm1ddl2']
-            log_dN_vals = log_dN_func(chunk['m1'].values, chunk['q'].values, chunk['z'].values)
-            log_w = (log_dN_vals
-                    + jnp.log(cosmo.dVCdz(chunk['z'].values))
-                    - 2 * jnp.log1p(chunk['z'].values)
-                    - jnp.log(chunk['pdraw_cosmo'].values)
-                    - jnp.log(cosmo.ddL_dz(chunk['z'].values)))
 
-            # each chunk gets a globally-consistent fraction of the total samples
-            w_chunk  = np.nan_to_num(np.exp(np.array(log_w) - log_w_max), nan=0.0)
-            p_chunk  = w_chunk / Z                          # probabilities within this chunk, sum across all chunks = 1
-            n_chunk  = int(np.round(p_chunk.sum() * num_tot))  # expected samples from this chunk
-            #if n_chunk == 0:
-            #    continue
+            # load cached log_w instead of recomputing log_dN_func, dVCdz, ddL_dz, etc.
+            log_w = np.load(chunk_files[idx]).astype(np.float64)
 
-            chunk_sampled = np.sort(
-                np.random.choice(len(chunk), p=p_chunk / p_chunk.sum(), size=n_chunk)
-            )  # sample within chunk using local renorm — valid because n_chunk already encodes the global share
+            w_chunk  = np.nan_to_num(np.exp(log_w - log_w_max), nan=0.0)
+            p_chunk  = w_chunk / Z
+            n_chunk  = int(np.round(p_chunk.sum() * num_tot))
+
+            chunk_sampled = np.sort(np.random.choice(len(chunk), p=p_chunk / p_chunk.sum(), size=n_chunk))
 
             df_det_chunk = chunk.iloc[chunk_sampled].copy()
             df_det_chunk['pdraw_sel'] = (w_chunk[chunk_sampled]
@@ -441,6 +388,9 @@ if __name__ == "__main__":
 
             evt_offset += det_mask.sum()
             first_chunk  = False
+
+        # cleanup cache
+        shutil.rmtree(cache_dir)
 
     else:
         print("Using old obs file")
