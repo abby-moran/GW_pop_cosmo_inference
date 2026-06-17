@@ -76,7 +76,7 @@ if __name__ == "__main__":
             event_name = parts[3] + "_" + parts[4]
             if event_name in INCLUDE_LIST:
                 filtered_files.append(f)
-        if len(parts) >= 2 and parts[1] == 'GWTC4p0':
+        if len(parts) >= 2 and parts[1] == 'GWTC4p0' or parts[1] == 'GWTC5p0':
             event_name = parts[4] + "_" + parts[5]
             if event_name in INCLUDE_LIST:
                 filtered_files.append(f)
