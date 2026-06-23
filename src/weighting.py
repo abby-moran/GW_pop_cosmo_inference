@@ -107,7 +107,11 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
             # 04
             samples = np.array(f['C00:Mixed']['posterior_samples'])
         elif 'C00:NRSur7dq4' in f.keys(): #other bit of 04
-            samples = np.array(f['C00:NRSur7dq4']['posterior_samples']) 
+            samples = np.array(f['C00:NRSur7dq4']['posterior_samples'])
+        elif 'C01:IMRPhenomXPHM-SpinTaylor' in f.keys(): # GWTC5
+            samples = np.array(f['C01:IMRPhenomXPHM-SpinTaylor']['posterior_samples'])   
+        elif 'C00:IMRPhenomXPHM-SpinTaylor' in f.keys(): # GWTC5 
+            samples = np.array(f['C00:IMRPhenomXPHM-SpinTaylor']['posterior_samples'])   
         else:   
             print(f"Available keys in file {file}: {list(f.keys())}")
             return None
@@ -122,10 +126,9 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
     parts = re.split("_|-", filename)
     data_release=parts[1]
 
-    if data_release=='GWTC4p0':
-        # uniform in comoving volume: https://dcc.ligo.org/public/0196/P2400386/011/GWTC-4.0_results_v11.pdf
-        dvcdz= Planck18.differential_comoving_volume(zs[mask]).value
-        prior =dvcdz*m1_det  #*dLs**2
+    if data_release == 'GWTC4p0' or data_release == 'GWTC5p0':
+        dvcdz = Planck18.differential_comoving_volume(zs[mask]).to(u.Gpc**3 / u.sr).value
+        prior = dvcdz*m1_det
     else:
         prior = dLs**2 * m1_det
     
@@ -230,7 +233,10 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
         f = pd.read_hdf(file, key='events')
         m1s_sel = np.array(f['mass1_source'])
         qs_sel = np.array(f['mass2_source'])/m1s_sel
-        zs_sel = np.array(f['z'])
+        try:
+            zs_sel = np.array(f['z'])
+        except:
+            zs_sel = np.array(f['redshift'])
         a1s_sel = np.sqrt(sum([np.array(f[f'spin1{ii}'])**2 for ii in ['x', 'y', 'z']]))
         a2s_sel = np.sqrt(sum([np.array(f[f'spin2{ii}'])**2 for ii in ['x', 'y', 'z']]))
         costilt1s_sel  = (
@@ -238,21 +244,42 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
         costilt2s_sel  = (
             np.array(f[f'spin2z']) / a2s_sel)
 
-
-        pdraw_sel = (np.exp(np.array(f['lnpdraw_mass1_source']))*
+        try:
+            pdraw_sel = (np.exp(np.array(f['lnpdraw_mass1_source']))*
                      np.exp(np.array(f['lnpdraw_mass2_source_GIVEN_mass1_source']))*
-                    np.exp(np.array(f['lnpdraw_z']))*m1s_sel
+                    np.exp(np.array(f['lnpdraw_z']))*m1s_sel/np.array(f['weights'])
                 )
+        except:
+            pdraw_sel = (np.exp(np.array(f['lnpdraw_mass1_source_mass2_source_redshift_spin1x_spin1y_spin1z_spin2x_spin2y_spin2z']))*
+                        m1s_sel/np.array(f['weights']))
         #pdraw_sel *= (np.array(f['spin1x_spin1y_spin1z_sampling_pdf']) * np.array(f['spin2x_spin2y_spin2z_sampling_pdf']) * (2 * np.pi * a1s_sel**2 * 2 * np.pi * a2s_sel**2))
-        pycbc_far = np.array(f['pycbc_far'])
-        cwb_bbh_far = np.array(f['cwb-bbh_far'])
-        gstlal_far = np.array(f['gstlal_far'])
-        mbta_far = np.array(f['mbta_far'])
+        def get_first(f, keys, example=pdraw_sel):
+            for k in keys:
+                try:
+                    key_out = np.array(f[k])
 
-        detected = (pycbc_far < far_threshold) | (cwb_bbh_far < far_threshold) | (gstlal_far < far_threshold) | (mbta_far < far_threshold)
+                    # replace invalid FARs with large value
+                    key_out[np.isinf(key_out)] = 100
+                    key_out[np.isnan(key_out)] = 100
+
+                    return key_out
+
+                except Exception:
+                    pass
+            raise KeyError(f"None of these keys found: {keys}")
+            #print(f"None of these keys found: {keys}")
+            #return np.ones_like(example)
+
+        pycbc_far = get_first(f, ['pycbc_far', 'o4b_pycbc_far', 'o4a_pycbc_far', 'o3_pycbc_bbh_far'])
+        cwb_bbh_far = get_first(f, ['cwb-bbh_far', 'o4b_cwb-bbh_far', 'o4a_cwb-bbh_far', 'o3_cwb_far'])
+        gstlal_far = get_first(f, ['gstlal_far', 'o4b_gstlal_far', 'o4a_gstlal_far', 'o3_gstlal_far'])
+        mbta_far = get_first(f, ['mbta_far', 'o4b_mbta_far', 'o4a_mbta_far', 'o3_mbta_far'])
+        
+        m1s_det=m1s_sel*(1+zs_sel)
+        detected = (pycbc_far < far_threshold) | (cwb_bbh_far < far_threshold) | (gstlal_far < far_threshold) | (mbta_far < far_threshold)| (m1s_det>2.5)
         with h5py.File(file, 'r') as obj:
             ndraw = obj.attrs['total_generated']
-            T=obj.attrs['total_analysis_time']
+            T=np.array(obj.attrs['total_analysis_time'])/(3600.0*24.0*365.25)
 
         pdraw_sel /= T
 

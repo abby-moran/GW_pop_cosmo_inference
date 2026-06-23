@@ -2,7 +2,7 @@
 #SBATCH -p gpu
 #SBATCH --gpus=2
 #SBATCH --ntasks=1
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --time=0-20
 #SBATCH --constraint=a100
 

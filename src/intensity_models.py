@@ -369,7 +369,7 @@ class FlatwCDMCosmology(object):
         #return jnp.interp(dL, self.dlinterp, self.zinterp)
 
 coords = {
-    'm_grid': np.exp(np.linspace(np.log(1), np.log(150), 128)),
+    'm_grid': np.exp(np.linspace(np.log(1), np.log(450), 128)),
     'q_grid': np.linspace(0, 1, 129)[1:],
     'z_grid': np.expm1(np.linspace(np.log1p(0), np.log1p(20), 128))
 }
@@ -427,11 +427,6 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     log_wts = log_dN(m1s, qs, zs)  - log_pdraw -2*jnp.log1p(zs) - jnp.log(cosmo.ddL_dz(zs)) + jnp.log(cosmo.dVCdz(zs)) 
     # dLdz/1+z is to deal with pdraw being in detector frame mass, dL
     log_like_per_event = jss.logsumexp(log_wts, axis=1) - jnp.log(nsamp)  # shape (nobs,)
-    #m = jnp.max(log_wts, axis=1, keepdims=True)
-    #log_like_per_event = (
-    #    jnp.squeeze(m, axis=1)
-    #    + jnp.log(jnp.mean(jnp.exp(log_wts - m), axis=1)))
-
     log_like_per_event = jnp.nan_to_num(log_like_per_event, nan=0, posinf=1e30, neginf=-1e30)
     _ = numpyro.deterministic("loglik_array_dim", log_like_per_event)
 
@@ -460,14 +455,14 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     neff = jnp.exp(2 * jss.logsumexp(log_wts, axis=1) - jss.logsumexp(2 * log_wts, axis=1))
     min_neff = jnp.min(neff)
     numpyro.deterministic("neff", neff)
-    numpyro.factor("neff_criteria",jnp.nan_to_num(log_smooth_neff_boundary(min_neff, nobs), neginf=-1e20, posinf=1e20),)
+    numpyro.factor("neff_criteria",jnp.nan_to_num(log_smooth_neff_boundary(min_neff, nobs),nan=-1e20, neginf=-1e20, posinf=1e20),)
 
     #ratio = jnp.exp(2 * log_mu_sel - jnp.log(Ndraw) - log_mu2)
     #ratio = jnp.clip(ratio, a_min=0.0, a_max=1.0 - 1e-12)
     #log_s2 = log_mu2 + jnp.log1p(-ratio)
     neff_sel = jnp.exp(2 * log_mu_sel - log_s2)
     numpyro.deterministic("neff_sel", neff_sel)
-    numpyro.factor("neff_sel_criteria",jnp.nan_to_num(log_smooth_neff_boundary(neff_sel, 4 * nobs), neginf=-1e20, posinf=1e20), )
+    numpyro.factor("neff_sel_criteria",jnp.nan_to_num(log_smooth_neff_boundary(neff_sel, 4 * nobs),nan=-1e20, neginf=-1e20, posinf=1e20), )
     #mu_sel = jnp.exp(log_mu2)
     mu_sel = jnp.exp(log_mu_sel)
 
