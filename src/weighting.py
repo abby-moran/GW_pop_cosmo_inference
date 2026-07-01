@@ -12,12 +12,15 @@ import intensity_models
 from inspect import getfullargspec
 from utils import chi_effective_prior_from_isotropic_spins
 import pandas as pd
+import mock_observations
 #import fisher_snrs #import compute_snrs
 from scipy.stats import norm, truncnorm
 #import fisher_snrs
 import jax.scipy.stats as jsst
 import jax
 jax.config.update("jax_enable_x64", True)
+from pycbc.detector import Detector
+det = Detector("H1")
 
 
 COSMO_PARAMS = ['h', 'w', 'Om']
@@ -93,7 +96,7 @@ def li_prior_wt(m1, q, z, cosmology_weighted=False):
     else:
         return np.square(1+z)*m1*np.square(Planck18.luminosity_distance(z).to(u.Gpc).value)*(Planck18.comoving_distance(z).to(u.Gpc).value + (1+z)*Planck18.hubble_distance.to(u.Gpc).value/Planck18.efunc(z))
     
-def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax = 1.9):    
+def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax = 3):    
     with h5py.File(file, 'r') as f:
         if 'PublicationSamples' in f.keys():
             # O3a files
@@ -128,13 +131,33 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
 
     if data_release == 'GWTC4p0' or data_release == 'GWTC5p0':
         dvcdz = Planck18.differential_comoving_volume(zs[mask]).to(u.Gpc**3 / u.sr).value
-        prior = dvcdz*m1_det
+        ddl_dz = (Planck18.comoving_distance(zs[mask]).to(u.Gpc).value + 
+                  (1 + zs[mask]) * Planck18.hubble_distance.to(u.Gpc).value / Planck18.efunc(zs[mask]))
+
+        prior = dvcdz * m1_det * ddl_dz
+        #prior = dvcdz*m1_det
     else:
         prior = dLs**2 * m1_det
     
     return m1_det, qs, dLs, prior
 
-def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1, rng=None):
+def finn_chernoff_theta(ra, dec, iota, gps_time):
+        
+    Fp, Fx = det.antenna_pattern(
+        ra,
+        dec,
+        0.0,
+        gps_time
+    )
+
+    theta = 2*np.sqrt(
+        Fp**2 * ((1 + np.cos(iota)**2)/2)**2
+        + Fx**2 * np.cos(iota)**2
+    )
+
+    return theta
+
+def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1, rng=None, mass_sel=2.5):
     """Return `(m1, q, z, pdraw, nsel)` to estimate selection effects.
     
     :param file: The injection file.
@@ -233,10 +256,32 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
         f = pd.read_hdf(file, key='events')
         m1s_sel = np.array(f['mass1_source'])
         qs_sel = np.array(f['mass2_source'])/m1s_sel
+        m2s_sel=np.array(f['mass2_source'])
+        
+
+        theta_true = np.random.beta(2, 4, len(m1s_sel))  # default fallback
+
+        if 'right_ascension' in f.columns:
+            ras = np.array(f['right_ascension'])
+            decs = np.array(f['declination'])
+            iotas = np.array(f['inclination'])
+            gps_time = np.array(f['time_geocenter'])
+
+            good = np.isfinite(ras) & np.isfinite(decs)
+
+            theta_true[good] = finn_chernoff_theta(
+                ras[good],
+                decs[good],
+                iotas[good],
+                gps_time[good]
+            )
+            print(len(gps_time[good]))
+
         try:
             zs_sel = np.array(f['z'])
         except:
             zs_sel = np.array(f['redshift'])
+        m1s_det=m1s_sel*(1+zs_sel)
         a1s_sel = np.sqrt(sum([np.array(f[f'spin1{ii}'])**2 for ii in ['x', 'y', 'z']]))
         a2s_sel = np.sqrt(sum([np.array(f[f'spin2{ii}'])**2 for ii in ['x', 'y', 'z']]))
         costilt1s_sel  = (
@@ -275,8 +320,42 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
         gstlal_far = get_first(f, ['gstlal_far', 'o4b_gstlal_far', 'o4a_gstlal_far', 'o3_gstlal_far'])
         mbta_far = get_first(f, ['mbta_far', 'o4b_mbta_far', 'o4a_mbta_far', 'o3_mbta_far'])
         
-        m1s_det=m1s_sel*(1+zs_sel)
-        detected = (pycbc_far < far_threshold) | (cwb_bbh_far < far_threshold) | (gstlal_far < far_threshold) | (mbta_far < far_threshold)| (m1s_det>2.5)
+        
+        SNR=np.array(f['estimated_optimal_snr_net'])
+        a_rho = (0.0 - SNR) / np.sqrt(3)
+        SNR_obs = truncnorm.rvs(a_rho, np.inf, loc=SNR, scale=np.sqrt(3))
+
+        uncert = mock_observations.Uncertainties.from_snr(SNR_obs, mc_scale=.1, q_scale=1.7, th_scale=1.1)
+        slmc = np.asarray(uncert.sigma_log_mc)
+        sq   = np.asarray(uncert.sigma_q)
+        sth  = np.asarray(uncert.sigma_theta)
+
+        # --- log_mc_obs ---
+        mc_det=get_mc(m1s_det, qs_sel)
+        log_mc_obs = norm.rvs(loc=np.log(mc_det), scale=slmc)
+        mc_obs = np.exp(log_mc_obs)
+
+        # --- q_obs (vectorized truncnorm) ---
+        a_q = (0.0 - qs_sel) / sq
+        b_q = (1.0 - qs_sel) / sq
+        q_obs = truncnorm.rvs(a_q, b_q, loc=qs_sel, scale=sq)
+
+        # --- theta_obs (vectorized truncnorm) ---
+        a_th = (0.0 - theta_true) / sth
+        b_th = (1.0 - theta_true) / sth
+        theta_obs = truncnorm.rvs(a_th, b_th, loc=theta_true, scale=sth)
+
+        # --- derived quantities ---
+        m1_det_obs = get_m1(mc_obs, q_obs)
+        z_obs= theta_obs/theta_true * SNR/SNR_obs
+        m1_src_obs = m1_det_obs / (1 + z_obs)
+        m2_src_obs = m1_src_obs * q_obs
+
+        #m2s_det=m2s_sel*(1+zs_sel)
+        #m1_src = m1_det / (1 + z_obs)
+        #m2_src = m1_src * q_obs
+
+        detected = ((pycbc_far < far_threshold) | (cwb_bbh_far < far_threshold) | (gstlal_far < far_threshold) | (mbta_far < far_threshold)) & (m2_src_obs>mass_sel)
         with h5py.File(file, 'r') as obj:
             ndraw = obj.attrs['total_generated']
             T=np.array(obj.attrs['total_analysis_time'])/(3600.0*24.0*365.25)

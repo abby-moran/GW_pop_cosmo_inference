@@ -118,7 +118,7 @@ if __name__ == "__main__":
     print(truth_params)
     #kernel = DiscreteHMCGibbs(NUTS(intensity_models.pop_cosmo_model, init_strategy=init_strategy))
 
-    kernel = NUTS(intensity_models.pop_cosmo_model, init_strategy=init_strategy, max_tree_depth=8)#, target_accept_prob=0.95)
+    kernel = NUTS(intensity_models.pop_cosmo_model, init_strategy=init_strategy, max_tree_depth=7)#, target_accept_prob=0.95)
     mcmc = MCMC(kernel, num_warmup=nmcmc, num_samples=nmcmc, num_chains=nchain,
                 chain_method="parallel", progress_bar=True)
     mcmc.run(jax.random.PRNGKey(random_seed), m1s, qs, dls, pdraws, sel_samples['m1d'].to_list(), 

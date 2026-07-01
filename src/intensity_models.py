@@ -71,6 +71,11 @@ def mmin_log_smooth_turnon(m, delta_m, mmin):
     logwindow = jnp.where(m < mmin, -jnp.inf, jnp.log(window))
     return logwindow
 
+@jax.jit
+def log_gaussian_bump(m, mu, sigma):
+    """Unnormalized log Gaussian shape; equals 0 (height 1) at m=mu."""
+    return -0.5*jnp.square((m - mu) / sigma)
+
 @dataclass
 class LogDNDMPISN(object):
     r"""
@@ -107,6 +112,7 @@ class LogDNDMPISN(object):
     mpisn: object
     mbhmax: object
     sigma: object
+    mco_min: object = 8.0   # NEW: fixed floor below which the CO-mass power law is smoothly suppressed
     n_m: object = 256
     mbh_grid: object = dataclasses.field(init=False)
     log_dN_grid: object = dataclasses.field(init=False)
@@ -119,7 +125,6 @@ class LogDNDMPISN(object):
 
         log_mbh = jnp.linspace(jnp.log(min_bh_mass), jnp.log(max_bh_mass), self.n_m+2)
         log_mco = jnp.linspace(jnp.log(min_co_mass), jnp.log(max_co_mass), self.n_m)
-
 
         # Array dimensions are (<redshift>, <MCO>, <MBH>).
         sigma = self.sigma
@@ -137,7 +142,13 @@ class LogDNDMPISN(object):
         log_mu = jnp.log(mu)
 
         log_p = -0.5 * jnp.square((log_mbh - log_mu) / sigma) - 0.5*jnp.log(2*jnp.pi) - jnp.log(sigma) - log_mbh
-        log_wts = log_dNdmCO(mco, self.a, self.b) + log_p
+
+        # NEW: suppress the mco power law below mco_min *before* the integral,
+        # so the spurious low-mass rise (mu(mco)=mco for mco < mpisn) never
+        # enters log_dN_grid and competes with the separate low-mass bump.
+        log_mco_window = log_smooth_turnon(mco, self.mco_min, width=0.2)
+        log_wts = log_dNdmCO(mco, self.a, self.b) + log_mco_window + log_p
+
         log_trapz = np.log(0.5) + jnp.logaddexp(log_wts[:,:-1,:], log_wts[:,1:,:]) + jnp.log(jnp.diff(mco, axis=1))
 
         self.log_dN_grid = jss.logsumexp(log_trapz, axis=1)
@@ -162,6 +173,10 @@ class LogDNDM(object):
     fpl: object
     mbh_min: object
     delta_m: object
+    mp_low: object
+    msigma_low: object
+    flow: object
+    mco_min: object = 8.0   # NEW
     zmax: object = 20
     mref: object = 30.0
     zref: object = 0.001
@@ -175,7 +190,7 @@ class LogDNDM(object):
         self.z_array = jnp.expm1(jnp.linspace(np.log(1), jnp.log(1+self.zmax), 30))
         mpisns = self.mpisn + self.mpisndot * (1 - 1/(1+self.z_array))
         mbhmaxs = mpisns + self.dmbhmax
-        self.log_dndm_pisn = LogDNDMPISN(self.a, self.b, mpisns, mbhmaxs, self.sigma)
+        self.log_dndm_pisn = LogDNDMPISN(self.a, self.b, mpisns, mbhmaxs, self.sigma, mco_min=self.mco_min)
         self.mbh_grid = self.log_dndm_pisn.mbh_grid
         self.log_dndm_pisn_grid = self.log_dndm_pisn.log_dN_grid.T
         self.mbhmaxs = jnp.asarray(mbhmaxs)
@@ -215,9 +230,14 @@ class LogDNDM(object):
         z = jnp.atleast_1d(z) 
         log_dNdm = self.interp_2d_dndmpisn(m, z)
 
-        #log_dNdm = jnp.where(m <= self.log_dndm_pisn.mbh_grid[0], log_dNdm[0], log_dNdm)
         log_dNdm = jnp.where(m >= self.log_dndm_pisn.mbh_grid[-1], -np.inf, log_dNdm)
-        
+
+        # NEW: low-mass Gaussian peak. flow = peak height as a fraction of
+        # the continuum's value at mp_low (fitted, not hardcoded)
+        log_dndm_at_peak = self.interp_2d_dndmpisn(jnp.full_like(z, self.mp_low), z)
+        log_peak = jnp.log(self.flow) + log_dndm_at_peak + log_gaussian_bump(m, self.mp_low, self.msigma_low)
+        log_dNdm = jnp.logaddexp(log_dNdm, log_peak)
+
         mbhmax_at_samples = jnp.array(self.mpisn + self.mpisndot * (1 - 1/(1+z)) + self.dmbhmax)
 
         log_dNdmbhmax_at_samples = self.interp_2d_dndmpisn(mbhmax_at_samples, z)
@@ -226,7 +246,7 @@ class LogDNDM(object):
         log_dNdm = jnp.where(m < self.mbh_min, -np.inf, log_dNdm)
         logwindow = mmin_log_smooth_turnon(m, delta_m=self.delta_m, mmin= self.mbh_min)
         log_dNdm = log_dNdm + logwindow
-        return log_dNdm 
+        return log_dNdm
 
 @dataclass
 class LogDNDV(object):
@@ -269,6 +289,10 @@ class LogDNDMDQDV(object):
     lam: object
     kappa: object
     zp: object
+    mp_low: object
+    msigma_low: object
+    flow: object
+    mco_min: object = 8.0   # NEW
     mref: object = 30.0
     qref: object = 1.0
     zref: object = 0.001
@@ -278,10 +302,12 @@ class LogDNDMDQDV(object):
     log_dndm: object = dataclasses.field(init=False)
     log_dndv: object = dataclasses.field(init=False)
 
-
     def __post_init__(self):
-        self.log_dndm = LogDNDM(self.a, self.b, self.c, self.mpisn, self.mpisndot, self.mbhmax, self.sigma, self.fpl, mref=self.mref, 
-                                zmax=self.zmax, zref = self.zref, mbh_min = self.mbh_min, delta_m=self.delta_m)
+        self.log_dndm = LogDNDM(self.a, self.b, self.c, self.mpisn, self.mpisndot, self.mbhmax, self.sigma, self.fpl,
+                                mp_low=self.mp_low, msigma_low=self.msigma_low, flow=self.flow,
+                                mco_min=self.mco_min,
+                                mref=self.mref,
+                                zmax=self.zmax, zref=self.zref, mbh_min=self.mbh_min, delta_m=self.delta_m)
         self.log_dndv = LogDNDV(self.lam, self.kappa, self.zp, self.zref, zmax=self.zmax)
         self._normalize()
 
@@ -393,7 +419,9 @@ def build_population_model(sample):
         mpisn=sample['mpisn'], mpisndot=sample['mpisndot'],
         mbhmax=sample['mbhmax'], sigma=sample['sigma'], fpl=sample['fpl'],
         beta=sample['beta'], lam=sample['lam'], kappa=sample['kappa'], zp=sample['zp'],
-        zmax=sample['zmax'], mbh_min=sample['mbh_min'], delta_m=sample['delta_m']
+        zmax=sample['zmax'], mbh_min=sample['mbh_min'], delta_m=sample['delta_m'], mp_low=sample['mp_low'],
+        msigma_low=sample['msigma_low'], flow=sample['flow'],
+        mco_min=sample['mco_min'],   # NEW
     )
 #H_GRID = jnp.linspace(0.60, .8, 50)
     

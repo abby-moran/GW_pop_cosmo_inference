@@ -31,6 +31,7 @@ dependencies = [
     "setuptools<81",
     "ipykernel>=7.2.0",
     "gwosc>=0.8.1",
+    "pycbc>=2.10.0",
 ]
 
 [project.optional-dependencies]

@@ -33,6 +33,9 @@ run_dir = os.path.join(base_runs_dir, f"{run_name}")
 os.makedirs(run_dir, exist_ok=False)
 
 # extract the paramters we need from the config file
+include_file=cfg["run"]["list_file"]
+mass_sel=cfg["run"].getfloat("mass_sel", fallback=2.5)
+
 output_file_PE = os.path.join(run_dir, cfg["run"]["output_file_PE"])
 output_sel_file = os.path.join(run_dir, cfg["run"]["output_sel_file"])
 sel_input = cfg["run"]["sel_input"]
@@ -66,7 +69,7 @@ if __name__ == "__main__":
     #files += glob.glob(os.path.join(folder2, "*_nocosmo.h5"))
     print(files)
     INCLUDE_LIST=[]
-    with open("../runs/INCLUDE_LIST.txt", "r") as f:
+    with open(include_file, "r") as f:
         INCLUDE_LIST = set(line.strip() for line in f if line.strip())
         filtered_files = []
     for f in files:
@@ -129,7 +132,7 @@ if __name__ == "__main__":
 
     # Now selection samples!
     (m1, q, z, a1, a2, cos_tilt1, cos_tilt2, pdraw, ndraw) = weighting.extract_selection_samples(
-                                                    sel_input,nsamp=None, desired_pop_wt=None)
+                                                    sel_input,nsamp=None, desired_pop_wt=None, mass_sel=mass_sel)
 
     df = pd.DataFrame({'m1': m1, 'q': q, 'z': z, 'a1': a1, 
                     'a2':a2, 'cos_tilt_1': cos_tilt1, 'cos_tilt_2': cos_tilt2, 
