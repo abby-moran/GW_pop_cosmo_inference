@@ -12,6 +12,9 @@ import numpy as np
 import numpyro 
 import numpyro.distributions as dist
 from utils import jnp_cumtrapz, sample_parameters_from_dict, log_expit
+#jax.config.update("jax_log_compiles", True)
+from jax.scipy.ndimage import map_coordinates
+
 
 @jax.jit
 def mean_mbh_from_mco(mco, mpisn, mbhmax):
@@ -24,11 +27,13 @@ def mean_mbh_from_mco(mco, mpisn, mbhmax):
     a = 1 / (4*(mpisn - mbhmax))
     mcomax = 2*mbhmax - mpisn
     return jnp.where(mco < mpisn, mco, mbhmax + a*jnp.square(mco - mcomax))
+
 @jax.jit
 def largest_mco(mpisn, mbhmax):
     """The largest CO core mass with positive BH masses."""
     mcomax = 2*mbhmax - mpisn
     return mcomax + jnp.sqrt(4*mbhmax*(mbhmax - mpisn))
+
 @jax.jit
 def log_dNdmCO(mco, a, b):
     r"""The broken power law CO core mass function.
@@ -42,11 +47,13 @@ def log_dNdmCO(mco, a, b):
     mtr = 20.0
     x = mco/mtr
     return jnp.where(mco < mtr, -a*jnp.log(x), -b*jnp.log(x))
+
 @jax.jit
 def smooth_log_dNdmCO(xx, a, b):
     xtr = 20
     delta = 0.05
     return -a * jnp.log(xx / xtr) + delta * (a - b) * jnp.log(0.5 * (1 + (xx/xtr)**(1/delta)))
+
 @jax.jit
 def log_smooth_turnon(m, mmin, width=0.05):
     """A function that smoothly transitions from 0 to 1.
@@ -56,8 +63,8 @@ def log_smooth_turnon(m, mmin, width=0.05):
     :param width: (optional) The fractional width of the transition.
     """
     dm = mmin*width
-
     return -jnp.log1p(jnp.exp(-(m-mmin)/dm))
+
 @jax.jit
 def mmin_log_smooth_turnon(m, delta_m, mmin):
     """Log of a function that smoothly transitions from 0 to 1 over the interval [mmin, mmin + delta_m].
@@ -90,19 +97,20 @@ def log_trapz_grid(log_f, x):
         axis=-1,
     )
 
-
 @jax.jit
 def log_normalized_gaussian(m, mu, sigma):
     """Properly normalized log Gaussian pdf (assumes mu >> sigma so that
     truncation at m=0 is negligible)."""
     return log_gaussian_bump(m, mu, sigma) - 0.5*jnp.log(2*jnp.pi) - jnp.log(sigma)
 
-
 @jax.jit
 def log_normalized_power_law_tail(m, mbhmax, c):
     """Properly normalized log pdf of p(m) propto (m/mbhmax)^(-c) for
     m > mbhmax, c > 1. (Smooth turn-on at mbhmax is applied separately and
-    only mildly perturbs this normalization.)"""
+    only mildly perturbs this normalization.) NOTE: this is only used here
+    as a *shape*; the overall amplitude of the tail component is set by
+    continuity anchoring in LogDNDM, not by treating this as a literal
+    probability fraction."""
     return jnp.log(c - 1) - jnp.log(mbhmax) - c*jnp.log(m/mbhmax)
 
 
@@ -146,7 +154,7 @@ class LogDNDMPISN(object):
     n_m: object = 256
     mbh_grid: object = dataclasses.field(init=False)
     log_dN_grid: object = dataclasses.field(init=False)
-    log_Z_grid: object = dataclasses.field(init=False)   # NEW: log normalization vs z
+    log_Z_grid: object = dataclasses.field(init=False)   # log normalization vs z
 
     def __post_init__(self):
         min_bh_mass = 1.5
@@ -181,18 +189,32 @@ class LogDNDMPISN(object):
         self.log_dN_grid = jss.logsumexp(log_trapz, axis=1)   # shape (n_z, n_mbh)
         self.mbh_grid = mbh[0,0,:]
 
-        # NEW: normalize over mbh at each z, so this is usable as a proper
+        # normalize over mbh at each z, so this is usable as a proper
         # conditional pdf p(mbh | z) rather than an arbitrary-height density.
         self.log_Z_grid = log_trapz_grid(self.log_dN_grid, self.mbh_grid)   # shape (n_z,)
 
 
 @dataclass
 class LogDNDM(object):
-    """
+    r"""
     Function-like object representing the full compact object mass function.
 
-    A combination of :class:`LogDNDMPISN` above and a power law that begins at
-    :math:`m = m_\mathrm{BH,max}` with relative amplitude `fpl` and slope `c`.
+    A mixture of three components as a function of BH mass m at redshift z:
+      - the PISN continuum (:class:`LogDNDMPISN`), a normalized shape used as
+        the reference component (implicit coefficient 1);
+      - a low-mass Gaussian peak, normalized shape, amplitude `flow`;
+      - a high-mass power-law tail, normalized shape, amplitude `fpl`.
+
+    IMPORTANT: `flow` and `fpl` are continuity-anchored amplitudes, NOT
+    probability fractions. Concretely, the peak/tail amplitudes are defined
+    relative to the height of the (PISN [+ peak, for the tail]) mixture at
+    the peak/tail location, so `flow=1` means "the peak is as tall as the
+    continuum would have been there", not "the peak contains 100% of
+    events". This keeps everything closed-form and cheap (no numerical
+    normalization integral needed), at the cost of `flow`/`fpl` not being
+    directly interpretable as population fractions. If you want fractions
+    for plotting/reporting, compute them as a separate deterministic
+    quantity by numerically integrating each component post hoc.
     """
     a: object
     b: object
@@ -227,82 +249,52 @@ class LogDNDM(object):
         self.log_Z_pisn_grid = self.log_dndm_pisn.log_Z_grid          # (n_z,)
         self.mbhmaxs = jnp.asarray(mbhmaxs)
 
-        # total normalization of the full mixture (PISN + peak + tail),
-        # computed once on a wide m-grid at each z_array point.
-        # Must come after the assignments above since _log_dNdm_unnormalized
-        # depends on self.log_dndm_pisn / self.mbh_grid / self.log_Z_pisn_grid.
-        m_norm_grid = jnp.exp(jnp.linspace(jnp.log(0.5), jnp.log(1000.0), 512))
-        log_unnorm = self._log_dNdm_unnormalized(m_norm_grid[None, :], self.z_array[:, None])  # (n_z, n_m)
-        self.log_Z_total_grid = log_trapz_grid(log_unnorm, m_norm_grid)  # (n_z,)
-
     def interp_2d_dndmpisn(self, m, z):
-        m_indxs = jnp.searchsorted(self.mbh_grid, m)
-        z_indxs = jnp.searchsorted(self.z_array, z)
-
-        m_upper = self.mbh_grid[m_indxs]
-        m_lower = self.mbh_grid[m_indxs - 1]
-        z_upper = self.z_array[z_indxs]
-        z_lower = self.z_array[z_indxs - 1]
-
-        f1 = self.log_dndm_pisn_grid[m_indxs - 1, z_indxs - 1]
-        f2 = self.log_dndm_pisn_grid[m_indxs, z_indxs - 1]
-        f3 = self.log_dndm_pisn_grid[m_indxs, z_indxs]
-        f4 = self.log_dndm_pisn_grid[m_indxs - 1, z_indxs]
-
-        mdiffs = m_upper - m_lower
-        zdiffs = z_upper - z_lower
-        mdiffs = jnp.where(mdiffs != 0, mdiffs, np.inf)
-        zdiffs = jnp.where(zdiffs != 0, zdiffs, np.inf)
-
-        t = jnp.where(m_lower == m_upper, 0, (m - m_lower) / mdiffs)
-        u = jnp.where(z_lower == z_upper, 0, (z - z_lower) / zdiffs)
-
-        coefficients = jnp.array([(1 - t)*(1 - u), t*(1 - u), t*u, (1 - t)*u])
-        fs = jnp.array([f1, f2, f3, f4])
-        coefficients = jnp.where(jnp.isinf(fs), 1e-6, coefficients)
-
-        return jnp.einsum('i...,i...', coefficients, fs)
+        m, z = jnp.broadcast_arrays(m, z)
+        m_idx = jnp.interp(m, self.mbh_grid, jnp.arange(self.mbh_grid.shape[0]))
+        z_idx = jnp.interp(z, self.z_array, jnp.arange(self.z_array.shape[0]))
+        coords = jnp.stack([m_idx, z_idx], axis=0)
+        return map_coordinates(self.log_dndm_pisn_grid, coords, order=1, mode='nearest')
 
     def log_Z_pisn_at_z(self, z):
+        # 1D interpolation of the PISN component's mass-normalization vs z
         return jnp.interp(z, self.z_array, self.log_Z_pisn_grid)
-
-    def log_Z_total_at_z(self, z):
-        return jnp.interp(z, self.z_array, self.log_Z_total_grid)
-
-    def _log_dNdm_unnormalized(self, m, z):
-        f_pisn = 1.0  # reference scale — flow, fpl are amplitudes relative to this
-
-        log_p_pisn_raw = self.interp_2d_dndmpisn(m, z)
-        log_p_pisn_raw = jnp.where(m >= self.log_dndm_pisn.mbh_grid[-1], -np.inf, log_p_pisn_raw)
-        log_p_pisn = log_p_pisn_raw - self.log_Z_pisn_at_z(z)
-
-        log_p_low = log_normalized_gaussian(m, self.mp_low, self.msigma_low)
-
-        mbhmax_at_samples = jnp.array(self.mpisn + self.mpisndot*(1 - 1/(1+z)) + self.dmbhmax)
-
-        log_pisn_at_join = jnp.where(
-            mbhmax_at_samples >= self.log_dndm_pisn.mbh_grid[-1], -np.inf,
-            self.interp_2d_dndmpisn(mbhmax_at_samples, z) - self.log_Z_pisn_at_z(z)
-        )
-        log_peak_at_join = log_normalized_gaussian(mbhmax_at_samples, self.mp_low, self.msigma_low)
-        log_mix_at_join = jnp.logaddexp(jnp.log(f_pisn) + log_pisn_at_join,
-                                         jnp.log(self.flow) + log_peak_at_join)
-
-        log_p_pl_raw = jnp.where(m < mbhmax_at_samples, -jnp.inf, -self.c*jnp.log(m/mbhmax_at_samples))
-        log_p_pl = jnp.log(self.fpl) + log_mix_at_join + log_p_pl_raw + log_smooth_turnon(m, mbhmax_at_samples)
-
-        log_dNdm = jnp.logaddexp(jnp.log(f_pisn) + log_p_pisn, jnp.log(self.flow) + log_p_low)
-        return jnp.logaddexp(log_dNdm, log_p_pl)
 
     def __call__(self, m, z):
         m = jnp.atleast_1d(m)
         z = jnp.atleast_1d(z)
 
-        log_dNdm = self._log_dNdm_unnormalized(m, z) - self.log_Z_total_at_z(z)
+        # --- PISN continuum: normalized shape, reference coefficient 1 ---
+        log_p_pisn_raw = self.interp_2d_dndmpisn(m, z)
+        log_p_pisn_raw = jnp.where(m >= self.log_dndm_pisn.mbh_grid[-1], -np.inf, log_p_pisn_raw)
+        log_p_pisn = log_p_pisn_raw - self.log_Z_pisn_at_z(z)
+
+        # --- low-mass Gaussian peak: normalized shape, amplitude flow ---
+        log_p_low = log_normalized_gaussian(m, self.mp_low, self.msigma_low)
+
+        mbhmax_at_samples = jnp.array(self.mpisn + self.mpisndot*(1 - 1/(1+z)) + self.dmbhmax)
+
+        # --- high-mass tail: normalized shape, amplitude fpl, anchored by
+        #     continuity to the (PISN + peak) mixture's height at mbhmax ---
+        log_pisn_at_join = jnp.where(
+            mbhmax_at_samples >= self.log_dndm_pisn.mbh_grid[-1], -np.inf,
+            self.interp_2d_dndmpisn(mbhmax_at_samples, z) - self.log_Z_pisn_at_z(z)
+        )
+        log_peak_at_join = log_normalized_gaussian(mbhmax_at_samples, self.mp_low, self.msigma_low)
+        log_mix_at_join = jnp.logaddexp(log_pisn_at_join, jnp.log(self.flow) + log_peak_at_join)
+
+        log_p_pl_raw = jnp.where(m < mbhmax_at_samples, -jnp.inf, -self.c*jnp.log(m/mbhmax_at_samples))
+        log_p_pl = jnp.log(self.fpl) + log_mix_at_join + log_p_pl_raw + log_smooth_turnon(m, mbhmax_at_samples)
+
+        # --- combine: PISN is the reference (coefficient 1); flow, fpl are
+        #     amplitudes relative to it, NOT probability fractions ---
+        log_dNdm = jnp.logaddexp(log_p_pisn, jnp.log(self.flow) + log_p_low)
+        log_dNdm = jnp.logaddexp(log_dNdm, log_p_pl)
 
         log_dNdm = jnp.where(m < self.mbh_min, -np.inf, log_dNdm)
         logwindow = mmin_log_smooth_turnon(m, delta_m=self.delta_m, mmin=self.mbh_min)
         return log_dNdm + logwindow
+
 
 @dataclass
 class LogDNDV(object):
@@ -328,6 +320,7 @@ class LogDNDV(object):
 
         return jnp.where(z < self.zmax, self.lam*jnp.log1p(z) - jnp.log1p(((1+z)/(1+self.zp))**self.kappa) + self.log_norm, -np.inf)
 
+
 @dataclass
 class LogDNDMDQDV(object):
     r"""
@@ -348,7 +341,7 @@ class LogDNDMDQDV(object):
     mp_low: object
     msigma_low: object
     flow: object
-    mco_min: object = 8.0   # NEW
+    mco_min: object = 8.0
     mref: object = 30.0
     qref: object = 1.0
     zref: object = 0.001
@@ -382,6 +375,7 @@ class LogDNDMDQDV(object):
         m2 = q*m1
         mt = m1+m2
         return self.log_dndm(m1, z) + self.log_dndm(m2, z) + self.beta*jnp.log(mt/(self.mref*(1 + self.qref))) + jnp.log(m1) + self.log_dndv(z) - self.log_norm
+
 
 @dataclass
 class FlatwCDMCosmology(object):
@@ -445,23 +439,30 @@ class FlatwCDMCosmology(object):
 
     def z_of_dC(self, dC):
         return jnp.interp(dC / self.dH, self.dcinterp_dimless, self.zinterp)
-        #eturn jnp.interp(dC, self.dcinterp, self.zinterp)
     def z_of_dL(self, dL):
         return jnp.interp(dL / self.dH, self.dlinterp_dimless, self.zinterp)
-        #return jnp.interp(dL, self.dlinterp, self.zinterp)
+
 
 coords = {
     'm_grid': np.exp(np.linspace(np.log(1), np.log(450), 128)),
     'q_grid': np.linspace(0, 1, 129)[1:],
     'z_grid': np.expm1(np.linspace(np.log1p(0), np.log1p(20), 128))
 }
-@jax.jit
+
+#@jax.jit
 def get_deterministic_parameters(sample):
     kappa = numpyro.deterministic('kappa', sample['lam'] + sample['dkappa'])
     mbhmax = numpyro.deterministic('mbhmax', sample['mpisn'] + sample['dmbhmax'])
+
+    # flow, fpl are free positive amplitudes (continuity-anchored, NOT
+    # probability fractions -- see LogDNDM docstring). Sampled in log-space
+    # so they stay positive; no stick-breaking / simplex constraint needed
+    # since they no longer have to sum to <= 1.
     flow = numpyro.deterministic('flow', jnp.exp(sample['log_flow']))
     fpl = numpyro.deterministic('fpl', jnp.exp(sample['log_fpl']))
+
     return dict(kappa=kappa, mbhmax=mbhmax, flow=flow, fpl=fpl)
+
 
 def log_smooth_neff_boundary(values, criteria):
         scaled_x = (values - criteria) / (0.05 * criteria)
@@ -469,6 +470,7 @@ def log_smooth_neff_boundary(values, criteria):
         # preventing the step-size collapse that power-4 (gradient ~32000 at
         # scaled_x=-20) and power-10 (gradient ~5e12) caused.
         return jnp.minimum(0.0, scaled_x)
+
 
 def build_population_model(sample):
     return LogDNDMDQDV(
@@ -478,10 +480,10 @@ def build_population_model(sample):
         beta=sample['beta'], lam=sample['lam'], kappa=sample['kappa'], zp=sample['zp'],
         zmax=sample['zmax'], mbh_min=sample['mbh_min'], delta_m=sample['delta_m'], mp_low=sample['mp_low'],
         msigma_low=sample['msigma_low'], flow=sample['flow'],
-        mco_min=sample['mco_min'],   # NEW
+        mco_min=sample['mco_min'],
     )
 #H_GRID = jnp.linspace(0.60, .8, 50)
-    
+
 def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel, Ndraw, priors=None):
     """
     Ndraw is # of events in the injection samples used to estimate the selection function
@@ -489,14 +491,13 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel = map(jnp.array, (m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel))
 
     log_pdraw_sel = jnp.log(pdraw_sel)
-    #log_pdraw = jnp.log(pdraw)
     nobs = m1s_det.shape[0]
-    
+
     nsamp = m1s_det.shape[1]
 
     nsel = m1s_det_sel.shape[0]
 
-    sample = sample_parameters_from_dict(priors)#, grid_params={'h': H_GRID})
+    sample = sample_parameters_from_dict(priors)
     deterministic_parameters = get_deterministic_parameters(sample)
     sample.update(deterministic_parameters) #sample from hyperparameters, set up cosmology (cosmo) and population model (dN)
 
@@ -529,26 +530,16 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
 
     log_mu2 = jss.logsumexp(2*log_sel_wts) - 2*jnp.log(Ndraw)
     log_s2 = log_mu2 + jnp.log1p(-jnp.exp(2*log_mu_sel - jnp.log(Ndraw) - log_mu2))
-    
-    #_ = numpyro.deterministic('neff_sel', jnp.exp(2*log_mu_sel - log_s2))
-    #mu_sel = jnp.exp(log_mu_sel)
-    # get some derived quantities for later
-    # effective sample size for weights
-    #_ = numpyro.deterministic('neff', jnp.exp(2*jss.logsumexp(log_wts, axis=1) - jss.logsumexp(2*log_wts, axis=1)))
- 
+
     #N eff cuts
     neff = jnp.exp(2 * jss.logsumexp(log_wts, axis=1) - jss.logsumexp(2 * log_wts, axis=1))
     min_neff = jnp.min(neff)
     numpyro.deterministic("neff", neff)
     numpyro.factor("neff_criteria",jnp.nan_to_num(log_smooth_neff_boundary(min_neff, nobs),nan=-1e20, neginf=-1e20, posinf=1e20),)
 
-    #ratio = jnp.exp(2 * log_mu_sel - jnp.log(Ndraw) - log_mu2)
-    #ratio = jnp.clip(ratio, a_min=0.0, a_max=1.0 - 1e-12)
-    #log_s2 = log_mu2 + jnp.log1p(-ratio)
     neff_sel = jnp.exp(2 * log_mu_sel - log_s2)
     numpyro.deterministic("neff_sel", neff_sel)
     numpyro.factor("neff_sel_criteria",jnp.nan_to_num(log_smooth_neff_boundary(neff_sel, 4 * nobs),nan=-1e20, neginf=-1e20, posinf=1e20), )
-    #mu_sel = jnp.exp(log_mu2)
     mu_sel = jnp.exp(log_mu_sel)
 
     R_unit = numpyro.sample('R_unit', dist.Normal(0, 1))
