@@ -260,37 +260,35 @@ class LogDNDM(object):
         # 1D interpolation of the PISN component's mass-normalization vs z
         return jnp.interp(z, self.z_array, self.log_Z_pisn_grid)
 
-    def __call__(self, m, z):
-        m = jnp.atleast_1d(m)
-        z = jnp.atleast_1d(z)
-
-        # --- PISN continuum: normalized shape, reference coefficient 1 ---
-        log_p_pisn_raw = self.interp_2d_dndmpisn(m, z)
-        log_p_pisn_raw = jnp.where(m >= self.log_dndm_pisn.mbh_grid[-1], -np.inf, log_p_pisn_raw)
-        log_p_pisn = log_p_pisn_raw - self.log_Z_pisn_at_z(z)
-
-        # --- low-mass Gaussian peak: normalized shape, amplitude flow ---
-        log_p_low = log_normalized_gaussian(m, self.mp_low, self.msigma_low)
-
+    def join_point_terms(self, z):
         mbhmax_at_samples = jnp.array(self.mpisn + self.mpisndot*(1 - 1/(1+z)) + self.dmbhmax)
-
-        # --- high-mass tail: normalized shape, amplitude fpl, anchored by
-        #     continuity to the (PISN + peak) mixture's height at mbhmax ---
         log_pisn_at_join = jnp.where(
             mbhmax_at_samples >= self.log_dndm_pisn.mbh_grid[-1], -np.inf,
             self.interp_2d_dndmpisn(mbhmax_at_samples, z) - self.log_Z_pisn_at_z(z)
         )
         log_peak_at_join = log_normalized_gaussian(mbhmax_at_samples, self.mp_low, self.msigma_low)
         log_mix_at_join = jnp.logaddexp(log_pisn_at_join, jnp.log(self.flow) + log_peak_at_join)
+        return mbhmax_at_samples, log_mix_at_join
+
+    def __call__(self, m, z, join_terms=None):
+        m = jnp.atleast_1d(m)
+        z = jnp.atleast_1d(z)
+        log_p_pisn_raw = self.interp_2d_dndmpisn(m, z)
+        log_p_pisn_raw = jnp.where(m >= self.log_dndm_pisn.mbh_grid[-1], -np.inf, log_p_pisn_raw)
+        log_p_pisn = log_p_pisn_raw - self.log_Z_pisn_at_z(z)
+
+        log_p_low = log_normalized_gaussian(m, self.mp_low, self.msigma_low)
+
+        if join_terms is None:
+            mbhmax_at_samples, log_mix_at_join = self.join_point_terms(z)
+        else:
+            mbhmax_at_samples, log_mix_at_join = join_terms
 
         log_p_pl_raw = jnp.where(m < mbhmax_at_samples, -jnp.inf, -self.c*jnp.log(m/mbhmax_at_samples))
         log_p_pl = jnp.log(self.fpl) + log_mix_at_join + log_p_pl_raw + log_smooth_turnon(m, mbhmax_at_samples)
 
-        # --- combine: PISN is the reference (coefficient 1); flow, fpl are
-        #     amplitudes relative to it, NOT probability fractions ---
         log_dNdm = jnp.logaddexp(log_p_pisn, jnp.log(self.flow) + log_p_low)
         log_dNdm = jnp.logaddexp(log_dNdm, log_p_pl)
-
         log_dNdm = jnp.where(m < self.mbh_min, -np.inf, log_dNdm)
         logwindow = mmin_log_smooth_turnon(m, delta_m=self.delta_m, mmin=self.mbh_min)
         return log_dNdm + logwindow
@@ -368,13 +366,32 @@ class LogDNDMDQDV(object):
         self.log_norm = jnp.log(self.mref) + log_dN_ref
 
     def __call__(self, m1, q, z):
-        m1 = jnp.array(m1)
-        q = jnp.array(q)
-        z = jnp.array(z)
+        orig_shape = jnp.broadcast_shapes(jnp.shape(m1), jnp.shape(q), jnp.shape(z))
+        m1 = jnp.atleast_1d(jnp.asarray(m1))
+        q = jnp.atleast_1d(jnp.asarray(q))
+        z = jnp.atleast_1d(jnp.asarray(z))
+        m2 = q * m1
+        mt = m1 + m2
 
-        m2 = q*m1
-        mt = m1+m2
-        return self.log_dndm(m1, z) + self.log_dndm(m2, z) + self.beta*jnp.log(mt/(self.mref*(1 + self.qref))) + jnp.log(m1) + self.log_dndv(z) - self.log_norm
+        join_terms = self.log_dndm.join_point_terms(z)
+        mbhmax_z, log_mix_z = (jnp.atleast_1d(x) for x in join_terms)
+
+        m_stack = jnp.concatenate([jnp.ravel(m1), jnp.ravel(m2)])
+        z_stack = jnp.concatenate([jnp.ravel(z), jnp.ravel(z)])
+        join_stack = (
+            jnp.concatenate([jnp.ravel(mbhmax_z), jnp.ravel(mbhmax_z)]),
+            jnp.concatenate([jnp.ravel(log_mix_z), jnp.ravel(log_mix_z)]),
+        )
+
+        log_dndm_stack = self.log_dndm(m_stack, z_stack, join_terms=join_stack)
+        n = m1.size
+        log_dndm_m1 = log_dndm_stack[:n].reshape(m1.shape)
+        log_dndm_m2 = log_dndm_stack[n:].reshape(m2.shape)
+
+        result = (log_dndm_m1 + log_dndm_m2
+                + self.beta * jnp.log(mt / (self.mref * (1 + self.qref)))
+                + jnp.log(m1) + self.log_dndv(z) - self.log_norm)
+        return jnp.reshape(result, orig_shape)
 
 
 @dataclass
@@ -454,12 +471,19 @@ def get_deterministic_parameters(sample):
     kappa = numpyro.deterministic('kappa', sample['lam'] + sample['dkappa'])
     mbhmax = numpyro.deterministic('mbhmax', sample['mpisn'] + sample['dmbhmax'])
 
-    # flow, fpl are free positive amplitudes (continuity-anchored, NOT
-    # probability fractions -- see LogDNDM docstring). Sampled in log-space
-    # so they stay positive; no stick-breaking / simplex constraint needed
-    # since they no longer have to sum to <= 1.
-    flow = numpyro.deterministic('flow', jnp.exp(sample['log_flow']))
-    fpl = numpyro.deterministic('fpl', jnp.exp(sample['log_fpl']))
+    if 'log_flow' in sample:
+        flow = numpyro.deterministic('flow', jnp.exp(sample['log_flow']))
+    elif 'flow' in sample:
+        flow = numpyro.deterministic('flow', sample['flow'])
+    else:
+        raise KeyError("Need either 'flow' or 'log_flow' in sample")
+
+    if 'log_fpl' in sample:
+        fpl = numpyro.deterministic('fpl', jnp.exp(sample['log_fpl']))
+    elif 'fpl' in sample:
+        fpl = numpyro.deterministic('fpl', sample['fpl'])
+    else:
+        raise KeyError("Need either 'fpl' or 'log_fpl' in sample")
 
     return dict(kappa=kappa, mbhmax=mbhmax, flow=flow, fpl=fpl)
 
@@ -479,8 +503,7 @@ def build_population_model(sample):
         mbhmax=sample['mbhmax'], sigma=sample['sigma'], fpl=sample['fpl'],
         beta=sample['beta'], lam=sample['lam'], kappa=sample['kappa'], zp=sample['zp'],
         zmax=sample['zmax'], mbh_min=sample['mbh_min'], delta_m=sample['delta_m'], mp_low=sample['mp_low'],
-        msigma_low=sample['msigma_low'], flow=sample['flow'],
-        mco_min=sample['mco_min'],
+        msigma_low=sample['msigma_low'], flow=sample['flow'],mco_min=sample['mco_min']
     )
 #H_GRID = jnp.linspace(0.60, .8, 50)
 
@@ -546,11 +569,11 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     R = numpyro.deterministic('R', nobs/mu_sel + jnp.sqrt(nobs)/mu_sel*R_unit)
 
     # differential merger rate with respect to mass, at fixed reference values of mass ratio, z
-    _ = numpyro.deterministic('mdNdmdVdt_fixed_qz', coords['m_grid']*R*jnp.exp(log_dN(coords['m_grid'], log_dN.qref, log_dN.zref)))
+    #_ = numpyro.deterministic('mdNdmdVdt_fixed_qz', coords['m_grid']*R*jnp.exp(log_dN(coords['m_grid'], log_dN.qref, log_dN.zref)))
 
     # now varying q at fixed mass, z and then varying z at fixed mass, q (redshift evolution of merger rate)
-    _ = numpyro.deterministic('dNdqdVdt_fixed_mz', log_dN.mref*R*jnp.exp(log_dN(log_dN.mref, coords['q_grid'], log_dN.zref)))
-    _ = numpyro.deterministic('dNdVdt_fixed_mq', log_dN.mref*R*jnp.exp(log_dN(log_dN.mref, log_dN.qref, coords['z_grid'])))
+    #_ = numpyro.deterministic('dNdqdVdt_fixed_mz', log_dN.mref*R*jnp.exp(log_dN(log_dN.mref, coords['q_grid'], log_dN.zref)))
+    #_ = numpyro.deterministic('dNdVdt_fixed_mq', log_dN.mref*R*jnp.exp(log_dN(log_dN.mref, log_dN.qref, coords['z_grid'])))
 
     # dimensionless Hubble parameter at z
     _ = numpyro.deterministic('hz', cosmo.h*cosmo.E(coords['z_grid']))

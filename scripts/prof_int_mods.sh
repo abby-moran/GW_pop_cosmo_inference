@@ -1,9 +1,9 @@
 #!/usr/bin/bash
 #SBATCH -p gpu
-#SBATCH --gpus-per-task=1
+#SBATCH --gpus=2
 #SBATCH --ntasks=1
-#SBATCH --mem=16G
-#SBATCH --time=0-20
+#SBATCH --mem=64G
+#SBATCH --time=0-10
 
 module load cuda/12 cudnn
 
@@ -12,4 +12,4 @@ unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python gen_inj.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/mock_TC5_noevo.ini
+srun python testing_MCMC.py

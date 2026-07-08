@@ -109,9 +109,8 @@ def get_mock_obs(df, out_file, cosmo, rho_fun, detection_threshold=8,
         inj_det['sigma_theta'] = []
         inj_det = inj_det.reset_index(drop=True)
         inj_det['evt'] = []
-        inj_det.to_hdf(out_file, key='observations',
-                       mode='w' if not append_tf else 'a',
-                       append=append_tf, format='table')
+        inj_det.to_hdf(out_file, key="observations", mode="w" if not append_tf else "a", append=append_tf,
+                format="table", min_itemsize={"evt": 20},)
         return pd.Index([]), np.array([])
 
     rho_obs = inj_det['SNR_OBS'].to_numpy()
@@ -169,7 +168,7 @@ def get_mock_obs(df, out_file, cosmo, rho_fun, detection_threshold=8,
     inj_det['evt'] = [f'evt_{i+evt_offset:06d}' for i in inj_det.index]
     inj_det.to_hdf(out_file, key='observations',
                    mode='w' if not append_tf else 'a',
-                   append=append_tf, format='table')
+                   append=append_tf, format='table', min_itemsize={"evt": 20},)
     return detected_indices, np.array(inj_det['evt'].tolist())
 
 def jax_interp_log_snr(m1_grid, q_grid, log_snr_grid, m1s, qs):
@@ -385,7 +384,7 @@ if __name__ == "__main__":
             sel_chunk['evt']   = evt_names
             sel_chunk.to_hdf(sel_file, key='true_parameters',
                             mode='w' if first_chunk else 'a',
-                            append=not first_chunk, format='table')
+                            append=not first_chunk, format='table', min_itemsize={"evt": 20})
 
             evt_offset += det_mask.sum()
             first_chunk  = False

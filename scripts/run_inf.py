@@ -53,6 +53,10 @@ def load_true_vals(filename):
     tv['log_fpl'] = np.log(tv['fpl'])
     tv['dmbhmax'] = tv['mbhmax'] - tv['mpisn']
 
+    tv['log_flow'] = jnp.log(tv['flow'])
+    tv['log_fpl'] = jnp.log(tv['fpl'])
+
+
     # remove unused raw params if desired
     del tv['kappa']
     del tv['fpl']
@@ -102,8 +106,8 @@ if __name__ == "__main__":
     pdraws= jnp.nan_to_num(pdraws, neginf=-1e30, posinf=1e30)
     print("array shapes (we want nevents, nsamples): ", m1s.shape, qs.shape, dls.shape, pdraws.shape)
 
-    sel_samples=pd.read_hdf(sel_file, key='true_parameters')
-    ndraw=sel_samples['ndraw'].iloc[0]
+    sel_samples=pd.read_hdf(sel_file, key='true_parameters')#, start=0, stop=371545)
+    ndraw=sel_samples['ndraw'].iloc[0]#/4
 
     assert np.all(m1s > 0) 
     assert np.all(qs > 0) 
@@ -118,7 +122,7 @@ if __name__ == "__main__":
     print(truth_params)
     #kernel = DiscreteHMCGibbs(NUTS(intensity_models.pop_cosmo_model, init_strategy=init_strategy))
 
-    kernel = NUTS(intensity_models.pop_cosmo_model, init_strategy=init_strategy, max_tree_depth=7)#, target_accept_prob=0.95)
+    kernel = NUTS(intensity_models.pop_cosmo_model, init_strategy=init_strategy, max_tree_depth=6)#, target_accept_prob=0.95)
     mcmc = MCMC(kernel, num_warmup=nmcmc, num_samples=nmcmc, num_chains=nchain,
                 chain_method="parallel", progress_bar=True)
     mcmc.run(jax.random.PRNGKey(random_seed), m1s, qs, dls, pdraws, sel_samples['m1d'].to_list(), 

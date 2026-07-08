@@ -31,6 +31,98 @@ def load_posterior_samples(nc_file, n_draws=None, seed=0):
 
     return params
 
+def rate_m1_for_one_draw(sample, m1_grid, q_grid, z0):
+
+    model = intensity_models.build_population_model(sample)
+
+    m1_grid = jnp.asarray(m1_grid)
+    q_grid = jnp.asarray(q_grid)
+
+    logvals = jax.vmap(
+        lambda m1: jax.vmap(lambda q: model(m1, q, z0))(q_grid)
+    )(m1_grid)
+
+    vals = jnp.exp(logvals)
+
+    # integrate over q → result shape (m1,)
+    return jnp.trapezoid(vals, q_grid, axis=1)
+def _eval_m1_q(model, m1_grid, q_grid, z0):
+    return jax.vmap(
+        lambda m1: jax.vmap(lambda q: model(m1, q, z0))(q_grid)
+    )(m1_grid)
+
+def rate_z_for_one_draw(sample, m1_grid, q_grid, z_grid):
+    """
+    Compute dR/dz by marginalizing over m1 and q.
+    """
+
+    model = intensity_models.build_population_model(sample)
+
+    m1_grid = jnp.asarray(m1_grid)
+    q_grid = jnp.asarray(q_grid)
+    z_grid = jnp.asarray(z_grid)
+
+    def eval_qz(q, z):
+        return model(m1_grid, q, z)
+
+    logvals = jax.vmap(jax.vmap(eval_qz, in_axes=(None, 0)), in_axes=(0, None))(q_grid, z_grid)
+
+    vals = jnp.exp(logvals)
+
+    # integrate m1, q, leave z
+    int_m1 = jnp.trapezoid(vals, m1_grid, axis=2)
+    dR_dz = jnp.trapezoid(int_m1, q_grid, axis=0)
+
+    return dR_dz
+
+
+def pm1_at_z_for_one_draw(sample, m1_grid, q_grid, z0):
+    """
+    Compute p(m1 | z=z0).
+    """
+
+    model = intensity_models.build_population_model(sample)
+
+    m1_grid = jnp.asarray(m1_grid)
+    q_grid = jnp.asarray(q_grid)
+
+    logvals = jax.vmap(lambda q: model(m1_grid, q, z0))(q_grid)
+
+    vals = jnp.exp(logvals)
+
+    # marginalize q
+    pm1 = jnp.trapezoid(vals, q_grid, axis=0)
+
+    # normalize
+    pm1 /= jnp.trapezoid(pm1, m1_grid)
+
+    return pm1
+
+def dR_dm1_at_z_for_one_draw(sample, m1_grid, q_grid, z0):
+    """
+    Differential rate dR/dm1 at fixed z=z0, marginalizing over q only.
+    """
+    model = intensity_models.build_population_model(sample)
+
+    m1_grid = jnp.asarray(m1_grid)
+    q_grid = jnp.asarray(q_grid)
+    z0 = jnp.asarray(z0)
+
+    def dR_at_m1(m1):
+        logvals_q = jax.vmap(lambda q: model(m1, q, z0))(q_grid)  # shape (nq,)
+        vals_q = jnp.exp(logvals_q)
+        return jnp.trapezoid(vals_q, q_grid)
+
+    return jax.vmap(dR_at_m1)(m1_grid)
+
+
+def pm1_at_z_for_one_draw(sample, m1_grid, q_grid, z0):
+    """
+    Normalized p(m1 | z=z0), proportional to dR/dm1 at fixed z0.
+    """
+    dR_dm1 = dR_dm1_at_z_for_one_draw(sample, m1_grid, q_grid, z0)
+    return dR_dm1 / jnp.trapezoid(dR_dm1, m1_grid)
+
 def compute_or_load_ppd(cache_file, compute_fn):
     if os.path.exists(cache_file):
         data = np.load(cache_file)
@@ -210,8 +302,9 @@ def load_true_vals(filename):
                 tv[key.strip()] = float(val.strip())
 
     tv['dkappa'] = tv['kappa'] - tv['lam']
-    tv['log_fpl'] = np.log(tv['fpl'])
     tv['dmbhmax'] = tv['mbhmax'] - tv['mpisn']
+    tv['log_flow'] = float(np.log(tv['flow']))
+    tv['log_fpl'] = float(np.log(tv['fpl']))
 
     return tv
 
