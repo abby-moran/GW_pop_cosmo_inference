@@ -28,6 +28,7 @@ import configparser
 import ast
 from pathlib import Path
 import tempfile
+import h5py
 
 
 #  read .ini file
@@ -452,7 +453,11 @@ if __name__ == "__main__":
 
     df_samples = pd.DataFrame({'m1': list(m1s),       # each element is an array of nsamples
                                     'q': list(qs), 'dl': list(dls), 'pdraw': list(pdraws)})
-    df_samples.to_hdf(pe_file, key="samples", mode="w")
+    with h5py.File(pe_file, "w") as f:
+        f["m1"] = m1s
+        f["q"] = qs
+        f["dl"] = dls
+        f["pdraw"] = pdraws
 
     print("array shapes (we want nevents, nsamples): ",
         m1s.shape, qs.shape, dls.shape)

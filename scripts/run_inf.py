@@ -11,6 +11,8 @@ import arviz as az
 import configparser
 import argparse
 from pathlib import Path
+import h5py
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--config", required=True, help="Path to run config file")
@@ -97,15 +99,30 @@ if __name__ == "__main__":
     random_seed = 1652819403
     print("loading in prior file: ", prior)
     prior = get_priors_from_file(prior)
-    pe_samples_mock = pd.read_hdf(pe_file, key='samples').iloc[evt_start:evt_end]# 1.5 to 2.5 k on the 1k tests
-    print(f'loaded in {pe_file}, events {evt_start} to {evt_end}')
-    m1s = np.asarray(pe_samples_mock['m1'].to_list())
-    qs = np.asarray(pe_samples_mock['q'].to_list())#[:, :1000]
-    dls =  np.asarray(pe_samples_mock['dl'].to_list())
-    pdraws = np.asarray(pe_samples_mock['pdraw'].to_list())
-    pdraws= jnp.nan_to_num(pdraws, neginf=-1e30, posinf=1e30)
-    print("array shapes (we want nevents, nsamples): ", m1s.shape, qs.shape, dls.shape, pdraws.shape)
+    
+    try:
+        with h5py.File(pe_file, "r") as f:
+            m1s = f["m1"][evt_start:evt_end]
+            qs = f["q"][evt_start:evt_end]
+            dls = f["dl"][evt_start:evt_end]
+            pdraws = f["pdraw"][evt_start:evt_end]
 
+        print(f"Loaded new-format HDF5 file {pe_file}")
+
+    except (KeyError, OSError):
+        pe_samples_mock = pd.read_hdf(pe_file, key="samples").iloc[evt_start:evt_end]
+        print(f"Loaded legacy-format HDF5 file {pe_file}, events {evt_start} to {evt_end}")
+
+        m1s = np.asarray(pe_samples_mock["m1"].to_list())
+        qs = np.asarray(pe_samples_mock["q"].to_list())
+        dls = np.asarray(pe_samples_mock["dl"].to_list())
+        pdraws = np.asarray(pe_samples_mock["pdraw"].to_list())
+
+    pdraws = jnp.nan_to_num(pdraws, neginf=-1e30, posinf=1e30)
+
+    print("array shapes (we want nevents, nsamples):",
+        m1s.shape, qs.shape, dls.shape, pdraws.shape)
+    
     sel_samples=pd.read_hdf(sel_file, key='true_parameters')#, start=0, stop=371545)
     ndraw=sel_samples['ndraw'].iloc[0]#/4
 

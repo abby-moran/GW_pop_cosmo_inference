@@ -192,7 +192,9 @@ class LogDNDMPISN(object):
         # normalize over mbh at each z, so this is usable as a proper
         # conditional pdf p(mbh | z) rather than an arbitrary-height density.
         self.log_Z_grid = log_trapz_grid(self.log_dN_grid, self.mbh_grid)   # shape (n_z,)
-
+@jax.jit
+def safe_log(x, eps=1e-300):
+    return jnp.log(jnp.clip(x, eps, None))
 
 @dataclass
 class LogDNDM(object):
@@ -267,7 +269,7 @@ class LogDNDM(object):
             self.interp_2d_dndmpisn(mbhmax_at_samples, z) - self.log_Z_pisn_at_z(z)
         )
         log_peak_at_join = log_normalized_gaussian(mbhmax_at_samples, self.mp_low, self.msigma_low)
-        log_mix_at_join = jnp.logaddexp(log_pisn_at_join, jnp.log(self.flow) + log_peak_at_join)
+        log_mix_at_join = jnp.logaddexp(log_pisn_at_join, safe_log(self.flow) + log_peak_at_join)
         return mbhmax_at_samples, log_mix_at_join
 
     def __call__(self, m, z, join_terms=None):
@@ -285,9 +287,9 @@ class LogDNDM(object):
             mbhmax_at_samples, log_mix_at_join = join_terms
 
         log_p_pl_raw = jnp.where(m < mbhmax_at_samples, -jnp.inf, -self.c*jnp.log(m/mbhmax_at_samples))
-        log_p_pl = jnp.log(self.fpl) + log_mix_at_join + log_p_pl_raw + log_smooth_turnon(m, mbhmax_at_samples)
+        log_p_pl = safe_log(self.fpl) + log_mix_at_join + log_p_pl_raw + log_smooth_turnon(m, mbhmax_at_samples)
 
-        log_dNdm = jnp.logaddexp(log_p_pisn, jnp.log(self.flow) + log_p_low)
+        log_dNdm = jnp.logaddexp(log_p_pisn, safe_log(self.flow) + log_p_low)
         log_dNdm = jnp.logaddexp(log_dNdm, log_p_pl)
         log_dNdm = jnp.where(m < self.mbh_min, -np.inf, log_dNdm)
         logwindow = mmin_log_smooth_turnon(m, delta_m=self.delta_m, mmin=self.mbh_min)
@@ -471,21 +473,23 @@ def get_deterministic_parameters(sample):
     kappa = numpyro.deterministic('kappa', sample['lam'] + sample['dkappa'])
     mbhmax = numpyro.deterministic('mbhmax', sample['mpisn'] + sample['dmbhmax'])
 
+    out = dict(kappa=kappa, mbhmax=mbhmax)
+
     if 'log_flow' in sample:
-        flow = numpyro.deterministic('flow', jnp.exp(sample['log_flow']))
+        out['flow'] = numpyro.deterministic('flow', jnp.exp(sample['log_flow']))
     elif 'flow' in sample:
-        flow = numpyro.deterministic('flow', sample['flow'])
+        out['flow'] = sample['flow']          # <-- no deterministic here
     else:
-        raise KeyError("Need either 'flow' or 'log_flow' in sample")
+        raise KeyError("Need either flow or log_flow")
 
     if 'log_fpl' in sample:
-        fpl = numpyro.deterministic('fpl', jnp.exp(sample['log_fpl']))
+        out['fpl'] = numpyro.deterministic('fpl', jnp.exp(sample['log_fpl']))
     elif 'fpl' in sample:
-        fpl = numpyro.deterministic('fpl', sample['fpl'])
+        out['fpl'] = sample['fpl']            # <-- no deterministic here
     else:
-        raise KeyError("Need either 'fpl' or 'log_fpl' in sample")
+        raise KeyError("Need either fpl or log_fpl")
 
-    return dict(kappa=kappa, mbhmax=mbhmax, flow=flow, fpl=fpl)
+    return out
 
 
 def log_smooth_neff_boundary(values, criteria):
