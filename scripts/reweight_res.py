@@ -161,7 +161,7 @@ def get_mock_obs(df, out_file, cosmo, rho_fun, detection_threshold=8,
     inj_det['sigma_q']      = sq[keep_mask]
     inj_det['theta_obs']    = theta_obs[keep_mask]
     inj_det['sigma_theta']  = sth[keep_mask]
-    inj_det['pdraw_sel'] = inj_det['pdraw_sel'] * p_keep[keep_mask]
+    #inj_det['pdraw_sel'] = inj_det['pdraw_sel'] * p_keep[keep_mask]
 
     detected_indices = inj_det.index
 
