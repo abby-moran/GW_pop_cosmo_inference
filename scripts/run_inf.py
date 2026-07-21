@@ -107,7 +107,7 @@ if __name__ == "__main__":
             dls = f["dl"][evt_start:evt_end]
             pdraws = f["pdraw"][evt_start:evt_end]
 
-        print(f"Loaded new-format HDF5 file {pe_file}")
+        print(f"Loaded new-format HDF5 file {pe_file},  events {evt_start} to {evt_end}")
 
     except (KeyError, OSError):
         pe_samples_mock = pd.read_hdf(pe_file, key="samples").iloc[evt_start:evt_end]
