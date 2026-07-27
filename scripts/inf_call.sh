@@ -3,7 +3,7 @@
 #SBATCH --gpus=2
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
-#SBATCH --time=0-20
+#SBATCH --time=0-12
 #SBATCH --constraint=a100
 
 module load cuda/12 cudnn
@@ -13,4 +13,4 @@ unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/mock_TC5s75_2.ini
+srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/mock_TC5s4_noevo.ini

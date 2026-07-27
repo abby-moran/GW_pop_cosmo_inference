@@ -137,7 +137,6 @@ class LogDNDM(object):
     sigma: object
     fpl: object      
     mp_low: object
-    msigma_low: object
     flow: object      
     mco_min: object = 4.0
     mbh_min: object = 3.0
@@ -145,6 +144,7 @@ class LogDNDM(object):
     zmax: object = 20
     mref: object = 30.0
     zref: object = 0.001
+    frac_sigma_low: object = 0.15   # fixed constant, NOT sampled -- pick a value
     log_dndm_pisn: object = dataclasses.field(init=False)
 
     def __post_init__(self):
@@ -177,7 +177,8 @@ class LogDNDM(object):
             mbhmax_at_samples >= self.log_dndm_pisn.mbh_grid[-1], -np.inf,
             self.interp_2d_dndmpisn(mbhmax_at_samples, z) - self.log_Z_pisn_at_z(z)
         )
-        log_peak_at_join = log_normalized_gaussian(mbhmax_at_samples, self.mp_low, self.msigma_low)
+        msigma_low = self.frac_sigma_low * self.mp_low   # derived, not free
+        log_peak_at_join = log_normalized_gaussian(mbhmax_at_samples, self.mp_low, msigma_low)
         log_mix_at_join = jnp.logaddexp(log_pisn_at_join, safe_log(self.flow) + log_peak_at_join)
         return mbhmax_at_samples, log_mix_at_join
 
@@ -188,31 +189,20 @@ class LogDNDM(object):
         log_p_pisn_raw = jnp.where(m >= self.log_dndm_pisn.mbh_grid[-1], -np.inf, log_p_pisn_raw)
         log_p_pisn = log_p_pisn_raw - self.log_Z_pisn_at_z(z)   # unit-area shape
 
-        log_p_low = log_normalized_gaussian(m, self.mp_low, self.msigma_low)   # unit-area shape
+        msigma_low = self.frac_sigma_low * self.mp_low   # derived, not free
+        log_p_low = log_normalized_gaussian(m, self.mp_low, msigma_low)   # unit-area shape
 
         if join_terms is None:
             mbhmax_at_samples, _ = self.join_point_terms(z)
         else:
             mbhmax_at_samples, _ = join_terms
 
-        # Tail shape: closed-form normalized power law (log_normalized_power_law_tail
-        # integrates to unit area over m > mbhmax exactly), with a smooth turn-on at
-        # mbhmax for continuity. The turn-on shaves a bit of area near the break, so
-        # this is only *mildly* perturbed from unit area (see log_normalized_power_law_tail
-        # docstring) -- stable across mbhmax/z, smooth in c, not a source of runaway bias.
         log_p_pl_raw = jnp.where(
             m < mbhmax_at_samples, -jnp.inf,
             log_normalized_power_law_tail(m, mbhmax_at_samples, self.c)
         )
         log_p_pl = log_p_pl_raw + log_smooth_turnon(m, mbhmax_at_samples)
 
-        # flow and fpl are now mixture-weight ratios (relative to the PISN component's
-        # weight of 1), not height-anchored amplitudes. Converting to a proper simplex
-        # {w_pisn, w_low, w_pl} over the three *unit-area* shapes above guarantees the
-        # total mixture integrates to ~1 in m at every z, regardless of flow/fpl/mpisndot/etc.
-        # (Previously flow/fpl multiplied component *heights*, so the total probability
-        # mass drifted strongly with flow and mildly with z -- this was silently absorbed
-        # into the inferred hyperparameters and broke MCMC recovery.)
         log_denom = jnp.log1p(self.flow + self.fpl)
         log_w_pisn = -log_denom
         log_w_low = safe_log(self.flow) - log_denom
@@ -266,7 +256,8 @@ class LogDNDMDQDV(object):
     kappa: object
     zp: object
     mp_low: object
-    msigma_low: object
+    # msigma_low removed as a field -- see LogDNDM for rationale. Width is
+    # now derived inside LogDNDM from mp_low and frac_sigma_low.
     flow: object
     mref: object = 30.0
     qref: object = 1.0
@@ -275,15 +266,17 @@ class LogDNDMDQDV(object):
     mbh_min: object = 3.0
     delta_m: object = 2.5
     mco_min: object= 4.0
+    frac_sigma_low: object = 0.15   # fixed constant, NOT sampled -- pick a value
     log_dndm: object = dataclasses.field(init=False)
     log_dndv: object = dataclasses.field(init=False)
 
 
     def __post_init__(self):
         self.log_dndm = LogDNDM(self.a, self.b, self.c, self.mpisn, self.mpisndot, self.mbhmax, self.sigma, self.fpl,
-                                mp_low=self.mp_low, msigma_low=self.msigma_low, flow=self.flow,
+                                mp_low=self.mp_low, flow=self.flow,
                                 mref=self.mref, 
-                                zmax=self.zmax, zref = self.zref, mbh_min = self.mbh_min, delta_m=self.delta_m, mco_min=self.mco_min)
+                                zmax=self.zmax, zref = self.zref, mbh_min = self.mbh_min, delta_m=self.delta_m, mco_min=self.mco_min,
+                                frac_sigma_low=self.frac_sigma_low)
         self.log_dndv = LogDNDV(self.lam, self.kappa, self.zp, self.zref, zmax=self.zmax)
         self._normalize()
 
@@ -381,18 +374,6 @@ def get_deterministic_parameters(sample):
  
     out = dict(kappa=kappa, mbhmax=mbhmax)
  
-    # fpl, flow are literal population fractions and MUST lie in (0, 1),
-    # since w_pl = fpl, w_low = flow*(1-fpl), w_pisn = (1-flow)*(1-fpl) is a
-    # simplex -- if flow or fpl leave (0,1) the weights go negative and the
-    # mixture breaks (NaNs from log of a negative number). Three ways to
-    # supply each parameter, in order of preference:
-    #   - logit_fpl / logit_flow: unconstrained Normal, passed through a
-    #     sigmoid -- smoothly bounded in (0,1), no boundary pileup. Preferred.
-    #   - fpl / flow directly: must come from a prior with support in (0,1)
-    #     (e.g. Uniform(0,1) or Beta).
-    #   - log_fpl / log_flow: exponentiated: must come from a prior whose
-    #     *exponentiated* range stays below 1 (e.g. Uniform(log(1e-2), log(1))
-    #     -- NOT Uniform(log(1e-2), log(3)), which allows values above 1).
     if 'logit_fpl' in sample:
         out['fpl'] = numpyro.deterministic('fpl', jax.nn.sigmoid(sample['logit_fpl']))
     elif 'fpl' in sample:
@@ -419,6 +400,9 @@ def log_smooth_neff_boundary(values, criteria):
         # scaled_x=-20) and power-10 (gradient ~5e12) caused.
         return jnp.minimum(0.0, scaled_x)
 
+
+FRAC_SIGMA_LOW = 0.35
+
 def build_population_model(sample):
     return LogDNDMDQDV(
         a=sample['a'], b=sample['b'], c=sample['c'],
@@ -426,13 +410,22 @@ def build_population_model(sample):
         mbhmax=sample['mbhmax'], sigma=sample['sigma'], fpl=sample['fpl'],
         beta=sample['beta'], lam=sample['lam'], kappa=sample['kappa'], zp=sample['zp'],
         zmax=sample['zmax'], mbh_min=sample['mbh_min'], delta_m=sample['delta_m'],
-        mp_low=sample['mp_low'], msigma_low=sample['msigma_low'], flow=sample['flow'], #mco_min=sample['mco_min'],
+        mp_low=sample['mp_low'], flow=sample['flow'], #mco_min=sample['mco_min'],
+        frac_sigma_low=FRAC_SIGMA_LOW,
     )
-#H_GRID = jnp.linspace(0.60, .8, 50)
     
 def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel, Ndraw, priors=None):
     """
     Ndraw is # of events in the injection samples used to estimate the selection function
+
+    NOTE: 'msigma_low' must NOT appear in `priors` anymore -- it is no
+    longer sampled. It is derived inside LogDNDM as FRAC_SIGMA_LOW * mp_low
+    (see build_population_model / FRAC_SIGMA_LOW above). Remove its entry
+    from your priors config; if it is still present there this model will
+    simply ignore it (sample_parameters_from_dict may put it in `sample`,
+    but build_population_model never reads sample['msigma_low']), so leaving
+    it in by accident will not error, it will just be sampled uselessly. It
+    should be deleted from the priors config regardless, to avoid confusion.
     """
     m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel = map(jnp.array, (m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel))
 
@@ -481,11 +474,11 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     neff = jnp.exp(2 * jss.logsumexp(log_wts, axis=1) - jss.logsumexp(2 * log_wts, axis=1))
     min_neff = jnp.min(neff)
     numpyro.deterministic("neff", neff)
-    numpyro.factor("neff_criteria",jnp.nan_to_num(log_smooth_neff_boundary(min_neff, nobs),nan=0, neginf=-1e30, posinf=1e30),)
+    numpyro.factor("neff_criteria",jnp.nan_to_num(log_smooth_neff_boundary(min_neff, nobs),nan=-1e20, neginf=-1e20, posinf=1e20),)
 
     neff_sel = jnp.exp(2 * log_mu_sel - log_s2)
     numpyro.deterministic("neff_sel", neff_sel)
-    numpyro.factor("neff_sel_criteria",jnp.nan_to_num(log_smooth_neff_boundary(neff_sel, 4 * nobs),nan=0, neginf=-1e30, posinf=1e30), )
+    numpyro.factor("neff_sel_criteria",jnp.nan_to_num(log_smooth_neff_boundary(neff_sel, 4 * nobs),nan=-1e20, neginf=-1e20, posinf=1e20), )
     mu_sel = jnp.exp(log_mu_sel)
 
     R_unit = numpyro.sample('R_unit', dist.Normal(0, 1))
