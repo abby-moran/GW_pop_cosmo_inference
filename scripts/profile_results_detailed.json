@@ -1,0 +1,74 @@
+{
+  "cosmo_z_of_dL": {
+    "name": "z_of_dL(dls)",
+    "compile_and_first_run": 0.16673066599469166,
+    "min": 0.010304406998329796,
+    "median": 0.010330307006370276
+  },
+  "cosmo_ddL_dz": {
+    "name": "ddL_dz(zs)",
+    "compile_and_first_run": 0.15801759000169113,
+    "min": 0.010062229004688561,
+    "median": 0.01008506299695
+  },
+  "cosmo_dVCdz": {
+    "name": "dVCdz(zs)",
+    "compile_and_first_run": 0.1581728250021115,
+    "min": 0.010045264003565535,
+    "median": 0.010071773009258322
+  },
+  "cosmo_all_three": {
+    "name": "ALL THREE cosmology calls combined",
+    "compile_and_first_run": 0.2464490919956006,
+    "min": 0.019806929005426355,
+    "median": 0.019863045992678963
+  },
+  "pisn_interp_m1": {
+    "name": "interp_2d_dndmpisn(m1, z)  [one call]",
+    "compile_and_first_run": 0.41236116700747516,
+    "min": 0.016119756997795776,
+    "median": 0.016175186989130452
+  },
+  "pisn_interp_m1_and_m2": {
+    "name": "interp_2d_dndmpisn called for BOTH m1 and m2",
+    "compile_and_first_run": 0.4825253529998008,
+    "min": 0.0263012140057981,
+    "median": 0.02632050401007291
+  },
+  "join_point_terms_once": {
+    "name": "join_point_terms(z)  [one call]",
+    "compile_and_first_run": 0.4744263989996398,
+    "min": 0.01700930600054562,
+    "median": 0.017024323999066837
+  },
+  "join_point_terms_twice": {
+    "name": "join_point_terms(z) called TWICE (current behavior)",
+    "compile_and_first_run": 0.48277053600759245,
+    "min": 0.017172730003949255,
+    "median": 0.01718612499826122
+  },
+  "shape_gaussian": {
+    "name": "log_normalized_gaussian (low-mass peak)",
+    "compile_and_first_run": 0.04612931500014383,
+    "min": 0.0003132050042040646,
+    "median": 0.00031742600549478084
+  },
+  "full_logdndm_m1": {
+    "name": "log_dndm(m1, z)  [full LogDNDM call]",
+    "compile_and_first_run": 0.5498156919929897,
+    "min": 0.015835295998840593,
+    "median": 0.015837150000152178
+  },
+  "full_log_dN": {
+    "name": "log_dN(m1, q, z)  [full LogDNDMDQDV call]",
+    "compile_and_first_run": 0.9341908909991616,
+    "min": 0.02659685398975853,
+    "median": 0.02666953999141697
+  },
+  "full_likelihood_expression": {
+    "name": "FULL likelihood expr (cosmo + log_dN + Jacobian)",
+    "compile_and_first_run": 1.20539020599972,
+    "min": 0.046197025003493764,
+    "median": 0.04625807498814538
+  }
+}

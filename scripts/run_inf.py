@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+#os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 import sys
 sys.path.append('../src/')
@@ -12,7 +12,7 @@ import configparser
 import argparse
 from pathlib import Path
 import h5py
-
+import jax
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--config", required=True, help="Path to run config file")

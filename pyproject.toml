@@ -32,6 +32,8 @@ dependencies = [
     "ipykernel>=7.2.0",
     "gwosc>=0.8.1",
     "pycbc>=2.10.0",
+    "mig>=0.0.6",
+    "tables>=3.11.1",
 ]
 
 [project.optional-dependencies]

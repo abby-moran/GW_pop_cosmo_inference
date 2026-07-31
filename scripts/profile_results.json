@@ -1,0 +1,21 @@
+{
+  "setup": {
+    "compile_and_first_run": 3.4120433860225603,
+    "min": 0.02320524799870327,
+    "median": 0.023446701001375914
+  },
+  "likelihood": {
+    "compile_and_first_run": 0.9861562790174503,
+    "min": 0.026828886999282986,
+    "median": 0.026879291981458664,
+    "n_points": 36000000,
+    "time_per_million_points_ms": 0.7452468610911941
+  },
+  "selection": {
+    "compile_and_first_run": 0.6363893319794443,
+    "min": 0.001958946988452226,
+    "median": 0.00212942500365898,
+    "n_points": 1724851,
+    "time_per_million_points_ms": 1.1357195424139397
+  }
+}
