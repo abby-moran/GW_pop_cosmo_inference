@@ -34,6 +34,7 @@ dependencies = [
     "pycbc>=2.10.0",
     "mig>=0.0.6",
     "tables>=3.11.1",
+    "latex>=0.7.0",
 ]
 
 [project.optional-dependencies]

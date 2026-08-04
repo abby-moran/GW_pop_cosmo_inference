@@ -55,7 +55,10 @@ def load_true_vals(filename):
     tv['log_fpl'] = np.log(tv['fpl'])
     tv['dmbhmax'] = tv['mbhmax'] - tv['mpisn']
 
-    tv['log_flow'] = jnp.log(tv['flow'])
+    if 'flow' in tv:
+        tv['log_flow'] = jnp.log(tv['flow'])
+    else:
+        tv['log_flow']=np.log(1e-5)
     tv['log_fpl'] = jnp.log(tv['fpl'])
 
 
@@ -69,6 +72,7 @@ def load_true_vals(filename):
 pe_file = os.path.join(run_dir, cfg["run"]["output_file_PE"])
 sel_file = os.path.join(run_dir, cfg["run"]["output_sel_file"])
 ndevice=nchain
+use_low_bump=run.getboolean("use_low_bump", fallback=True)
 
 truth_params = {}
 truth_file_name = cfg["run"].get("pop_config_file")
@@ -124,7 +128,10 @@ if __name__ == "__main__":
         m1s.shape, qs.shape, dls.shape, pdraws.shape)
     
     sel_samples=pd.read_hdf(sel_file, key='true_parameters')#, start=0, stop=371545)
-    ndraw=sel_samples['ndraw'].iloc[0]#/4
+    len_sel=len(sel_samples)
+    sel_samples=pd.read_hdf(sel_file, key='true_parameters', start=0, stop=int(np.round(len_sel/2)))
+
+    ndraw=sel_samples['ndraw'].iloc[0]/2
 
     assert np.all(m1s > 0) 
     assert np.all(qs > 0) 
@@ -139,12 +146,12 @@ if __name__ == "__main__":
     print(truth_params)
     #kernel = DiscreteHMCGibbs(NUTS(intensity_models.pop_cosmo_model, init_strategy=init_strategy))
 
-    kernel = NUTS(intensity_models.pop_cosmo_model, init_strategy=init_strategy, max_tree_depth=6)#, target_accept_prob=0.95)
+    kernel = NUTS(intensity_models.pop_cosmo_model, init_strategy=init_strategy, max_tree_depth=7)#, target_accept_prob=0.95)
     mcmc = MCMC(kernel, num_warmup=nmcmc, num_samples=nmcmc, num_chains=nchain,
                 chain_method="parallel", progress_bar=True)
     mcmc.run(jax.random.PRNGKey(random_seed), m1s, qs, dls, pdraws, sel_samples['m1d'].to_list(), 
              sel_samples['q'].to_list(), sel_samples['dl'].to_list(), sel_samples['pdraw_sel'].to_list(),
-        ndraw, prior)
+        ndraw, prior, use_low_bump=use_low_bump)
     #outfile="o3_c2_zm55_err5k.npz"
     samples = az.from_numpyro(mcmc, num_chains=nchain)
     az.to_netcdf(samples, outfile)

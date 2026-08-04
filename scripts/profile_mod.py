@@ -15,6 +15,9 @@ Mirrors the exact computation in pop_cosmo_model's likelihood block:
 Broken into:
   (1) COSMOLOGY: z_of_dL, ddL_dz, dVCdz -- three independent jnp.interp
       calls into FlatwCDMCosmology's 1024-point interpolation table.
+      Also includes the FUSED version (cosmo.full_cosmo_block), which
+      shares index computation between ddL_dz and dVCdz since they
+      interpolate against the same z-grid.
   (2) PISN GRID INTERP ONLY: just interp_2d_dndmpisn, called on m1 and m2
       (this is the map_coordinates bilinear lookup into the big grid).
   (3) JOIN-POINT TERMS: join_point_terms(z), which itself calls
@@ -30,6 +33,8 @@ Broken into:
   (7) FULL likelihood expression (cosmology + log_dN + the surrounding
       Jacobian terms), matching pop_cosmo_model exactly, as the top-level
       check that the parts sum to the whole from the original profiler.
+      Includes both the ORIGINAL (unfused) and FUSED cosmology paths so
+      the two can be compared directly.
 
 Usage: same as profile_model.py
     python profile_model_detailed.py --config run_configs/mock_O5_noevo.ini
@@ -168,24 +173,32 @@ def main():
 
     # ---------------------------------------------------------------
     print("=== (1) COSMOLOGY ONLY ===")
-    print("Three independent jnp.interp lookups into a 1024-pt cosmology table.\n")
+    print("Three independent jnp.interp lookups into a 1024-pt cosmology table,")
+    print("plus the FUSED version (cosmo.full_cosmo_block) for comparison.\n")
 
     zs = cosmo.z_of_dL(dls_j)  # need this for everything downstream too
 
     results['cosmo_z_of_dL'] = timeit(
         jax.jit(cosmo.z_of_dL), dls_j, n_repeat=args.n_repeat, name="z_of_dL(dls)")
     results['cosmo_ddL_dz'] = timeit(
-        jax.jit(cosmo.ddL_dz), zs, n_repeat=args.n_repeat, name="ddL_dz(zs)")
+        jax.jit(cosmo.ddL_dz), zs, n_repeat=args.n_repeat, name="ddL_dz(zs)  [unfused]")
     results['cosmo_dVCdz'] = timeit(
-        jax.jit(cosmo.dVCdz), zs, n_repeat=args.n_repeat, name="dVCdz(zs)")
+        jax.jit(cosmo.dVCdz), zs, n_repeat=args.n_repeat, name="dVCdz(zs)  [unfused]")
 
-    def full_cosmo_block(dls):
+    def unfused_cosmo_block(dls):
         zs = cosmo.z_of_dL(dls)
         return zs, cosmo.ddL_dz(zs), cosmo.dVCdz(zs)
 
-    results['cosmo_all_three'] = timeit(
-        jax.jit(full_cosmo_block), dls_j, n_repeat=args.n_repeat,
-        name="ALL THREE cosmology calls combined")
+    results['cosmo_all_three_unfused'] = timeit(
+        jax.jit(unfused_cosmo_block), dls_j, n_repeat=args.n_repeat,
+        name="ALL THREE cosmology calls, UNFUSED")
+
+    # FUSED: calls the new cosmo.full_cosmo_block method directly, which
+    # now does a single batched map_coordinates call for ddL_dz/dVCdz
+    # (one kernel launch) instead of two independent jnp.interp calls.
+    results['cosmo_all_three_fused'] = timeit(
+        jax.jit(cosmo.full_cosmo_block), dls_j, n_repeat=args.n_repeat,
+        name="ALL THREE cosmology calls, BATCHED (new)")
 
     m1s = m1s_det_j / (1 + zs)
 
@@ -241,16 +254,36 @@ def main():
 
     # ---------------------------------------------------------------
     print("\n=== (6) FULL log_dN (LogDNDMDQDV.__call__): m1 + m2 + mixture/dV ===")
-    print("This is exactly what's called inside pop_cosmo_model as log_dN(m1s, qs, zs).\n")
+    print("This is exactly what's called inside pop_cosmo_model as log_dN(m1s, qs, zs).")
+    print("log_dN.__call__ now computes join_point_terms(z) ONCE internally and")
+    print("threads it into both the m1 and m2 log_dndm calls via join_terms=,")
+    print("instead of each recomputing it independently. This times the actual")
+    print("(now-default) behavior, plus the old always-recompute behavior for")
+    print("direct comparison.\n")
 
     results['full_log_dN'] = timeit(
         jax.jit(log_dN.__call__), m1s, qs_j, zs,
-        n_repeat=args.n_repeat, name="log_dN(m1, q, z)  [full LogDNDMDQDV call]")
+        n_repeat=args.n_repeat, name="log_dN(m1, q, z)  [join_terms shared, new default]")
+
+    def full_log_dN_no_sharing(m1, q, z):
+        # old behavior: force each side to recompute join_point_terms independently
+        m2 = q * m1
+        mt = m1 + m2
+        return (log_dndm(m1, z) + log_dndm(m2, z)
+                + log_dN.beta * jnp.log(mt / (log_dN.mref * (1 + log_dN.qref)))
+                + jnp.log(m1) + log_dndv(z) - log_dN.log_norm)
+
+    results['full_log_dN_no_sharing'] = timeit(
+        jax.jit(full_log_dN_no_sharing), m1s, qs_j, zs,
+        n_repeat=args.n_repeat, name="log_dN(m1, q, z)  [old: independent recompute]")
 
     # ---------------------------------------------------------------
-    print("\n=== (7) FULL LIKELIHOOD EXPRESSION (matches pop_cosmo_model exactly) ===\n")
+    print("\n=== (7) FULL LIKELIHOOD EXPRESSION (matches pop_cosmo_model exactly) ===")
+    print("Shown for BOTH the original unfused cosmology path and the new")
+    print("fused cosmo.full_cosmo_block path, so the real-world impact of")
+    print("fusing is visible at the top level, not just in isolation.\n")
 
-    def full_likelihood_block(m1s_det, qs, dls, log_pdraw):
+    def full_likelihood_block_unfused(m1s_det, qs, dls, log_pdraw):
         zs = cosmo.z_of_dL(dls)
         m1s = m1s_det / (1 + zs)
         log_wts = (log_dN(m1s, qs, zs) - log_pdraw
@@ -258,22 +291,50 @@ def main():
                    + jnp.log(cosmo.dVCdz(zs)))
         return log_wts
 
-    results['full_likelihood_expression'] = timeit(
-        jax.jit(full_likelihood_block), m1s_det_j, qs_j, dls_j, jnp.asarray(log_pdraw),
-        n_repeat=args.n_repeat, name="FULL likelihood expr (cosmo + log_dN + Jacobian)")
+    def full_likelihood_block_fused(m1s_det, qs, dls, log_pdraw):
+        zs, ddl, dvc = cosmo.full_cosmo_block(dls)
+        m1s = m1s_det / (1 + zs)
+        log_wts = (log_dN(m1s, qs, zs) - log_pdraw
+                   - 2 * jnp.log1p(zs) - jnp.log(ddl)
+                   + jnp.log(dvc))
+        return log_wts
+
+    results['full_likelihood_expression_unfused'] = timeit(
+        jax.jit(full_likelihood_block_unfused), m1s_det_j, qs_j, dls_j, jnp.asarray(log_pdraw),
+        n_repeat=args.n_repeat, name="FULL likelihood expr, UNFUSED cosmology")
+
+    results['full_likelihood_expression_fused'] = timeit(
+        jax.jit(full_likelihood_block_fused), m1s_det_j, qs_j, dls_j, jnp.asarray(log_pdraw),
+        n_repeat=args.n_repeat, name="FULL likelihood expr, FUSED cosmology (new)")
+
+    # Keep this key for backwards compatibility with any downstream tooling
+    # that reads profile_results_detailed.json and expects it.
+    results['full_likelihood_expression'] = results['full_likelihood_expression_unfused']
 
     # ---------------------------------------------------------------
-    print("\n=== SUMMARY: where does the ~27ms actually go? ===\n")
-    full = results['full_likelihood_expression']['min']
-    cosmo_cost = results['cosmo_all_three']['min']
+    print("\n=== SUMMARY: where does the ~27ms actually go, and did fusing help? ===\n")
+    full = results['full_likelihood_expression_unfused']['min']
+    full_fused = results['full_likelihood_expression_fused']['min']
+    cosmo_cost = results['cosmo_all_three_unfused']['min']
+    cosmo_cost_fused = results['cosmo_all_three_fused']['min']
     pisn_cost = results['pisn_interp_m1_and_m2']['min']
     join_cost = results['join_point_terms_twice']['min']
     join_dup_savings = results['join_point_terms_twice']['min'] - results['join_point_terms_once']['min']
     full_dN = results['full_log_dN']['min']
 
-    print(f"  Full likelihood expression:              {full*1000:8.3f} ms  (100%)")
-    print(f"    of which cosmology (3 interp calls):    {cosmo_cost*1000:8.3f} ms  ({100*cosmo_cost/full:5.1f}%)")
+    print(f"  Full likelihood expression (unfused cosmo): {full*1000:8.3f} ms  (100%)")
+    print(f"  Full likelihood expression (fused cosmo):   {full_fused*1000:8.3f} ms  "
+          f"({100*full_fused/full:5.1f}% of unfused)")
+    print(f"    -> fusing cosmology saved: {(full-full_fused)*1000:8.3f} ms "
+          f"({100*(full-full_fused)/full:5.1f}% of total)")
+    print()
+    print(f"    of which cosmology, unfused (3 interp calls): {cosmo_cost*1000:8.3f} ms  ({100*cosmo_cost/full:5.1f}%)")
+    print(f"    of which cosmology, batched (1 map_coordinates call): {cosmo_cost_fused*1000:8.3f} ms  ({100*cosmo_cost_fused/full:5.1f}% of unfused total)")
     print(f"    of which full log_dN (mass function):   {full_dN*1000:8.3f} ms  ({100*full_dN/full:5.1f}%)")
+    print(f"    of which full log_dN, OLD (no join_terms sharing): {results['full_log_dN_no_sharing']['min']*1000:8.3f} ms")
+    print(f"      -> join_terms sharing saved: "
+          f"{(results['full_log_dN_no_sharing']['min']-full_dN)*1000:8.3f} ms "
+          f"({100*(results['full_log_dN_no_sharing']['min']-full_dN)/full:5.1f}% of total)")
     print(f"      of which PISN grid interp (m1+m2):    {pisn_cost*1000:8.3f} ms  ({100*pisn_cost/full:5.1f}% of total)")
     print(f"      of which join_point_terms (x2 calls): {join_cost*1000:8.3f} ms  ({100*join_cost/full:5.1f}% of total)")
     print(f"        -> redundant 2nd join_point_terms call costs "
@@ -281,10 +342,10 @@ def main():
     print(f"        -> that's the specific savings available from passing")
     print(f"           join_terms= through to avoid recomputation for m2")
     print()
-    print("  If cosmology % is large: the fix is caching/precomputing zs,")
-    print("  ddL_dz, dVCdz once per likelihood call rather than per-something-else,")
-    print("  or increasing the cosmology interpolation table's coarseness")
-    print("  tradeoff (ninterp=1024 currently) if it's the dominant cost.")
+    print("  If cosmology % is large: check whether the FUSED number above")
+    print("  actually beats the unfused one. If not, the ~10ms/call floor is")
+    print("  likely fixed per-op dispatch overhead rather than compute that")
+    print("  fusing the interpolation math can remove.")
     print()
     print("  If PISN grid interp % is large: this is fundamental to your")
     print("  interpolation-based approach -- the fix is grid resolution (n_m)")

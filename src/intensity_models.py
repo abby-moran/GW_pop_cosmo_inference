@@ -12,6 +12,8 @@ import numpyro
 import numpyro.distributions as dist
 from utils import jnp_cumtrapz, sample_parameters_from_dict, log_expit
 from jax.scipy.ndimage import map_coordinates
+from functools import partial
+
 
 
 @jax.jit
@@ -82,7 +84,7 @@ class LogDNDMPISN(object):
     mbhmax: object
     sigma: object
     mco_min: object = 4.0
-    n_m: object = 1024
+    n_m: object = 512
     mbh_grid: object = dataclasses.field(init=False)
     log_dN_grid: object = dataclasses.field(init=False)
     log_Z_grid: object = dataclasses.field(init=False)
@@ -145,6 +147,7 @@ class LogDNDM(object):
     zmax: object = 20
     mref: object = 30.0
     zref: object = 0.001
+    use_low_bump: bool = True          # static flag, not sampled/traced
     log_dndm_pisn: object = dataclasses.field(init=False)
 
     def __post_init__(self):
@@ -188,38 +191,35 @@ class LogDNDM(object):
         log_p_pisn_raw = jnp.where(m >= self.log_dndm_pisn.mbh_grid[-1], -np.inf, log_p_pisn_raw)
         log_p_pisn = log_p_pisn_raw - self.log_Z_pisn_at_z(z)   # unit-area shape
 
-        log_p_low = log_normalized_gaussian(m, self.mp_low, self.msigma_low)   # unit-area shape
-
         if join_terms is None:
             mbhmax_at_samples, _ = self.join_point_terms(z)
         else:
             mbhmax_at_samples, _ = join_terms
-
-        # Tail shape: closed-form normalized power law (log_normalized_power_law_tail
-        # integrates to unit area over m > mbhmax exactly), with a smooth turn-on at
-        # mbhmax for continuity. The turn-on shaves a bit of area near the break, so
-        # this is only *mildly* perturbed from unit area (see log_normalized_power_law_tail
-        # docstring) -- stable across mbhmax/z, smooth in c, not a source of runaway bias.
-        log_p_pl_raw = jnp.where(
-            m < mbhmax_at_samples, -jnp.inf,
-            log_normalized_power_law_tail(m, mbhmax_at_samples, self.c)
-        )
+        # Tail shape: closed-form normalized power law (integrates to unit area over m > mbhmax exactly) with a smooth turn-on at mbhmax (continuity)
+        log_p_pl_raw = jnp.where(m < mbhmax_at_samples, -jnp.inf,
+            log_normalized_power_law_tail(m, mbhmax_at_samples, self.c))
         log_p_pl = log_p_pl_raw + log_smooth_turnon(m, mbhmax_at_samples)
 
-        # flow and fpl are now mixture-weight ratios (relative to the PISN component's
-        # weight of 1), not height-anchored amplitudes. Converting to a proper simplex
-        # {w_pisn, w_low, w_pl} over the three *unit-area* shapes above guarantees the
-        # total mixture integrates to ~1 in m at every z, regardless of flow/fpl/mpisndot/etc.
-        # (Previously flow/fpl multiplied component *heights*, so the total probability
-        # mass drifted strongly with flow and mildly with z -- this was silently absorbed
-        # into the inferred hyperparameters and broke MCMC recovery.)
-        log_denom = jnp.log1p(self.flow + self.fpl)
-        log_w_pisn = -log_denom
-        log_w_low = safe_log(self.flow) - log_denom
-        log_w_pl = safe_log(self.fpl) - log_denom
+         # flow and fpl are mixture-weight ratios (relative to the PISN component's weight of 1), not height-anchored amplitudes. Converting to a proper simplex
+        if self.use_low_bump:
+            log_p_low = log_normalized_gaussian(m, self.mp_low, self.msigma_low)   # unit-area shape
+            # simplex over {w_pisn, w_low, w_pl}, always integrates to 1 no matter params
+            log_denom = jnp.log1p(self.flow + self.fpl)
+            log_w_pisn = -log_denom
+            log_w_low = safe_log(self.flow) - log_denom
+            log_w_pl = safe_log(self.fpl) - log_denom
 
-        log_dNdm = jnp.logaddexp(log_w_pisn + log_p_pisn, log_w_low + log_p_low)
-        log_dNdm = jnp.logaddexp(log_dNdm, log_w_pl + log_p_pl)
+            log_dNdm = jnp.logaddexp(log_w_pisn + log_p_pisn, log_w_low + log_p_low)
+            log_dNdm = jnp.logaddexp(log_dNdm, log_w_pl + log_p_pl)
+        else:
+            # simplex over just {w_pisn, w_pl} -- no bump term at all,
+            # exactly zero contribution rather than a numerically tiny one
+            log_denom = jnp.log1p(self.fpl)
+            log_w_pisn = -log_denom
+            log_w_pl = safe_log(self.fpl) - log_denom
+
+            log_dNdm = jnp.logaddexp(log_w_pisn + log_p_pisn, log_w_pl + log_p_pl)
+
         log_dNdm = jnp.where(m < self.mbh_min, -np.inf, log_dNdm)
         logwindow = mmin_log_smooth_turnon(m, delta_m=self.delta_m, mmin=self.mbh_min)
         return log_dNdm + logwindow
@@ -277,13 +277,14 @@ class LogDNDMDQDV(object):
     mco_min: object= 4.0
     log_dndm: object = dataclasses.field(init=False)
     log_dndv: object = dataclasses.field(init=False)
+    use_low_bump: object = True
 
 
     def __post_init__(self):
         self.log_dndm = LogDNDM(self.a, self.b, self.c, self.mpisn, self.mpisndot, self.mbhmax, self.sigma, self.fpl,
-                                mp_low=self.mp_low, msigma_low=self.msigma_low, flow=self.flow,
-                                mref=self.mref, 
-                                zmax=self.zmax, zref = self.zref, mbh_min = self.mbh_min, delta_m=self.delta_m, mco_min=self.mco_min)
+                                mp_low=self.mp_low, msigma_low=self.msigma_low, flow=self.flow, mref=self.mref, zmax=self.zmax, 
+                                zref=self.zref, mbh_min=self.mbh_min,delta_m=self.delta_m, mco_min=self.mco_min,
+                                use_low_bump=self.use_low_bump)
         self.log_dndv = LogDNDV(self.lam, self.kappa, self.zp, self.zref, zmax=self.zmax)
         self._normalize()
 
@@ -374,25 +375,23 @@ coords = {
     'z_grid': np.expm1(np.linspace(np.log1p(0), np.log1p(20), 128))
 }
 
-@jax.jit
-def get_deterministic_parameters(sample):
+@partial(jax.jit, static_argnames=['use_low_bump'])
+def get_deterministic_parameters(sample, use_low_bump=True):
     kappa = numpyro.deterministic('kappa', sample['lam'] + sample['dkappa'])
     mbhmax = numpyro.deterministic('mbhmax', sample['mpisn'] + sample['dmbhmax'])
  
     out = dict(kappa=kappa, mbhmax=mbhmax)
  
-    # fpl, flow are literal population fractions and MUST lie in (0, 1),
-    # since w_pl = fpl, w_low = flow*(1-fpl), w_pisn = (1-flow)*(1-fpl) is a
-    # simplex -- if flow or fpl leave (0,1) the weights go negative and the
-    # mixture breaks (NaNs from log of a negative number). Three ways to
-    # supply each parameter, in order of preference:
-    #   - logit_fpl / logit_flow: unconstrained Normal, passed through a
-    #     sigmoid -- smoothly bounded in (0,1), no boundary pileup. Preferred.
-    #   - fpl / flow directly: must come from a prior with support in (0,1)
-    #     (e.g. Uniform(0,1) or Beta).
-    #   - log_fpl / log_flow: exponentiated: must come from a prior whose
-    #     *exponentiated* range stays below 1 (e.g. Uniform(log(1e-2), log(1))
-    #     -- NOT Uniform(log(1e-2), log(3)), which allows values above 1).
+    if use_low_bump:
+        if 'logit_flow' in sample:
+            out['flow'] = numpyro.deterministic('flow', jax.nn.sigmoid(sample['logit_flow']))
+        elif 'flow' in sample:
+            out['flow'] = sample['flow']
+        elif 'log_flow' in sample:
+            out['flow'] = numpyro.deterministic('flow', jnp.exp(sample['log_flow']))
+        else:
+            raise KeyError("Need one of logit_flow, flow, or log_flow")
+    
     if 'logit_fpl' in sample:
         out['fpl'] = numpyro.deterministic('fpl', jax.nn.sigmoid(sample['logit_fpl']))
     elif 'fpl' in sample:
@@ -402,14 +401,6 @@ def get_deterministic_parameters(sample):
     else:
         raise KeyError("Need one of logit_fpl, fpl, or log_fpl")
  
-    if 'logit_flow' in sample:
-        out['flow'] = numpyro.deterministic('flow', jax.nn.sigmoid(sample['logit_flow']))
-    elif 'flow' in sample:
-        out['flow'] = sample['flow']
-    elif 'log_flow' in sample:
-        out['flow'] = numpyro.deterministic('flow', jnp.exp(sample['log_flow']))
-    else:
-        raise KeyError("Need one of logit_flow, flow, or log_flow")
  
     return out
 def log_smooth_neff_boundary(values, criteria):
@@ -419,18 +410,18 @@ def log_smooth_neff_boundary(values, criteria):
         # scaled_x=-20) and power-10 (gradient ~5e12) caused.
         return jnp.minimum(0.0, scaled_x)
 
-def build_population_model(sample):
+def build_population_model(sample, use_low_bump=True):
     return LogDNDMDQDV(
-        a=sample['a'], b=sample['b'], c=sample['c'],
-        mpisn=sample['mpisn'], mpisndot=sample['mpisndot'],
+        a=sample['a'], b=sample['b'], c=sample['c'], mpisn=sample['mpisn'], mpisndot=sample['mpisndot'],
         mbhmax=sample['mbhmax'], sigma=sample['sigma'], fpl=sample['fpl'],
         beta=sample['beta'], lam=sample['lam'], kappa=sample['kappa'], zp=sample['zp'],
         zmax=sample['zmax'], mbh_min=sample['mbh_min'], delta_m=sample['delta_m'],
-        mp_low=sample['mp_low'], msigma_low=sample['msigma_low'], flow=sample['flow'], #mco_min=sample['mco_min'],
-    )
+        mp_low=sample.get('mp_low', 1.0), msigma_low=sample.get('msigma_low', 1.0), flow=sample.get('flow', 0.0), use_low_bump=use_low_bump,
+        #dummy values for mp_low to prevent errors when the bump is turned off, not in use
+        )
 #H_GRID = jnp.linspace(0.60, .8, 50)
     
-def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel, Ndraw, priors=None):
+def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel, Ndraw, priors=None, use_low_bump=True):
     """
     Ndraw is # of events in the injection samples used to estimate the selection function
     """
@@ -444,11 +435,11 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     nsel = m1s_det_sel.shape[0]
 
     sample = sample_parameters_from_dict(priors)
-    deterministic_parameters = get_deterministic_parameters(sample)
-    sample.update(deterministic_parameters) #sample from hyperparameters, set up cosmology (cosmo) and population model (dN)
+    deterministic_parameters = get_deterministic_parameters(sample, use_low_bump=use_low_bump)
+    sample.update(deterministic_parameters, ) #sample from hyperparameters, set up cosmology (cosmo) and population model (dN)
 
     cosmo = FlatwCDMCosmology(sample['h'], sample['Om'], sample['w'], zmax=sample['zmax'])
-    log_dN = build_population_model(sample) 
+    log_dN = build_population_model(sample, use_low_bump=use_low_bump) 
   
     zs = cosmo.z_of_dL(dls)
     m1s = m1s_det / (1 + zs) # convert to source-frame masses

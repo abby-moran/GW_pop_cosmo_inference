@@ -19,7 +19,4 @@ beta= -2.43
 mc_scale=.1
 q_scale=1.7
 th_scale=1.1
-msigma_low =4
-mp_low =9.121
-flow=1e-8
 mco_min=4

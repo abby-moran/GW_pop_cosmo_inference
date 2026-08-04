@@ -73,6 +73,7 @@ pop_file=run.get("pop_config_file")
 pop_config_file = base_dir / cfg["run"]["pop_config_file"]
 pop_config_file = pop_config_file.resolve()
 
+use_low_bump=run.getboolean("use_low_bump", fallback=True)
 m_min=run.getfloat("m_min", fallback=0)
 delta_m_sel = run.getfloat("delta_m_sel", fallback=1.0)
     
@@ -270,12 +271,6 @@ def compute_log_w(m1, q, z, pdraw_cosmo):
 if __name__ == "__main__":
     rng = np.random.default_rng(251286134409181405721219170031242732711)
 
-    #if ndet > 0:
-    #    jitter = True
-    #else:
-    #    jitter = False
-
-    # load from config 
     chunk_size = run.getint("chunk_size", fallback=int(2e6))  # memory limit per read
     num_tot    = run.getint("num_tot",    fallback=int(5e7))   # how many to reweight
     n_total    = run.getint("n_total",    fallback=int(8e7))   # total injections to consider
@@ -298,7 +293,7 @@ if __name__ == "__main__":
     pop_params  = {key: population_parameters[key]
                    for key in getfullargspec(log_dN_obj)[0][1:]
                    if key in population_parameters.keys()}
-    log_dN_func = log_dN_obj(**pop_params)
+    log_dN_func = intensity_models.build_population_model(pop_params, use_low_bump=use_low_bump)
 
     if write_obs:
         print("Pass 1: computing weights, caching to disk...")
@@ -318,11 +313,6 @@ if __name__ == "__main__":
                 jnp.asarray(chunk['z'].values),
                 jnp.asarray(chunk['pdraw_cosmo'].values),)
             log_w = np.asarray(log_w)
-            #log_w = np.asarray(log_dN_vals
-            #        + jnp.log(cosmo.dVCdz(chunk['z'].values))
-            #        - 2 * jnp.log1p(chunk['z'].values)
-            #        - jnp.log(chunk['pdraw_cosmo'].values)
-            #        - jnp.log(cosmo.ddL_dz(chunk['z'].values)), dtype=np.float64)
 
             fpath = op.join(cache_dir, f"logw_{start}.npy")
             np.save(fpath, log_w)

@@ -3,7 +3,7 @@
 #SBATCH --gpus=2
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
-#SBATCH --time=0-12
+#SBATCH --time=0-30
 #SBATCH --constraint=a100
 
 module load cuda/12 cudnn

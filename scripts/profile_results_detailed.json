@@ -1,74 +1,98 @@
 {
   "cosmo_z_of_dL": {
     "name": "z_of_dL(dls)",
-    "compile_and_first_run": 0.16673066599469166,
-    "min": 0.010304406998329796,
-    "median": 0.010330307006370276
+    "compile_and_first_run": 0.16680125799030066,
+    "min": 0.010364140005549416,
+    "median": 0.010506360995350406
   },
   "cosmo_ddL_dz": {
-    "name": "ddL_dz(zs)",
-    "compile_and_first_run": 0.15801759000169113,
-    "min": 0.010062229004688561,
-    "median": 0.01008506299695
+    "name": "ddL_dz(zs)  [unfused]",
+    "compile_and_first_run": 0.15817031198821496,
+    "min": 0.0101890439982526,
+    "median": 0.01031757598684635
   },
   "cosmo_dVCdz": {
-    "name": "dVCdz(zs)",
-    "compile_and_first_run": 0.1581728250021115,
-    "min": 0.010045264003565535,
-    "median": 0.010071773009258322
+    "name": "dVCdz(zs)  [unfused]",
+    "compile_and_first_run": 0.15823026798898354,
+    "min": 0.010200318996794522,
+    "median": 0.010293290004483424
   },
-  "cosmo_all_three": {
-    "name": "ALL THREE cosmology calls combined",
-    "compile_and_first_run": 0.2464490919956006,
-    "min": 0.019806929005426355,
-    "median": 0.019863045992678963
+  "cosmo_all_three_unfused": {
+    "name": "ALL THREE cosmology calls, UNFUSED",
+    "compile_and_first_run": 0.24704553300398402,
+    "min": 0.019940541998948902,
+    "median": 0.02010982199863065
+  },
+  "cosmo_all_three_fused": {
+    "name": "ALL THREE cosmology calls, BATCHED (new)",
+    "compile_and_first_run": 0.34275009798875544,
+    "min": 0.020888984989142045,
+    "median": 0.021057903009932488
   },
   "pisn_interp_m1": {
     "name": "interp_2d_dndmpisn(m1, z)  [one call]",
-    "compile_and_first_run": 0.41236116700747516,
-    "min": 0.016119756997795776,
-    "median": 0.016175186989130452
+    "compile_and_first_run": 0.41152460798912216,
+    "min": 0.016280722004012205,
+    "median": 0.016372661004425026
   },
   "pisn_interp_m1_and_m2": {
     "name": "interp_2d_dndmpisn called for BOTH m1 and m2",
-    "compile_and_first_run": 0.4825253529998008,
-    "min": 0.0263012140057981,
-    "median": 0.02632050401007291
+    "compile_and_first_run": 0.4810664109973004,
+    "min": 0.026558384008239955,
+    "median": 0.026715494997915812
   },
   "join_point_terms_once": {
     "name": "join_point_terms(z)  [one call]",
-    "compile_and_first_run": 0.4744263989996398,
-    "min": 0.01700930600054562,
-    "median": 0.017024323999066837
+    "compile_and_first_run": 0.4745204929931788,
+    "min": 0.01702775499143172,
+    "median": 0.017220120003912598
   },
   "join_point_terms_twice": {
     "name": "join_point_terms(z) called TWICE (current behavior)",
-    "compile_and_first_run": 0.48277053600759245,
-    "min": 0.017172730003949255,
-    "median": 0.01718612499826122
+    "compile_and_first_run": 0.48155977099668235,
+    "min": 0.017147462000139058,
+    "median": 0.01738963100069668
   },
   "shape_gaussian": {
     "name": "log_normalized_gaussian (low-mass peak)",
-    "compile_and_first_run": 0.04612931500014383,
-    "min": 0.0003132050042040646,
-    "median": 0.00031742600549478084
+    "compile_and_first_run": 0.04660288798913825,
+    "min": 0.000310247007291764,
+    "median": 0.00031457199656870216
   },
   "full_logdndm_m1": {
     "name": "log_dndm(m1, z)  [full LogDNDM call]",
-    "compile_and_first_run": 0.5498156919929897,
-    "min": 0.015835295998840593,
-    "median": 0.015837150000152178
+    "compile_and_first_run": 0.5495468169974629,
+    "min": 0.01588972899480723,
+    "median": 0.016052967999712564
   },
   "full_log_dN": {
-    "name": "log_dN(m1, q, z)  [full LogDNDMDQDV call]",
-    "compile_and_first_run": 0.9341908909991616,
-    "min": 0.02659685398975853,
-    "median": 0.02666953999141697
+    "name": "log_dN(m1, q, z)  [join_terms shared, new default]",
+    "compile_and_first_run": 0.9303404300007969,
+    "min": 0.026618741001584567,
+    "median": 0.02671237400500104
+  },
+  "full_log_dN_no_sharing": {
+    "name": "log_dN(m1, q, z)  [old: independent recompute]",
+    "compile_and_first_run": 0.9270648210076615,
+    "min": 0.026640752999810502,
+    "median": 0.026771147997351363
+  },
+  "full_likelihood_expression_unfused": {
+    "name": "FULL likelihood expr, UNFUSED cosmology",
+    "compile_and_first_run": 1.2138542309985496,
+    "min": 0.046309352008393034,
+    "median": 0.0463535050075734
+  },
+  "full_likelihood_expression_fused": {
+    "name": "FULL likelihood expr, FUSED cosmology (new)",
+    "compile_and_first_run": 1.3125041209859774,
+    "min": 0.04687370800820645,
+    "median": 0.04707024700473994
   },
   "full_likelihood_expression": {
-    "name": "FULL likelihood expr (cosmo + log_dN + Jacobian)",
-    "compile_and_first_run": 1.20539020599972,
-    "min": 0.046197025003493764,
-    "median": 0.04625807498814538
+    "name": "FULL likelihood expr, UNFUSED cosmology",
+    "compile_and_first_run": 1.2138542309985496,
+    "min": 0.046309352008393034,
+    "median": 0.0463535050075734
   }
 }
