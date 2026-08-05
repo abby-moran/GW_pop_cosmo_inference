@@ -303,7 +303,8 @@ def load_true_vals(filename):
 
     tv['dkappa'] = tv['kappa'] - tv['lam']
     tv['dmbhmax'] = tv['mbhmax'] - tv['mpisn']
-    tv['log_flow'] = float(np.log(tv['flow']))
+    if 'flow' in tv:
+        tv['log_flow'] = float(np.log(tv['flow']))
     tv['log_fpl'] = float(np.log(tv['fpl']))
 
     return tv
