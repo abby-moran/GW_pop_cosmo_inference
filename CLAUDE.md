@@ -19,6 +19,10 @@ This file keeps agent-facing guidance brief. Project overview, science backgroun
   - `kappa = lam + dkappa`
   - `fpl = exp(log_fpl)`
   - `mbhmax = mpisn + dmbhmax`
+  - `Om = Omh2 / h^2` when the prior samples `Omh2` (default in
+    `gwtc5_cosmo.prior`; do not also set `Om` in that prior)
+- Prefer sampling `Omh2 = Om*h^2` over `Om` whenever matter density is free:
+  it is much less degenerate with `h`.
 
 ## Data Format
 

@@ -148,12 +148,13 @@ def load_real_data(cfg_path, base_runs_dir="../runs"):
 
 
 # --------------------------------------------------------------------------
-# Prior: mirrors the gwtc5-style cosmo prior (h sampled; Om, w fixed) with the
+# Prior: mirrors gwtc5_cosmo.prior (h + Omh2 sampled; w fixed) with the
 # low-mass bump parameters present.  Kept inline so the benchmark runs without
-# the (gitignored) runs/priors directory.
+# the (gitignored) runs/priors directory.  Om = Omh2/h^2 is derived in the
+# model (see get_deterministic_parameters).
 # --------------------------------------------------------------------------
 DEFAULT_PRIOR_TEXT = """h = TruncatedNormal(0.7, 0.2, low=0.4, high=1.2)
-Om = 0.315
+Omh2 = TruncatedNormal(0.143, 0.05, low=0.02, high=0.4)
 w = -1
 a = TruncatedNormal(2.35, 2, low=-1.65, high=6.35)
 b = TruncatedNormal(1.9, 2, low=-2.1, high=5.9)
@@ -182,6 +183,7 @@ TRUTH = dict(
     sigma=0.0539, log_fpl=float(np.log(0.63909)), lam=4.814, dkappa=8.3659 - 4.814,
     zp=0.954, beta=-2.43, msigma_low=4.0, mp_low=9.121,
     log_flow=float(np.log(0.6025)), mpisndot=0.0,
+    Omh2=0.315 * 0.674 ** 2,
 )
 
 

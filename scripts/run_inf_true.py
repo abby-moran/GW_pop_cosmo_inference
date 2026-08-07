@@ -70,7 +70,7 @@ truth = dict(h=0.674, a=-0.9426, b=0.237, c=2.360, mpisn=33.29,
              log_fpl=float(np.log(0.63909)), lam=4.814,
              dkappa=8.3659 - 4.814, zp=0.954, beta=-2.43,
              msigma_low=4.0, mp_low=9.121, log_flow=float(np.log(0.6025)),
-             mpisndot=0.0)
+             mpisndot=0.0, Omh2=0.315 * 0.674 ** 2)
 init = {k: jnp.asarray(v) for k, v in truth.items()
         if k in prior and not isinstance(prior[k], float)}
 

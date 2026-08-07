@@ -359,6 +359,13 @@ def get_deterministic_parameters(sample):
     mbhmax = numpyro.deterministic('mbhmax', sample['mpisn'] + sample['dmbhmax'])
  
     out = dict(kappa=kappa, mbhmax=mbhmax)
+
+    # Default cosmology parameterization: sample Omh2 = Om*h^2 and derive Om.
+    # Priors that still set Om directly are unchanged.
+    if 'Omh2' in sample and 'Om' not in sample:
+        out['Om'] = numpyro.deterministic(
+            'Om', sample['Omh2'] / jnp.square(sample['h'])
+        )
  
     if 'logit_fpl' in sample:
         out['fpl'] = numpyro.deterministic('fpl', jax.nn.sigmoid(sample['logit_fpl']))

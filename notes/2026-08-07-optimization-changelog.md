@@ -61,6 +61,10 @@ against float64 references).
    evaluation becomes a 1-D lerp.  ~2x on top of everything else.
 8. Constant-in-the-sampler data quantities (logs of masses, ratios, pdraw)
    hoisted out of the per-step computation.
+9. **Default cosmology prior samples `Omh2 = Om*h^2`** (not `Om`); the model
+   derives `Om = Omh2/h^2` as a deterministic.  Better conditioned against `h`
+   when matter density is free.  Active prior: `runs/priors/gwtc5_cosmo.prior`.
+   Priors that still set `Om` directly keep the old behaviour.
 
 ## Bug fixes
 

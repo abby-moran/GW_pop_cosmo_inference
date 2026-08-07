@@ -36,6 +36,8 @@ What changed, and why (see bench_model.py for the measurements):
 6. ``get_deterministic_parameters`` is no longer wrapped in ``jax.jit``.  That
    wrapper made ``numpyro.deterministic`` sites vanish on a jit cache hit, so
    ``kappa``, ``mbhmax``, ``fpl`` and ``flow`` never reached the output.
+   The default cosmology prior samples ``Omh2 = Om*h^2``; this helper then
+   records ``Om = Omh2/h^2`` as a deterministic.
 
 Behaviour-preserving throughout except where noted with a "# CHANGED:" comment.
 """
@@ -823,6 +825,15 @@ def get_deterministic_parameters(sample, use_low_bump=True):
     mbhmax = numpyro.deterministic('mbhmax', sample['mpisn'] + sample['dmbhmax'])
 
     out = dict(kappa=kappa, mbhmax=mbhmax)
+
+    # Default cosmology parameterization: sample Omh2 = Om*h^2 (less
+    # degenerate with h than Om) and derive Om.  A prior that still samples
+    # Om directly is unchanged -- the deterministic is only installed when Om
+    # is absent.
+    if 'Omh2' in sample and 'Om' not in sample:
+        out['Om'] = numpyro.deterministic(
+            'Om', sample['Omh2'] / jnp.square(sample['h'])
+        )
 
     if use_low_bump:
         if 'logit_flow' in sample:

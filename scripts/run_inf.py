@@ -73,6 +73,9 @@ def load_true_vals(filename):
         tv['log_flow']=np.log(1e-5)
     tv['log_fpl'] = jnp.log(tv['fpl'])
 
+    # Default prior samples Omh2 = Om*h^2; pop_configs still store Om.
+    if 'Omh2' not in tv and 'Om' in tv and 'h' in tv:
+        tv['Omh2'] = tv['Om'] * tv['h'] ** 2
 
     # remove unused raw params if desired
     del tv['kappa']

@@ -306,6 +306,8 @@ def load_true_vals(filename):
     if 'flow' in tv:
         tv['log_flow'] = float(np.log(tv['flow']))
     tv['log_fpl'] = float(np.log(tv['fpl']))
+    if 'Omh2' not in tv and 'Om' in tv and 'h' in tv:
+        tv['Omh2'] = tv['Om'] * tv['h'] ** 2
 
     return tv
 
