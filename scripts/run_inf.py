@@ -158,13 +158,48 @@ if __name__ == "__main__":
     print(truth_params)
     #kernel = DiscreteHMCGibbs(NUTS(intensity_models.pop_cosmo_model, init_strategy=init_strategy))
 
+    model_args = (m1s, qs, dls, pdraws, sel_samples['m1d'].to_list(),
+                  sel_samples['q'].to_list(), sel_samples['dl'].to_list(),
+                  sel_samples['pdraw_sel'].to_list(), ndraw, prior)
+
+    # Float32 recentering: evaluate the per-event log likelihoods and
+    # log_mu_sel once at the init point and subtract them as constant
+    # baselines inside the model's sums.  A constant shift of the potential is
+    # invisible to MCMC, but it removes the dominant float32 roundoff term
+    # (1 ulp of the ~16*nobs log-likelihood sum; 1.9e-2 nats at nobs=9000,
+    # growing linearly with nobs).  The recorded 'lp' is shifted by the
+    # printed offset.  See notes/2026-08-07-float32-recentering.md.
+    # (Skipped automatically if the original intensity_models module is used,
+    # which has no recentering support.)
+    recenter_kwargs = {}
+    baselines = None
+    if hasattr(intensity_models, "recentering_baselines"):
+        baselines = intensity_models.recentering_baselines(
+            model_args, truth_params, use_low_bump=use_low_bump)
+        recenter_kwargs = dict(loglike_ref=baselines['loglike_ref'],
+                               log_mu_sel_ref=baselines['log_mu_sel_ref'])
+        print(f"recentering baselines: log_mu_sel_ref = {baselines['log_mu_sel_ref']:.6f}, "
+              f"dropped potential offset = {baselines['offset']:.6e} "
+              f"(add to the centered 'loglike' factor for absolute values)")
+
     kernel = NUTS(intensity_models.pop_cosmo_model, init_strategy=init_strategy, max_tree_depth=7)#, target_accept_prob=0.95)
     mcmc = MCMC(kernel, num_warmup=nmcmc, num_samples=nmcmc, num_chains=nchain,
                 chain_method="parallel", progress_bar=True)
-    mcmc.run(jax.random.PRNGKey(random_seed), m1s, qs, dls, pdraws, sel_samples['m1d'].to_list(), 
-             sel_samples['q'].to_list(), sel_samples['dl'].to_list(), sel_samples['pdraw_sel'].to_list(),
-        ndraw, prior, use_low_bump=use_low_bump)
+    # NUTS only collects ('z', 'diverging') by default, so a finished run used to
+    # carry no record of sampler health -- energy errors, acceptance and tree
+    # depth were all discarded and could not be checked after the fact.  These
+    # are scalars per sample (a few kB per chain), and arviz maps them into
+    # sample_stats as lp, energy, acceptance_rate, n_steps, tree_depth and
+    # step_size.  See notes/2026-08-07-float32-accuracy-audit.md.
+    mcmc.run(jax.random.PRNGKey(random_seed), *model_args, use_low_bump=use_low_bump,
+        **recenter_kwargs,
+        extra_fields=("potential_energy", "energy", "num_steps", "accept_prob",
+                      "adapt_state.step_size"))
     #outfile="o3_c2_zm55_err5k.npz"
     samples = az.from_numpyro(mcmc, num_chains=nchain)
+    # The centered run's lp/energy are shifted by a constant; keep the offset
+    # with the output so absolute log-likelihood values remain recoverable.
+    if baselines is not None:
+        samples.posterior.attrs["recentering_offset"] = baselines["offset"]
     az.to_netcdf(samples, outfile)
     print("Saved samples to " + outfile)

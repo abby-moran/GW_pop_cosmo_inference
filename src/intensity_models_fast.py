@@ -912,7 +912,8 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                     store_per_event=False, neff_criterion=None,
                     neff_penalty="mc_variance", mc_variance_budget=5.0,
                     tabulate_mass_function=None, n_mass_table=8192,
-                    smooth_tail_edge=True):
+                    smooth_tail_edge=True,
+                    loglike_ref=None, log_mu_sel_ref=None):
     """
     Ndraw is # of events in the injection samples used to estimate the selection function
 
@@ -980,6 +981,23 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         wrong by 10-30% at typical parameter points).  NOTE: this is a (small)
         change to the population model itself -- set smooth_tail_edge=False to
         reproduce the original model exactly.
+
+    loglike_ref, log_mu_sel_ref: float32 recentering baselines (see
+        notes/2026-08-07-float32-recentering.md and `recentering_baselines`).
+        `loglike_ref` is a constant (nobs,) array subtracted from the
+        per-event log likelihoods *inside* the sum, and `log_mu_sel_ref` a
+        constant scalar subtracted from log_mu_sel inside the selection
+        factor.  Both shift the potential by a constant, so the posterior and
+        all gradients are unchanged -- but the summed 'loglike' factor then
+        scales with the *variation* of the log likelihood over the posterior
+        (O(10) nats, independent of nobs) instead of its magnitude
+        (O(16*nobs) nats), which removes the dominant float32 roundoff term
+        identified in notes/2026-08-07-float32-accuracy-audit.md.  The
+        recorded 'loglike' factor and the potential energy ('lp' in arviz)
+        are shifted by `-(sum(loglike_ref) - nobs*log_mu_sel_ref)`; use the
+        'offset' entry returned by `recentering_baselines` to recover
+        absolute values in post-processing.  Default None: no recentering,
+        bit-identical to the previous behaviour.
     """
     # Static bounds for the tabulated mass axis, taken from the data *before*
     # it is touched by jnp (inside numpyro's jit the arrays become tracers and
@@ -1095,18 +1113,36 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     if store_per_event:
         _ = numpyro.deterministic("loglik_array_dim", log_like_per_event)
 
-    log_like = jnp.sum(log_like_per_event)
+    # Recentering: subtracting a constant per-event baseline *before* the sum
+    # keeps the summed factor at O(variation over the posterior) ~ 10 nats
+    # instead of O(16*nobs) ~ 1e5 nats, whose float32 ulp (1.6e-2 nats at
+    # nobs=9000) was the dominant precision error at production scale.  A
+    # constant shift of the potential is invisible to MCMC and to gradients.
+    if loglike_ref is not None:
+        log_like = jnp.sum(log_like_per_event - jnp.asarray(loglike_ref))
+    else:
+        log_like = jnp.sum(log_like_per_event)
     _ = numpyro.factor('loglike', log_like)
 
     # --- selection function ----------------------------------------------
     lse_sel, lse2_sel, _ = _logsumexp_and_neff(log_sel_wts[None, :], axis=1)
     log_mu_sel = jnp.squeeze(lse_sel) - jnp.log(Ndraw)
+    numpyro.deterministic('log_mu_sel', log_mu_sel)
     # CHANGED: if the selection integral underflows to zero, -nobs*log_mu_sel
     # becomes a huge *positive* log-factor (the original's nan_to_num turned it
     # into +1e38), i.e. a completely dead parameter region would look
     # infinitely attractive.  Penalize it instead.
     sel_dead = jnp.squeeze(lse_sel) <= _LOG_ZERO_FLOOR
-    _ = numpyro.factor('selfactor', jnp.where(sel_dead, _LOG_ZERO_FLOOR, -nobs * log_mu_sel))
+    # Same recentering trick for the selection factor.  This fixes the float32
+    # representation of the -nobs*log_mu_sel product but NOT the ~1 ulp
+    # (~1e-6) computational error of the log_mu_sel scalar itself, which is
+    # still amplified by nobs -- see the recentering note for the residual
+    # error budget.
+    if log_mu_sel_ref is not None:
+        sel_log_factor = -nobs * (log_mu_sel - log_mu_sel_ref)
+    else:
+        sel_log_factor = -nobs * log_mu_sel
+    _ = numpyro.factor('selfactor', jnp.where(sel_dead, _LOG_ZERO_FLOOR, sel_log_factor))
 
     log_mu2 = jnp.squeeze(lse2_sel) - 2 * jnp.log(Ndraw)
     # 1 - exp(x) with x -> 0 from below is the dangerous case; -expm1 is the
@@ -1172,3 +1208,59 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         log_dN.mref * R * jnp.exp(log_dN(log_dN.mref, log_dN.qref, coords['z_grid'])),
     )
     _ = numpyro.deterministic('hz', cosmo.h * cosmo.E(coords['z_grid']))
+
+
+def recentering_baselines(model_args, ref_params, rng_seed=0, **model_kwargs):
+    """Evaluate the per-event log likelihoods and log_mu_sel once at a fixed
+    reference point, for use as pop_cosmo_model(loglike_ref=...,
+    log_mu_sel_ref=...).
+
+    The baselines only need to be *near* typical posterior values -- whatever
+    float32 numbers come out are exact constants once fixed, and the residual
+    float32 error scales with how far the sampler wanders from them (O(10)
+    nats over the posterior, up to O(1e3-1e4) during early warmup: still 100x
+    less roundoff than no baseline at all).  So a plain float32 evaluation at
+    the initialization point is entirely sufficient; no float64 pass needed.
+
+    model_args: the positional arguments of pop_cosmo_model (data + prior).
+    ref_params: dict of parameter values to condition on (e.g. the init/truth
+        point).  Parameters not in the dict are drawn from the prior with
+        `rng_seed`, so an empty dict still yields usable baselines.
+    model_kwargs: forwarded to pop_cosmo_model (must match what the sampler
+        will use, e.g. use_low_bump).
+
+    Returns a dict with 'loglike_ref' (np.float64 (nobs,)), 'log_mu_sel_ref'
+    (float) and 'offset' (float): the constant
+    sum(loglike_ref) - nobs*log_mu_sel_ref that the recentered potential no
+    longer contains, for recovering absolute log-likelihood values in
+    post-processing.
+    """
+    import numpyro.handlers as handlers
+
+    model_kwargs = dict(model_kwargs)
+    model_kwargs["store_per_event"] = True
+    model_kwargs.pop("loglike_ref", None)
+    model_kwargs.pop("log_mu_sel_ref", None)
+    ref_params = {k: jnp.asarray(v) for k, v in ref_params.items()}
+    with handlers.seed(rng_seed=rng_seed), handlers.substitute(data=ref_params):
+        tr = handlers.trace(pop_cosmo_model).get_trace(*model_args, **model_kwargs)
+
+    loglike_ref = np.asarray(tr["loglik_array_dim"]["value"], dtype=np.float64)
+    log_mu_sel_ref = float(np.asarray(tr["log_mu_sel"]["value"]))
+    n_dead = int(np.sum(loglike_ref <= 0.5 * _LOG_ZERO_FLOOR))
+    if n_dead:
+        # A dead reference event carries a baseline of ~_LOG_ZERO_FLOOR, so its
+        # residual is ~+1e6 whenever the event is alive -- which puts the huge
+        # magnitude right back into the sum and defeats the recentering.
+        import warnings
+        warnings.warn(
+            f"recentering_baselines: {n_dead} event(s) have (near-)zero "
+            f"likelihood at the reference point; recentering will not help "
+            f"until the reference point is moved inside the support."
+        )
+    nobs = loglike_ref.shape[0]
+    return dict(
+        loglike_ref=loglike_ref,
+        log_mu_sel_ref=log_mu_sel_ref,
+        offset=float(loglike_ref.sum() - nobs * log_mu_sel_ref),
+    )
