@@ -102,21 +102,37 @@ centered event sum is O(10) nats and free):
 | 100,000 | 0.095 | ~0.5x |
 | 1,000,000 | 0.95 | ~5x |
 
-So recentering buys the next ~10x of catalogue growth in pure float32, with
-the selection scalar becoming the binding (and directly monitorable) term.
-Beyond that, two options:
+So recentering alone buys the next ~10x of catalogue growth in pure float32,
+with the selection scalar becoming the binding (and directly monitorable)
+term.  The next escalation is now also implemented:
 
-- **Pure float32:** rescale `pdraw_sel` by a constant so that `log_mu_sel`
-  sits near 0 instead of 14 (correcting `R` by the same constant).  The ulp
-  of the final scalar shrinks ~16x and the error floor moves to the ~1e-7
-  relative error of the internal weight sum — roughly another 10x.  Not
-  implemented.
-- **Targeted float64:** enable x64 and pin every large array explicitly to
-  float32, keeping only the scalar tail (logsumexp outputs, factors) in
-  float64.  Note the audit's original suggestion — casting two accumulators
-  to float64 with x64 *disabled* — is not possible in JAX (requested float64
-  is silently downcast to float32), and per finding 2 above an accumulator
-  cast alone would not have reduced the offset anyway.
+### Selection `pdraw` scale (implemented)
+
+`pop_cosmo_model(log_pdraw_sel_scale=c)` adds `c` to `log(pdraw_sel)` before
+the selection weights — equivalent to multiplying every draw probability by
+`exp(c)`, but only inside the model; the caller's array is untouched.
+`recentering_baselines` sets `c` to the physical `log_mu_sel` at the
+reference point, so the scaled selection scalar sits at 0 there and its
+float32 ulp shrinks from ~9.5e-7 (magnitude 14) to ~1.2e-7 (magnitude ~1):
+about 8× on the `nobs * ulp` floor.
+
+Physical quantities are restored post facto:
+
+- recorded `log_mu_sel` deterministic = scaled value + `c`
+- `R = nobs/μ_sel + …` uses that physical `μ_sel = exp(log_mu_sel)`
+
+so rate posteriors and diagnostics stay in the true-drawing-density
+convention.  `neff_sel` is invariant under the constant weight shift.  The
+selfactor / recentering path operates on the *scaled* scalar (with
+`log_mu_sel_ref = 0`).
+
+Beyond that, the remaining option is targeted float64: enable x64 and pin
+every large array explicitly to float32, keeping only the scalar tail
+(logsumexp outputs, factors) in float64.  Note the audit's original
+suggestion — casting two accumulators to float64 with x64 *disabled* — is
+not possible in JAX (requested float64 is silently downcast to float32),
+and per finding 2 above an accumulator cast alone would not have reduced
+the offset anyway.
 
 One caveat at very large nobs: the coherent element-wise *bias* (finding 2)
 also grows ~1.6e-6*nobs and is not removed by any of the above; at 1M events
@@ -129,7 +145,8 @@ float32 there, independent of the selection-scalar fix.
 - No measurable cost: peak GPU memory 6.42 GiB recentered float32 (vs 6.01
   unrecentered in the audit, difference from the added `log_mu_sel`
   deterministic and harness bookkeeping); the extra work per likelihood call
-  is one (nobs,) subtraction and one scalar subtraction.
+  is one (nobs,) subtraction and a couple of scalar ops (pdraw scale + R
+  undo).
 - The baselines must be treated like the data: the float64 harness leg loads
   the float32 leg's baselines (`--ref_in/--ref_out`, analogous to z0),
   because legs with different constants differ by a real constant, not by

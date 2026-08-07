@@ -34,4 +34,4 @@ This file keeps agent-facing guidance brief. Project overview, science backgroun
 - Use `jnp` inside model code and reserve `np` for precomputation.
 - Favor `jnp.where` over Python branching in jitted paths.
 - The PISN mass-grid interpolation is manual 2D bilinear interpolation rather than `jnp.interp`.
-- `intensity_models_fast.pop_cosmo_model` accepts float32 recentering baselines (`loglike_ref`, `log_mu_sel_ref`, from `recentering_baselines()`); they shift the potential by a constant only. See `notes/2026-08-07-float32-recentering.md`.
+- `intensity_models_fast.pop_cosmo_model` accepts float32 recentering baselines (`loglike_ref`, `log_mu_sel_ref`, `log_pdraw_sel_scale`, from `recentering_baselines()`); they shift the potential by a constant only, and `R` / recorded `log_mu_sel` stay in the physical convention. See `notes/2026-08-07-float32-recentering.md`.

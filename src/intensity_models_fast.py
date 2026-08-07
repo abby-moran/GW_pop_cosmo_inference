@@ -913,7 +913,8 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                     neff_penalty="mc_variance", mc_variance_budget=5.0,
                     tabulate_mass_function=None, n_mass_table=8192,
                     smooth_tail_edge=True,
-                    loglike_ref=None, log_mu_sel_ref=None):
+                    loglike_ref=None, log_mu_sel_ref=None,
+                    log_pdraw_sel_scale=0.0):
     """
     Ndraw is # of events in the injection samples used to estimate the selection function
 
@@ -998,6 +999,18 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         'offset' entry returned by `recentering_baselines` to recover
         absolute values in post-processing.  Default None: no recentering,
         bit-identical to the previous behaviour.
+
+    log_pdraw_sel_scale: constant added to ``log(pdraw_sel)`` before the
+        selection weights (equivalent to multiplying every ``pdraw_sel`` by
+        ``exp(scale)``).  Used to park the float32 ``log_mu_sel`` scalar near
+        0 instead of ~14, shrinking its ulp ~8x so the residual
+        ``nobs * ulp(log_mu_sel)`` floor after recentering drops by the same
+        factor (see notes/2026-08-07-float32-recentering.md).  The on-disk
+        ``pdraw_sel`` is left alone -- this is a numerical knob inside the
+        model only.  ``R`` and the recorded ``log_mu_sel`` deterministic are
+        corrected back to the physical (unscaled) convention, so rate
+        posteriors and diagnostics stay comparable to unscaled runs.
+        Default 0: no scaling.
     """
     # Static bounds for the tabulated mass axis, taken from the data *before*
     # it is touched by jnp (inside numpyro's jit the arrays become tracers and
@@ -1021,7 +1034,8 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         (m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel),
     )
 
-    log_pdraw_sel = jnp.log(pdraw_sel)
+    # Numerical scale only: does not mutate the caller's pdraw_sel array.
+    log_pdraw_sel = jnp.log(pdraw_sel) + log_pdraw_sel_scale
     nobs = m1s_det.shape[0]
     nsamp = m1s_det.shape[1]
     nsel = m1s_det_sel.shape[0]
@@ -1126,28 +1140,34 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
 
     # --- selection function ----------------------------------------------
     lse_sel, lse2_sel, _ = _logsumexp_and_neff(log_sel_wts[None, :], axis=1)
-    log_mu_sel = jnp.squeeze(lse_sel) - jnp.log(Ndraw)
+    # With log_pdraw_sel_scale = c, every selection weight (and thus this
+    # scalar) is shifted by -c relative to the physical integral.  Keep the
+    # scaled value for the float32-sensitive arithmetic below; report the
+    # physical value as the deterministic.
+    log_mu_sel_scaled = jnp.squeeze(lse_sel) - jnp.log(Ndraw)
+    log_mu_sel = log_mu_sel_scaled + log_pdraw_sel_scale
     numpyro.deterministic('log_mu_sel', log_mu_sel)
     # CHANGED: if the selection integral underflows to zero, -nobs*log_mu_sel
     # becomes a huge *positive* log-factor (the original's nan_to_num turned it
     # into +1e38), i.e. a completely dead parameter region would look
     # infinitely attractive.  Penalize it instead.
     sel_dead = jnp.squeeze(lse_sel) <= _LOG_ZERO_FLOOR
-    # Same recentering trick for the selection factor.  This fixes the float32
-    # representation of the -nobs*log_mu_sel product but NOT the ~1 ulp
-    # (~1e-6) computational error of the log_mu_sel scalar itself, which is
-    # still amplified by nobs -- see the recentering note for the residual
-    # error budget.
+    # Recentering of the selection factor uses the *scaled* scalar so that,
+    # with log_pdraw_sel_scale chosen as the physical log_mu_sel at the ref
+    # point, log_mu_sel_scaled sits near 0 and its float32 ulp is ~8x finer
+    # than at magnitude ~14.  log_mu_sel_ref is then typically 0.
     if log_mu_sel_ref is not None:
-        sel_log_factor = -nobs * (log_mu_sel - log_mu_sel_ref)
+        sel_log_factor = -nobs * (log_mu_sel_scaled - log_mu_sel_ref)
     else:
-        sel_log_factor = -nobs * log_mu_sel
+        sel_log_factor = -nobs * log_mu_sel_scaled
     _ = numpyro.factor('selfactor', jnp.where(sel_dead, _LOG_ZERO_FLOOR, sel_log_factor))
 
+    # neff_sel is invariant under a constant weight shift, so the scaled
+    # log_mu / log_mu2 pair is fine here.
     log_mu2 = jnp.squeeze(lse2_sel) - 2 * jnp.log(Ndraw)
     # 1 - exp(x) with x -> 0 from below is the dangerous case; -expm1 is the
     # accurate form and log(-expm1(x)) is finite for x < 0.
-    x = 2 * log_mu_sel - jnp.log(Ndraw) - log_mu2
+    x = 2 * log_mu_sel_scaled - jnp.log(Ndraw) - log_mu2
     log_s2 = log_mu2 + jnp.log(-jnp.expm1(jnp.minimum(x, -1e-7)))
 
     # --- n_eff guards ----------------------------------------------------
@@ -1178,7 +1198,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     elif neff_penalty not in (None, "none"):
         raise ValueError(f"unknown neff_penalty: {neff_penalty!r}")
 
-    neff_sel = jnp.exp(2 * log_mu_sel - log_s2)
+    neff_sel = jnp.exp(2 * log_mu_sel_scaled - log_s2)
     numpyro.deterministic("neff_sel", neff_sel)
     if neff_penalty == "min_neff":
         # legacy-exact mode: keep the original kinked selection guard too
@@ -1190,6 +1210,8 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
             "neff_sel_criteria",
             -jax.nn.softplus((4 * nobs - neff_sel) / (0.05 * 4 * nobs)),
         )
+    # Physical mu_sel / R: undo log_pdraw_sel_scale so the rate posterior
+    # matches the true-drawing-density convention of pdraw_sel.
     mu_sel = jnp.exp(log_mu_sel)
 
     R_unit = numpyro.sample('R_unit', dist.Normal(0, 1))
@@ -1211,9 +1233,8 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
 
 
 def recentering_baselines(model_args, ref_params, rng_seed=0, **model_kwargs):
-    """Evaluate the per-event log likelihoods and log_mu_sel once at a fixed
-    reference point, for use as pop_cosmo_model(loglike_ref=...,
-    log_mu_sel_ref=...).
+    """Evaluate per-event log likelihoods and log_mu_sel once at a fixed
+    reference point, for use as pop_cosmo_model kwargs.
 
     The baselines only need to be *near* typical posterior values -- whatever
     float32 numbers come out are exact constants once fixed, and the residual
@@ -1227,13 +1248,22 @@ def recentering_baselines(model_args, ref_params, rng_seed=0, **model_kwargs):
         point).  Parameters not in the dict are drawn from the prior with
         `rng_seed`, so an empty dict still yields usable baselines.
     model_kwargs: forwarded to pop_cosmo_model (must match what the sampler
-        will use, e.g. use_low_bump).
+        will use, e.g. use_low_bump).  Any recentering / pdraw-scale kwargs
+        in model_kwargs are stripped so this always evaluates the physical
+        (unscaled) model.
 
-    Returns a dict with 'loglike_ref' (np.float64 (nobs,)), 'log_mu_sel_ref'
-    (float) and 'offset' (float): the constant
-    sum(loglike_ref) - nobs*log_mu_sel_ref that the recentered potential no
-    longer contains, for recovering absolute log-likelihood values in
-    post-processing.
+    Returns a dict meant to be splatted into pop_cosmo_model:
+
+      * ``loglike_ref`` (np.float64 (nobs,)): per-event baseline
+      * ``log_pdraw_sel_scale`` (float): set to the physical ``log_mu_sel`` at
+        the reference, so the scaled selection scalar sits at 0 there
+      * ``log_mu_sel_ref`` (float): 0.0 -- the scaled selection recentering
+        baseline after applying ``log_pdraw_sel_scale``
+      * ``offset`` (float): ``sum(loglike_ref) - nobs*log_mu_sel_phys``;
+        add to the centered potential to recover absolute log-likelihood
+      * ``log_mu_sel_phys_ref`` (float): the unscaled ``log_mu_sel`` at the
+        reference (same as ``log_pdraw_sel_scale``; kept under this name for
+        clarity in logging)
     """
     import numpyro.handlers as handlers
 
@@ -1241,12 +1271,13 @@ def recentering_baselines(model_args, ref_params, rng_seed=0, **model_kwargs):
     model_kwargs["store_per_event"] = True
     model_kwargs.pop("loglike_ref", None)
     model_kwargs.pop("log_mu_sel_ref", None)
+    model_kwargs.pop("log_pdraw_sel_scale", None)
     ref_params = {k: jnp.asarray(v) for k, v in ref_params.items()}
     with handlers.seed(rng_seed=rng_seed), handlers.substitute(data=ref_params):
         tr = handlers.trace(pop_cosmo_model).get_trace(*model_args, **model_kwargs)
 
     loglike_ref = np.asarray(tr["loglik_array_dim"]["value"], dtype=np.float64)
-    log_mu_sel_ref = float(np.asarray(tr["log_mu_sel"]["value"]))
+    log_mu_sel_phys = float(np.asarray(tr["log_mu_sel"]["value"]))
     n_dead = int(np.sum(loglike_ref <= 0.5 * _LOG_ZERO_FLOOR))
     if n_dead:
         # A dead reference event carries a baseline of ~_LOG_ZERO_FLOOR, so its
@@ -1261,6 +1292,8 @@ def recentering_baselines(model_args, ref_params, rng_seed=0, **model_kwargs):
     nobs = loglike_ref.shape[0]
     return dict(
         loglike_ref=loglike_ref,
-        log_mu_sel_ref=log_mu_sel_ref,
-        offset=float(loglike_ref.sum() - nobs * log_mu_sel_ref),
+        log_pdraw_sel_scale=log_mu_sel_phys,
+        log_mu_sel_ref=0.0,
+        log_mu_sel_phys_ref=log_mu_sel_phys,
+        offset=float(loglike_ref.sum() - nobs * log_mu_sel_phys),
     )

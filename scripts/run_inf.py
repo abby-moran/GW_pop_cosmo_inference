@@ -162,13 +162,13 @@ if __name__ == "__main__":
                   sel_samples['q'].to_list(), sel_samples['dl'].to_list(),
                   sel_samples['pdraw_sel'].to_list(), ndraw, prior)
 
-    # Float32 recentering: evaluate the per-event log likelihoods and
-    # log_mu_sel once at the init point and subtract them as constant
-    # baselines inside the model's sums.  A constant shift of the potential is
-    # invisible to MCMC, but it removes the dominant float32 roundoff term
-    # (1 ulp of the ~16*nobs log-likelihood sum; 1.9e-2 nats at nobs=9000,
-    # growing linearly with nobs).  The recorded 'lp' is shifted by the
-    # printed offset.  See notes/2026-08-07-float32-recentering.md.
+    # Float32 recentering + selection pdraw scale: evaluate per-event log
+    # likelihoods and log_mu_sel once at the init point; subtract the former
+    # inside the event sum, and add the latter to log(pdraw_sel) so the
+    # selection scalar sits near 0 (finer float32 ulp).  R and the recorded
+    # log_mu_sel are corrected back to the physical convention.  The recorded
+    # 'lp' is shifted by the printed offset.  See
+    # notes/2026-08-07-float32-recentering.md.
     # (Skipped automatically if the original intensity_models module is used,
     # which has no recentering support.)
     recenter_kwargs = {}
@@ -176,9 +176,15 @@ if __name__ == "__main__":
     if hasattr(intensity_models, "recentering_baselines"):
         baselines = intensity_models.recentering_baselines(
             model_args, truth_params, use_low_bump=use_low_bump)
-        recenter_kwargs = dict(loglike_ref=baselines['loglike_ref'],
-                               log_mu_sel_ref=baselines['log_mu_sel_ref'])
-        print(f"recentering baselines: log_mu_sel_ref = {baselines['log_mu_sel_ref']:.6f}, "
+        recenter_kwargs = dict(
+            loglike_ref=baselines['loglike_ref'],
+            log_mu_sel_ref=baselines['log_mu_sel_ref'],
+            log_pdraw_sel_scale=baselines['log_pdraw_sel_scale'],
+        )
+        print(f"recentering baselines: log_pdraw_sel_scale = "
+              f"{baselines['log_pdraw_sel_scale']:.6f} "
+              f"(physical log_mu_sel at ref; scaled ref = "
+              f"{baselines['log_mu_sel_ref']:.1f}), "
               f"dropped potential offset = {baselines['offset']:.6e} "
               f"(add to the centered 'loglike' factor for absolute values)")
 
@@ -201,5 +207,6 @@ if __name__ == "__main__":
     # with the output so absolute log-likelihood values remain recoverable.
     if baselines is not None:
         samples.posterior.attrs["recentering_offset"] = baselines["offset"]
+        samples.posterior.attrs["log_pdraw_sel_scale"] = baselines["log_pdraw_sel_scale"]
     az.to_netcdf(samples, outfile)
     print("Saved samples to " + outfile)
