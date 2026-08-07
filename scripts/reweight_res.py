@@ -444,6 +444,13 @@ if __name__ == "__main__":
             evt_offset += det_mask.sum()
             first_chunk  = False
 
+        R_all = n_pop * np.exp(-log_C)
+        print(f"  total detections: {evt_offset:,} of {n_pop:,} population draws")
+        print(f"  true rate: R = {R_all:.4f} if ALL {evt_offset:,} detections are analyzed; "
+              f"an analysis of the first nobs detections should recover "
+              f"R = {R_all:.4f} * nobs/{evt_offset:,} "
+              f"(e.g. nobs=9000 -> R = {R_all * 9000 / max(int(evt_offset), 1):.4f})")
+
         # cleanup cache
         shutil.rmtree(cache_dir)
 
