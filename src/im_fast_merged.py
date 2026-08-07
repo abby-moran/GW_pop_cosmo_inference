@@ -16,36 +16,26 @@ What changed, and why (see bench_model.py for the measurements):
    equals ``J(u) + 2*log(dH)`` with ``u = log(dL) - log(dH)``, where J depends
    only on (Om, w).  So we tabulate ``log1p(z)`` and ``J`` against a grid
    uniform in u and get both with one index computation.  When Om and w are
-   fixed those tables are compile-time constants and XLA folds them away.
+   fixed (the current production setup) those tables are compile-time
+   constants and XLA folds them away entirely.
 
-3. Scatter-free custom VJP for few-parameter tables (cosmology + rate
-   density).  When Om/w (and/or lam/kappa/zp) are sampled the tables are no
-   longer constants; reverse-mode AD would otherwise scatter-add one
-   cotangent per data point into each table.  Instead we build forward-mode
-   tangent tables once per call and route the parameter gradient through a
-   gather+reduce (see ``_table_lookup_fewparam``).  Channels are interleaved
-   so one index serves ``(log1p z, J)``.
-
-4. The PISN mco integral is done as a max-subtracted trapezoid in linear
+3. The PISN mco integral is done as a max-subtracted trapezoid in linear
    space (one ``exp`` over the big grid) rather than
    ``logsumexp(logaddexp(...))`` (three transcendental passes), with the mco
    axis moved last so the reduction is contiguous.
 
-5. When ``mpisndot`` is a fixed 0 the PISN grid is z-independent, so it is
+4. When ``mpisndot`` is a fixed 0 the PISN grid is z-independent, so it is
    built with a single z slice and the 2-D interpolation collapses to 1-D.
    This is detected statically from the prior, so nothing changes for runs
    that do sample mpisndot.
 
-6. The per-event ``logsumexp`` and the ``neff`` diagnostic share one
+5. The per-event ``logsumexp`` and the ``neff`` diagnostic share one
    max-subtracted pass instead of exponentiating the (nobs, nsamp) array
    twice.
 
-7. ``get_deterministic_parameters`` is no longer wrapped in ``jax.jit``.  That
+6. ``get_deterministic_parameters`` is no longer wrapped in ``jax.jit``.  That
    wrapper made ``numpyro.deterministic`` sites vanish on a jit cache hit, so
    ``kappa``, ``mbhmax``, ``fpl`` and ``flow`` never reached the output.
-   Optional: a prior may sample ``Omh2 = Om*h^2`` instead of ``Om``; the
-   model then records ``Om = Omh2/h^2`` as a deterministic (better conditioned
-   when all cosmological parameters are free).
 
 Behaviour-preserving throughout except where noted with a "# CHANGED:" comment.
 """
@@ -243,140 +233,6 @@ def _gather_lerp2d(table, im0, fm, iz0, fz, nm, nz, R=None):
     lo = g00 + fm * (g10 - g00)
     hi = g01 + fm * (g11 - g01)
     return lo + fz * (hi - lo)
-
-
-# ---------------------------------------------------------------------------
-# Scatter-free lookups into tables that depend on a FEW scalar parameters.
-#
-# The replicated-scatter mitigation above makes the backward pass of a gather
-# from a traced table tolerable (~2.9 ms per pass at production scale), but a
-# table that depends on only a handful of scalars doesn't need the scatter at
-# all.  Linear interpolation is linear in the table values, so the exact
-# parameter gradient of ``lerp(T(theta), t)`` splits into
-#
-#     d/dtheta_k = lerp(dT/dtheta_k, t)        (through the table values)
-#                + (T[i1] - T[i0]) * dt/dtheta_k   (through the index)
-#
-# The second term is the ordinary index cotangent and stays on the normal AD
-# path (t is a regular traced input).  The first is normally what reverse mode
-# realizes as a scatter-add of one cotangent per data point into the table; we
-# instead precompute the tangent tables dT/dtheta_k once per likelihood call
-# with forward-mode AD (K extra passes over the ~2k-entry table build --
-# negligible) and implement the custom VJP as a *gather* from them plus a full
-# reduction.  Gathers and tree-reductions stream at memory bandwidth; the
-# atomics of the scatter are gone entirely.
-#
-# This is worthwhile only while K stays small: each traced parameter costs one
-# extra gather+reduce pass over the big arrays in the backward pass.  The
-# cosmology / rate-density tables here have K <= 6 (Om, w, zmax, lam, kappa,
-# zp).  The tabulated *mass* function is left on the replicated-scatter path
-# on purpose: it depends on ~a dozen sampled parameters, at which point K
-# gather passes lose to 2 replicated scatters.
-# ---------------------------------------------------------------------------
-def _multi_lerp(table, t):
-    """Linear interpolation into ``table`` of shape (n, C) at fractional
-    indices ``t`` (already clipped to [0, n-1]); returns t.shape + (C,)."""
-    n = table.shape[0]
-    i0f = jnp.floor(t)
-    i0 = i0f.astype(jnp.int32)
-    i1 = jnp.minimum(i0 + 1, n - 1)
-    frac = t - i0f
-    a = table[i0]
-    b = table[i1]
-    return a + frac[..., None] * (b - a)
-
-
-@jax.custom_vjp
-def _table_lookup_fewparam(table, dtable, params_vec, t):
-    """``_multi_lerp(table, t)`` whose VJP routes the table's parameter
-    dependence through ``params_vec`` via the tangent tables ``dtable``
-    (shape (K, n, C), dtable[k] = d table / d params_vec[k]) instead of
-    scattering into ``table``.
-
-    Contract: ``table``/``dtable`` must depend on the rest of the graph ONLY
-    through the K scalars stacked in ``params_vec`` (call sites pass them
-    through stop_gradient to make violations loud rather than silent)."""
-    return _multi_lerp(table, t)
-
-
-def _table_lookup_fewparam_fwd(table, dtable, params_vec, t):
-    return _multi_lerp(table, t), (table, dtable, t)
-
-
-def _table_lookup_fewparam_bwd(res, ct):
-    table, dtable, t = res
-    n = table.shape[0]
-    i0f = jnp.floor(t)
-    i0 = i0f.astype(jnp.int32)
-    i1 = jnp.minimum(i0 + 1, n - 1)
-    frac = t - i0f
-
-    a = table[i0]
-    b = table[i1]
-    ct_t = jnp.sum(ct * (b - a), axis=-1)
-
-    # One fused gather+multiply+reduce pass per parameter; K is a static
-    # Python int so this loop unrolls at trace time.
-    ct_params = []
-    for k in range(dtable.shape[0]):
-        ak = dtable[k][i0]
-        bk = dtable[k][i1]
-        ct_params.append(jnp.sum(ct * (ak + frac[..., None] * (bk - ak))))
-    ct_params = jnp.stack(ct_params)
-
-    return (jnp.zeros_like(table), jnp.zeros_like(dtable), ct_params, ct_t)
-
-
-_table_lookup_fewparam.defvjp(_table_lookup_fewparam_fwd, _table_lookup_fewparam_bwd)
-
-
-def _build_table_with_tangents(build_fn, params):
-    """Evaluate ``build_fn(*params) -> (aux, table)`` together with the tangent
-    tables d(table)/d(p) for every *traced* p in ``params`` (statically fixed
-    parameters need no tangent -- their gradient is zero by construction).
-
-    Returns ``((aux, table), dtable, traced_params)`` where ``dtable`` stacks
-    the tangents as (K, *table.shape) and ``traced_params`` are the original
-    scalar tracers in matching order.  K == 0 yields ``(out, None, ())``.
-
-    The primal build is recomputed inside each jax.jvp call, i.e. K+1 times
-    per likelihood call -- fine here because the builds touch only O(1e3)-entry
-    arrays (and the fully static parts are constant-folded by XLA anyway).
-    """
-    params = tuple(params)
-    traced_idx = [i for i, p in enumerate(params) if _static_value(p) is None]
-    if not traced_idx:
-        return build_fn(*params), None, ()
-
-    primals = tuple(jnp.asarray(p) for p in params)
-    out = None
-    tangents = []
-    for k in traced_idx:
-        seed = tuple(
-            jnp.ones_like(primals[i]) if i == k else jnp.zeros_like(primals[i])
-            for i in range(len(primals))
-        )
-        (aux, table), (_, dtab_k) = jax.jvp(build_fn, primals, seed)
-        if out is None:
-            out = (aux, table)
-        tangents.append(dtab_k)
-    return out, jnp.stack(tangents), tuple(params[i] for i in traced_idx)
-
-
-def _scatter_free_lookup(table, dtable, traced_params, t):
-    """Interpolate every channel of ``table`` (n, C) at ``t``.  With traced
-    parameters present, uses the custom-VJP path above; with none, falls back
-    to plain per-channel lerps (which keep correct gradients even if the table
-    happens to be traced through something *not* in the parameter list --
-    that fallback is the safe default, just slower)."""
-    n, C = table.shape
-    if dtable is None:
-        return tuple(_lerp1d(table[:, c], t, n) for c in range(C))
-    params_vec = jnp.stack([jnp.asarray(p) for p in traced_params])
-    out = _table_lookup_fewparam(
-        lax.stop_gradient(table), lax.stop_gradient(dtable), params_vec, t
-    )
-    return tuple(out[..., c] for c in range(C))
 
 
 # ---------------------------------------------------------------------------
@@ -824,78 +680,6 @@ class LogDNDMDQDV(object):
 
 
 # ---------------------------------------------------------------------------
-def _dimless_dl_tables(Om, w, zmax, ninterp, ndl, zmin_table):
-    r"""Dimensionless dL->z lookup tables for a flat w-CDM cosmology.
-
-    Tabulates, against a grid uniform in :math:`u = \log(d_L/d_H)`:
-
-      * channel 0: ``log1p(z)``
-      * channel 1: ``J(u) = log(dVC/dz) - log(ddL/dz) - 2 log1p(z) - 2 log(dH)``
-
-    Everything here is dimensionless, so the result depends only on
-    ``(Om, w, zmax)`` -- ``h`` enters downstream as the scalar shifts
-    ``u = log(dL) - log(dH)`` and ``J + 2 log(dH)``.  That makes this function
-    the natural unit for :func:`_build_table_with_tangents`: when Om and w are
-    sampled, forward-mode tangents of this build replace the backward-pass
-    scatter into the tables (see the scatter-free lookup block above).
-
-    Returns ``((u_lo, inv_du), table)`` with ``table`` of shape (ndl, 2).
-    """
-    ninterp = int(ninterp)
-    ndl = int(ndl)
-
-    zinterp = jnp.expm1(jnp.linspace(np.log(1), jnp.log(1 + zmax), ninterp))
-    opz = 1 + zinterp
-    E = jnp.sqrt(Om * opz * opz * opz + (1 - Om) * opz ** (3 * (1 + w)))
-    dc = jnp_cumtrapz(1 / E, zinterp)   # d_C / d_H
-    x = dc * opz                        # d_L / d_H
-
-    # zinterp is uniform in log1p(z), so cell indices into it are arithmetic
-    # (the original used jnp.interp's binary search here; same cell, same
-    # linear-in-z weight, no searchsorted in the traced graph).
-    log1p_zmax = jnp.log1p(zmax)
-    inv_dlz = (ninterp - 1) / log1p_zmax
-
-    # Lower edge: a z far below any real event, so clamping there is
-    # inconsequential.  Upper edge: the top of the z table.
-    z_lo = float(zmin_table)
-    tz = jnp.clip(jnp.log1p(z_lo) * inv_dlz, 0.0, ninterp - 1.0)
-    i0 = jnp.floor(tz).astype(jnp.int32)
-    i1 = jnp.minimum(i0 + 1, ninterp - 1)
-    dz0 = zinterp[i1] - zinterp[i0]
-    fz = jnp.where(dz0 > 0, (z_lo - zinterp[i0]) / jnp.where(dz0 > 0, dz0, 1.0), 0.0)
-    x_lo = x[i0] + fz * (x[i1] - x[i0])
-
-    u_lo = jnp.log(x_lo)
-    u_hi = jnp.log(x[-1])
-    inv_du = (ndl - 1) / (u_hi - u_lo)
-    u_grid = jnp.linspace(u_lo, u_hi, ndl)
-
-    # Inverse lookup z(u): x is a model-dependent monotone table, so this one
-    # keeps jnp.interp's binary search -- ndl * log2(ninterp) scalar steps at
-    # setup scale, negligible next to the (nobs, nsamp) arrays it serves.
-    z_grid = jnp.interp(jnp.exp(u_grid), x, zinterp)
-    log1p_z = jnp.log1p(z_grid)
-    opz_g = 1 + z_grid
-    E_g = jnp.sqrt(Om * opz_g * opz_g * opz_g + (1 - Om) * opz_g ** (3 * (1 + w)))
-
-    # dc at z_grid: closed-form cell from the log1p(z) we already have.
-    tg = jnp.clip(log1p_z * inv_dlz, 0.0, ninterp - 1.0)
-    j0 = jnp.floor(tg).astype(jnp.int32)
-    j1 = jnp.minimum(j0 + 1, ninterp - 1)
-    dzg = zinterp[j1] - zinterp[j0]
-    fg = jnp.where(dzg > 0, (z_grid - zinterp[j0]) / jnp.where(dzg > 0, dzg, 1.0), 0.0)
-    fg = jnp.clip(fg, 0.0, 1.0)
-    dc_g = dc[j0] + fg * (dc[j1] - dc[j0])
-
-    ddl_dimless = dc_g + opz_g / E_g
-    dvc_dimless = 4 * np.pi * jnp.square(dc_g) / E_g
-    J = jnp.log(dvc_dimless) - jnp.log(ddl_dimless) - 2 * log1p_z
-
-    return (u_lo, inv_du), jnp.stack([log1p_z, J], axis=-1)
-
-
-# ---------------------------------------------------------------------------
 @dataclass
 class FlatwCDMCosmology(object):
     """
@@ -938,26 +722,35 @@ class FlatwCDMCosmology(object):
         so that the entire per-sample cosmology block is two gathers plus a
         scalar ``2 log(dH)``.  The dimensionless distances depend only on
         (Om, w), so when those are fixed this whole table is a compile-time
-        constant.  When they are *sampled*, the build also produces forward-
-        mode tangent tables so lookups can use the scatter-free custom VJP
-        (see _table_lookup_fewparam) instead of scatter-adding one cotangent
-        per data point into the tables.
+        constant.
         """
         n = int(self.ndl)
+        x = self.dlinterp_dimless
+
+        # Lower edge: a z far below any real event, so clamping there is
+        # inconsequential.  Upper edge: the top of the z table.
+        z_lo = float(self.zmin_table)
+        x_lo = jnp.interp(z_lo, self.zinterp, x)
+        x_hi = x[-1]
+
+        self._u_lo = jnp.log(x_lo)
+        u_hi = jnp.log(x_hi)
+        self._inv_du = (n - 1) / (u_hi - self._u_lo)
         self._n_dl = n
 
-        def _build(Om, w, zmax):
-            return _dimless_dl_tables(Om, w, zmax, self.ninterp, n, self.zmin_table)
+        u_grid = jnp.linspace(self._u_lo, u_hi, n)
+        # One 1024-point searchsorted at setup; negligible next to the
+        # (nobs, nsamp) arrays it saves searching.
+        z_grid = jnp.interp(jnp.exp(u_grid), x, self.zinterp)
+        self._log1p_z_table = jnp.log1p(z_grid)
 
-        ((self._u_lo, self._inv_du), tab), dtab, traced = _build_table_with_tangents(
-            _build, (self.Om, self.w, self.zmax)
+        E_g = self.E(z_grid)
+        dc_dimless = jnp.interp(z_grid, self.zinterp, self.dcinterp_dimless)
+        ddl_dimless = dc_dimless + (1 + z_grid) / E_g
+        dvc_dimless = 4 * np.pi * jnp.square(dc_dimless) / E_g
+        self._J_table = (
+            jnp.log(dvc_dimless) - jnp.log(ddl_dimless) - 2 * self._log1p_z_table
         )
-        self._dl_tab = tab
-        self._dl_dtab = dtab
-        self._dl_traced = traced
-        # Per-channel views, kept for external callers.
-        self._log1p_z_table = tab[:, 0]
-        self._J_table = tab[:, 1]
 
     def z_and_log_jacobian(self, log_dl):
         """Given ``log(d_L)``, return ``(log1p(z), J)`` where
@@ -968,9 +761,9 @@ class FlatwCDMCosmology(object):
         """
         t = jnp.clip((log_dl - jnp.log(self.dH) - self._u_lo) * self._inv_du,
                      0.0, self._n_dl - 1.0)
-        log1p_z, J = _scatter_free_lookup(self._dl_tab, self._dl_dtab,
-                                          self._dl_traced, t)
-        return log1p_z, J + 2 * jnp.log(self.dH)
+        log1p_z = _lerp1d(self._log1p_z_table, t, self._n_dl)
+        J = _lerp1d(self._J_table, t, self._n_dl) + 2 * jnp.log(self.dH)
+        return log1p_z, J
 
     @property
     def dH(self):
@@ -1030,15 +823,6 @@ def get_deterministic_parameters(sample, use_low_bump=True):
     mbhmax = numpyro.deterministic('mbhmax', sample['mpisn'] + sample['dmbhmax'])
 
     out = dict(kappa=kappa, mbhmax=mbhmax)
-
-    # Optional cosmology reparameterization: a prior file may sample the
-    # physical matter density Omh2 = Om*h^2 instead of Om (the CMB-constrained
-    # combination, much less degenerate with h than Om itself when all
-    # cosmological parameters are free).  The model everywhere consumes Om.
-    if 'Omh2' in sample and 'Om' not in sample:
-        out['Om'] = numpyro.deterministic(
-            'Om', sample['Omh2'] / jnp.square(sample['h'])
-        )
 
     if use_low_bump:
         if 'logit_flow' in sample:
@@ -1287,50 +1071,28 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
 
         # -inf table entries (below mbh_min, above zmax) are floored so a lerp
         # between two dead nodes cannot form inf - inf = NaN.
-        # The mass table stays on the replicated-scatter path deliberately: it
-        # depends on ~a dozen sampled parameters, where the scatter beats one
-        # gather+reduce pass per parameter (see the scatter-free block).
         f_tab = jnp.maximum(ld(m_axis.grid, 0.0), _LOG_ZERO_FLOOR)
-
-        # Combined 2-channel (log1p z, J + log dN/dVdt) table against the
-        # u = log(dL/dH) axis, interleaved so one index computation and
-        # adjacent memory serve both channels.  It depends on at most six
-        # scalars -- (Om, w, zmax) through the cosmology, (lam, kappa, zp)
-        # through the rate density -- so lookups use the scatter-free custom
-        # VJP with forward-mode tangent tables.  2*log(dH) is added after the
-        # lookup (exact: lerp weights sum to 1), which keeps h out of the
-        # table's parameter list; its gradient flows through the scalar shift
-        # and the index t.
-        dndv = log_dN.log_dndv
-
-        def _ev_build(Om_, w_, zmax_, lam_, kappa_, zp_):
-            aux, tab = _dimless_dl_tables(Om_, w_, zmax_, cosmo.ninterp,
-                                          cosmo.ndl, cosmo.zmin_table)
-            log1p_z = tab[..., 0]
-            dv = LogDNDV(lam_, kappa_, zp_, dndv.zref, zmax_)
-            jg = jnp.maximum(tab[..., 1] + dv.from_log1p(log1p_z), _LOG_ZERO_FLOOR)
-            return aux, jnp.stack([log1p_z, jg], axis=-1)
-
-        ((ev_u_lo, ev_inv_du), ev_tab), ev_dtab, ev_traced = _build_table_with_tangents(
-            _ev_build,
-            (sample['Om'], sample['w'], sample['zmax'], dndv.lam, dndv.kappa, dndv.zp),
+        log1p_tab = cosmo._log1p_z_table
+        Jg_tab = jnp.maximum(
+            cosmo._J_table + 2 * jnp.log(cosmo.dH)
+            + log_dN.log_dndv.from_log1p(log1p_tab),
+            _LOG_ZERO_FLOOR,
         )
-        two_log_dH = 2 * jnp.log(cosmo.dH)
-        n_dl = cosmo._n_dl
         log_pair_ref = jnp.log(log_dN.mref * (1 + log_dN.qref))
 
         def _log_weights(log_m1s_det_, log_qs_, log1p_qs_, log_dls_, log_pdraw_):
             t = jnp.clip(
-                (log_dls_ - jnp.log(cosmo.dH) - ev_u_lo) * ev_inv_du,
-                0.0, n_dl - 1.0,
+                (log_dls_ - jnp.log(cosmo.dH) - cosmo._u_lo) * cosmo._inv_du,
+                0.0, cosmo._n_dl - 1.0,
             )
-            log1p_zs_, Jg = _scatter_free_lookup(ev_tab, ev_dtab, ev_traced, t)
+            log1p_zs_ = _lerp1d(log1p_tab, t, cosmo._n_dl)
+            Jg = _lerp1d(Jg_tab, t, cosmo._n_dl)
             log_m1s_ = log_m1s_det_ - log1p_zs_
             f1 = _lerp1d(f_tab, m_axis.frac_index(log_m1s_), n_tab)
             f2 = _lerp1d(f_tab, m_axis.frac_index(log_m1s_ + log_qs_), n_tab)
             return (f1 + f2
                     + log_dN.beta * (log_m1s_ + log1p_qs_ - log_pair_ref)
-                    + log_m1s_ + Jg + two_log_dH - log_dN.log_norm - log_pdraw_)
+                    + log_m1s_ + Jg - log_dN.log_norm - log_pdraw_)
 
         log_wts = _log_weights(log_m1s_det, log_qs, jnp.log1p(qs), log_dls, log_pdraw)
         log_sel_wts = _log_weights(log_m1s_det_sel, log_qs_sel, jnp.log1p(qs_sel),

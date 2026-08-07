@@ -88,7 +88,13 @@ mcmc = MCMC(kernel, num_warmup=args.nmcmc, num_samples=args.nmcmc,
 mcmc.run(jax.random.PRNGKey(1652819403), m1s, qs, dls, log_pdraw,
          sel["m1d"].to_numpy(), sel["q"].to_numpy(), sel["dl"].to_numpy(),
          sel["pdraw_sel"].to_numpy(), ndraw, prior,
-         use_low_bump=True, neff_penalty="none")
+         use_low_bump=True, neff_penalty="none",
+         # NUTS collects only ('z', 'diverging') by default; without these the
+         # netcdf carries no record of sampler health.  Same rationale as
+         # run_inf.py -- and it matters here too, since this script exists to
+         # separate data-realization from PE-machinery effects.
+         extra_fields=("potential_energy", "energy", "num_steps", "accept_prob",
+                       "adapt_state.step_size"))
 
 idata = az.from_numpyro(mcmc, num_chains=args.nchain)
 az.to_netcdf(idata, out)

@@ -6,6 +6,7 @@ in one place.  Companion notes:*
 - `2026-08-07-neff-penalty-redesign.md` — the new Monte-Carlo accuracy guard
 - `2026-08-07-jax-performance-improvements-explained.md` — why each speedup works
 - `2026-08-07-profiling-jax-numpyro-guide.md` — how to profile / avoid pitfalls
+- `2026-08-07-full-cosmo-optimization.md` — scatter-free VJP + Omh2 when Om/w are free
 - `2026-08-06-join-point-machinery-removed.md`, `2026-08-06-mco-floor-configurable.md`
   — related archaeology in the same mass function
 
@@ -61,6 +62,13 @@ against float64 references).
    evaluation becomes a 1-D lerp.  ~2x on top of everything else.
 8. Constant-in-the-sampler data quantities (logs of masses, ratios, pdraw)
    hoisted out of the per-step computation.
+9. **Scatter-free custom VJP for few-parameter tables** (cosmology + rate
+   density): when Om/w (and/or lam/kappa/zp) are sampled, forward-mode
+   tangent tables replace the backward-pass scatter into the lookup tables.
+   Channels interleaved as `(n, 2)`.  See
+   `2026-08-07-full-cosmo-optimization.md`.  Optional prior reparameterization
+   `Omh2 = Om*h^2` with derived `Om`.  Baseline snapshot for A/B:
+   `src/im_fast_baseline.py`.  Bench flags: `--cosmo_free`, `--omh2`.
 
 ## Bug fixes
 

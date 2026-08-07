@@ -19,6 +19,9 @@ This file keeps agent-facing guidance brief. Project overview, science backgroun
   - `kappa = lam + dkappa`
   - `fpl = exp(log_fpl)`
   - `mbhmax = mpisn + dmbhmax`
+  - optional: `Om = Omh2 / h^2` when the prior samples `Omh2` instead of `Om`
+    (better conditioned for free-cosmology runs; see
+    `notes/2026-08-07-full-cosmo-optimization.md`)
 
 ## Data Format
 

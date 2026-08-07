@@ -150,11 +150,12 @@ def load_real_data(cfg_path, base_runs_dir="../runs"):
 # --------------------------------------------------------------------------
 # Prior: mirrors the gwtc5-style cosmo prior (h sampled; Om, w fixed) with the
 # low-mass bump parameters present.  Kept inline so the benchmark runs without
-# the (gitignored) runs/priors directory.
+# the (gitignored) runs/priors directory.  OM_LINE / W_LINE are placeholders
+# so --cosmo_free / --omh2 can switch the cosmology parameterization.
 # --------------------------------------------------------------------------
 DEFAULT_PRIOR_TEXT = """h = TruncatedNormal(0.7, 0.2, low=0.4, high=1.2)
-Om = 0.315
-w = -1
+OM_LINE
+W_LINE
 a = TruncatedNormal(2.35, 2, low=-1.65, high=6.35)
 b = TruncatedNormal(1.9, 2, low=-2.1, high=5.9)
 c = TruncatedNormal(4, 2, low=0, high=8)
@@ -176,19 +177,37 @@ delta_m = 1.6
 """
 
 # Truth values from scripts/pop_configs/mock_O5_noevo.txt, already mapped into
-# the derived parameterisation the model samples in.
+# the derived parameterisation the model samples in.  Om/w/Omh2 are only used
+# when the corresponding prior line makes them sampled (--cosmo_free / --omh2);
+# the `k in prior and not fixed` filter below drops them otherwise.
 TRUTH = dict(
     h=0.674, a=-0.9426, b=0.237, c=2.360, mpisn=33.29, dmbhmax=36.7345 - 33.29,
     sigma=0.0539, log_fpl=float(np.log(0.63909)), lam=4.814, dkappa=8.3659 - 4.814,
     zp=0.954, beta=-2.43, msigma_low=4.0, mp_low=9.121,
     log_flow=float(np.log(0.6025)), mpisndot=0.0,
+    Om=0.315, w=-1.0, Omh2=0.315 * 0.674 ** 2,
 )
 
 
-def build_prior(mpisndot_fixed, path):
-    txt = DEFAULT_PRIOR_TEXT.replace(
-        "MPISNDOT", "0" if mpisndot_fixed else "Uniform(low=-2, high=8)"
-    )
+def build_prior(mpisndot_fixed, path, cosmo_free=False, omh2=False):
+    """cosmo_free: sample Om and w instead of fixing them.
+    omh2: sample the physical density Omh2 = Om*h^2 instead of Om (the model
+    derives Om = Omh2/h^2; see get_deterministic_parameters).  Implies a
+    sampled w as well when combined with cosmo_free; can also be used alone."""
+    if omh2:
+        om_line = "Omh2 = TruncatedNormal(0.143, 0.05, low=0.02, high=0.4)"
+    elif cosmo_free:
+        om_line = "Om = TruncatedNormal(0.315, 0.08, low=0.05, high=0.7)"
+    else:
+        om_line = "Om = 0.315"
+    if cosmo_free:
+        w_line = "w = TruncatedNormal(-1.0, 0.3, low=-2.0, high=-0.3)"
+    else:
+        w_line = "w = -1"
+    txt = (DEFAULT_PRIOR_TEXT
+           .replace("MPISNDOT", "0" if mpisndot_fixed else "Uniform(low=-2, high=8)")
+           .replace("OM_LINE", om_line)
+           .replace("W_LINE", w_line))
     with open(path, "w") as f:
         f.write(txt)
     from utils import get_priors_from_file
@@ -250,6 +269,10 @@ def main():
     p.add_argument("--n_repeat", type=int, default=7)
     p.add_argument("--mpisndot_free", action="store_true",
                    help="sample mpisndot (default: fixed to 0)")
+    p.add_argument("--cosmo_free", action="store_true",
+                   help="sample Om and w (default: fixed to 0.315, -1)")
+    p.add_argument("--omh2", action="store_true",
+                   help="sample Omh2 = Om*h^2 instead of Om (fast module only)")
     p.add_argument("--no_low_bump", action="store_true")
     p.add_argument("--mcmc", type=int, default=0,
                    help="if >0, also run this many warmup+sample steps of real NUTS")
@@ -275,7 +298,8 @@ def main():
           f"sel: {data['m1s_det_sel'].shape[0]:,}")
 
     scratch = os.environ.get("SCRATCH_PRIOR", "/tmp/bench_prior.prior")
-    prior = build_prior(not args.mpisndot_free, scratch)
+    prior = build_prior(not args.mpisndot_free, scratch,
+                        cosmo_free=args.cosmo_free, omh2=args.omh2)
     print("sampled params:", sorted(k for k, v in prior.items() if not isinstance(v, float)))
 
     use_low_bump = not args.no_low_bump
@@ -340,7 +364,13 @@ def main():
         mcmc = MCMC(kernel, num_warmup=args.mcmc, num_samples=args.mcmc,
                     num_chains=1, progress_bar=True)
         t0 = time.perf_counter()
-        mcmc.run(jax.random.PRNGKey(1), *model_args, **model_kwargs)
+        # num_steps must be requested: NUTS collects only ('z', 'diverging') by
+        # default, so the `if "num_steps" in ex` check below was dead code and the
+        # gradient-time x steps/sample x samples ~ wall-clock sanity check
+        # documented in notes/2026-08-07-profiling-jax-numpyro-guide.md silently
+        # never ran.
+        mcmc.run(jax.random.PRNGKey(1), *model_args, **model_kwargs,
+                 extra_fields=("num_steps", "accept_prob", "diverging"))
         dt = time.perf_counter() - t0
         results["mcmc"] = dict(steps=2 * args.mcmc, wall=dt, per_sample=dt / (2 * args.mcmc))
         print(f"  wall {dt:.1f}s -> {dt/(2*args.mcmc):.3f}s per sample")
@@ -348,7 +378,18 @@ def main():
         if "num_steps" in ex:
             ns = np.asarray(ex["num_steps"])
             print(f"  leapfrog steps/sample: mean {ns.mean():.1f} max {ns.max()}")
+            print(f"  accept_prob: mean {np.asarray(ex['accept_prob']).mean():.3f} | "
+                  f"divergences: {int(np.asarray(ex['diverging']).sum())}")
             results["mcmc"]["mean_num_steps"] = float(ns.mean())
+            # The check the profiling guide asks for, now that num_steps exists.
+            # NB: `dt` includes the one-off trace+compile (~20s at production
+            # scale), so the ratio only approaches 1 once the sample count is
+            # large enough to amortize it -- don't read a short run's ratio as a
+            # discrepancy.
+            pred = results["grad"]["min"] * ns.sum()
+            print(f"  predicted sampling time from gradient cost: {pred:.1f}s "
+                  f"vs measured wall {dt:.1f}s (ratio {dt/max(pred,1e-9):.2f}; "
+                  f"wall includes compile, so expect >1 for short runs)")
 
     if args.out:
         with open(args.out, "w") as f:

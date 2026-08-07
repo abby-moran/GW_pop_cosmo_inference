@@ -169,6 +169,18 @@ constants.  Three fewer `log` passes over the big arrays per step.
 Lesson: inside a numpyro model, everything runs per leapfrog step.  Ask of
 every line: does this depend on a sampled parameter?  If not, move it out.
 
+## 9. Scatter-free VJP when Om/w are free
+
+The fused cosmology table is a compile-time constant only while Om and w
+are pinned.  Once they are tracers, reverse mode would scatter into the
+table — the same atomic-add storm that replication was built to dilute,
+paid again for every cosmology channel.  Because the table depends on only
+a handful of scalars, the exact chain rule is a *gather from the tangent
+tables* plus a reduction, not a scatter.  Forward-mode AD builds those
+tangents once per call (K passes over a ~2k-entry table); a `custom_vjp`
+lookup routes the parameter gradient through them.  Details and the Omh2
+reparameterization: `2026-08-07-full-cosmo-optimization.md`.
+
 ## What we deliberately did *not* do
 
 - No float64: float32 is ~2x faster and 2x smaller on GPU, and the
@@ -179,3 +191,5 @@ every line: does this depend on a sampled parameter?  If not, move it out.
   wasn't needed.
 - No multi-GPU sharding: one gradient is 9.5 ms on an H100; chains are the
   natural parallel unit.
+- No 3-D `(u, Om, w)` pre-tabulation: the custom VJP is exact and needs no
+  discretization error budget.

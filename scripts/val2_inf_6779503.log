@@ -1,0 +1,31 @@
+Loading truth parameters from:  pop_configs/mock_O5_noevo.txt
+loading in prior file:  ../runs/priors/gwtc5_cosmo.prior
+Loaded new-format HDF5 file ../runs/endO5_val2/PE_noevo_vlowres.h5,  events 0 to 9000
+array shapes (we want nevents, nsamples): (9000, 4000) (9000, 4000) (9000, 4000) (9000, 4000)
+{'h': Array(0.674, dtype=float32, weak_type=True), 'Om': Array(0.315, dtype=float32, weak_type=True), 'w': Array(-1., dtype=float32, weak_type=True), 'a': Array(-0.9426, dtype=float32, weak_type=True), 'b': Array(0.237, dtype=float32, weak_type=True), 'c': Array(2.36, dtype=float32, weak_type=True), 'mpisn': Array(33.29, dtype=float32, weak_type=True), 'sigma': Array(0.0539, dtype=float32, weak_type=True), 'lam': Array(4.814, dtype=float32, weak_type=True), 'zp': Array(0.954, dtype=float32, weak_type=True), 'mpisndot': Array(0., dtype=float32, weak_type=True), 'zmax': Array(6.5, dtype=float32, weak_type=True), 'mbh_min': Array(3., dtype=float32, weak_type=True), 'delta_m': Array(1.6, dtype=float32, weak_type=True), 'beta': Array(-2.43, dtype=float32, weak_type=True), 'mc_scale': Array(0.1, dtype=float32, weak_type=True), 'q_scale': Array(1.7, dtype=float32, weak_type=True), 'th_scale': Array(1.1, dtype=float32, weak_type=True), 'msigma_low': Array(4., dtype=float32, weak_type=True), 'mp_low': Array(9.121, dtype=float32, weak_type=True), 'flow': Array(0.6025, dtype=float32, weak_type=True), 'mco_min': Array(4., dtype=float32, weak_type=True), 'dkappa': Array(3.5519, dtype=float32, weak_type=True), 'log_fpl': Array(-0.44770998, dtype=float32, weak_type=True), 'dmbhmax': Array(3.4445, dtype=float32, weak_type=True), 'log_flow': Array(-0.5066676, dtype=float32, weak_type=True)}
+  0%|          | 0/3600 [00:00<?, ?it/s]Compiling.. :   0%|          | 0/3600 [00:00<?, ?it/s]
+  0%|          | 0/3600 [00:00<?, ?it/s][A
+Compiling.. :   0%|          | 0/3600 [00:00<?, ?it/s][ARunning chain 0:   0%|          | 0/3600 [00:45<?, ?it/s]
+Running chain 1:   0%|          | 0/3600 [00:45<?, ?it/s][A
+Running chain 1:   5%|▌         | 180/3600 [04:29<1:10:58,  1.25s/it][ARunning chain 0:   5%|▌         | 180/3600 [04:38<1:13:57,  1.30s/it]
+Running chain 1:  10%|█         | 360/3600 [08:24<1:09:04,  1.28s/it][ARunning chain 0:  10%|█         | 360/3600 [08:35<1:10:38,  1.31s/it]
+Running chain 1:  15%|█▌        | 540/3600 [12:18<1:05:44,  1.29s/it][ARunning chain 0:  15%|█▌        | 540/3600 [12:40<1:08:00,  1.33s/it]
+Running chain 1:  20%|██        | 720/3600 [16:18<1:02:46,  1.31s/it][ARunning chain 0:  20%|██        | 720/3600 [16:44<1:04:25,  1.34s/it]
+Running chain 1:  25%|██▌       | 900/3600 [20:17<59:09,  1.31s/it]  [ARunning chain 0:  25%|██▌       | 900/3600 [20:44<1:00:15,  1.34s/it]
+Running chain 1:  30%|███       | 1080/3600 [24:23<55:55,  1.33s/it][ARunning chain 0:  30%|███       | 1080/3600 [24:46<56:16,  1.34s/it] 
+Running chain 1:  35%|███▌      | 1260/3600 [28:27<52:14,  1.34s/it][ARunning chain 0:  35%|███▌      | 1260/3600 [28:50<52:27,  1.34s/it]
+Running chain 1:  40%|████      | 1440/3600 [32:30<48:20,  1.34s/it][ARunning chain 0:  40%|████      | 1440/3600 [32:58<48:46,  1.36s/it]
+Running chain 1:  45%|████▌     | 1620/3600 [36:35<44:32,  1.35s/it][ARunning chain 0:  45%|████▌     | 1620/3600 [37:04<44:51,  1.36s/it]
+Running chain 1:  50%|█████     | 1800/3600 [40:39<40:32,  1.35s/it][ARunning chain 0:  50%|█████     | 1800/3600 [41:08<40:45,  1.36s/it]
+Running chain 1:  55%|█████▌    | 1980/3600 [44:45<36:36,  1.36s/it][ARunning chain 0:  55%|█████▌    | 1980/3600 [45:15<36:46,  1.36s/it]
+Running chain 1:  60%|██████    | 2160/3600 [48:51<32:37,  1.36s/it][ARunning chain 0:  60%|██████    | 2160/3600 [49:20<32:40,  1.36s/it]
+Running chain 1:  65%|██████▌   | 2340/3600 [52:55<28:30,  1.36s/it][ARunning chain 0:  65%|██████▌   | 2340/3600 [53:24<28:33,  1.36s/it]
+Running chain 1:  70%|███████   | 2520/3600 [57:02<24:31,  1.36s/it][ARunning chain 0:  70%|███████   | 2520/3600 [57:29<24:29,  1.36s/it]
+Running chain 1:  75%|███████▌  | 2700/3600 [1:01:09<20:27,  1.36s/it][ARunning chain 0:  75%|███████▌  | 2700/3600 [1:01:32<20:22,  1.36s/it]
+Running chain 1:  80%|████████  | 2880/3600 [1:05:14<16:22,  1.36s/it][ARunning chain 0:  80%|████████  | 2880/3600 [1:05:38<16:19,  1.36s/it]
+Running chain 1:  85%|████████▌ | 3060/3600 [1:09:17<12:14,  1.36s/it][ARunning chain 0:  85%|████████▌ | 3060/3600 [1:09:44<12:15,  1.36s/it]
+Running chain 1:  90%|█████████ | 3240/3600 [1:13:23<08:10,  1.36s/it][ARunning chain 0:  90%|█████████ | 3240/3600 [1:13:49<08:09,  1.36s/it]
+Running chain 1:  95%|█████████▌| 3420/3600 [1:17:27<04:04,  1.36s/it][ARunning chain 0:  95%|█████████▌| 3420/3600 [1:17:54<04:04,  1.36s/it]
+Running chain 1: 100%|██████████| 3600/3600 [1:21:31<00:00,  1.36s/it][ARunning chain 1: 100%|██████████| 3600/3600 [1:21:31<00:00,  1.36s/it]
+Running chain 0: 100%|██████████| 3600/3600 [1:22:00<00:00,  1.36s/it]Running chain 0: 100%|██████████| 3600/3600 [1:22:00<00:00,  1.37s/it]
+Saved samples to ../runs/endO5_val2/O5_val2.nc

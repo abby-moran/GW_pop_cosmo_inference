@@ -1,0 +1,52 @@
+events: 9000 x 1 (true parameters, 1 sample each)
+selection: 876529 samples, Ndraw = 1.000e+07
+devices: [CudaDevice(id=0), CudaDevice(id=1)]
+  0%|          | 0/2000 [00:00<?, ?it/s]Compiling.. :   0%|          | 0/2000 [00:00<?, ?it/s]
+  0%|          | 0/2000 [00:00<?, ?it/s][A
+Compiling.. :   0%|          | 0/2000 [00:00<?, ?it/s][ARunning chain 0:   0%|          | 0/2000 [00:21<?, ?it/s]
+Running chain 1:   0%|          | 0/2000 [00:21<?, ?it/s][ARunning chain 0:   5%|▌         | 100/2000 [00:36<04:36,  6.87it/s]
+Running chain 1:   5%|▌         | 100/2000 [00:36<04:43,  6.71it/s][A
+Running chain 1:  10%|█         | 200/2000 [00:50<04:12,  7.12it/s][ARunning chain 0:  10%|█         | 200/2000 [00:51<04:28,  6.70it/s]
+Running chain 1:  15%|█▌        | 300/2000 [01:02<03:47,  7.49it/s][ARunning chain 0:  15%|█▌        | 300/2000 [01:07<04:23,  6.45it/s]
+Running chain 1:  20%|██        | 400/2000 [01:14<03:24,  7.83it/s][ARunning chain 0:  20%|██        | 400/2000 [01:23<04:07,  6.47it/s]
+Running chain 1:  25%|██▌       | 500/2000 [01:25<03:01,  8.25it/s][A
+Running chain 1:  30%|███       | 600/2000 [01:36<02:45,  8.46it/s][ARunning chain 0:  25%|██▌       | 500/2000 [01:38<03:49,  6.53it/s]
+Running chain 1:  35%|███▌      | 700/2000 [01:47<02:28,  8.74it/s][ARunning chain 0:  30%|███       | 600/2000 [01:54<03:38,  6.39it/s]
+Running chain 1:  40%|████      | 800/2000 [01:58<02:15,  8.84it/s][A
+Running chain 1:  45%|████▌     | 900/2000 [02:08<01:58,  9.26it/s][ARunning chain 0:  35%|███▌      | 700/2000 [02:10<03:26,  6.30it/s]
+Running chain 1:  50%|█████     | 1000/2000 [02:19<01:50,  9.04it/s][ARunning chain 0:  40%|████      | 800/2000 [02:26<03:10,  6.31it/s]
+Running chain 1:  55%|█████▌    | 1100/2000 [02:35<01:53,  7.94it/s][ARunning chain 0:  45%|████▌     | 900/2000 [02:42<02:55,  6.26it/s]
+Running chain 1:  60%|██████    | 1200/2000 [02:49<01:44,  7.66it/s][A
+Running chain 1:  65%|██████▌   | 1300/2000 [02:55<01:14,  9.37it/s][A
+Running chain 1:  70%|███████   | 1400/2000 [02:56<00:47, 12.57it/s][ARunning chain 0:  50%|█████     | 1000/2000 [02:58<02:37,  6.35it/s]
+Running chain 1:  75%|███████▌  | 1500/2000 [02:58<00:30, 16.37it/s][A
+Running chain 1:  80%|████████  | 1600/2000 [03:00<00:18, 21.06it/s][A
+Running chain 1:  85%|████████▌ | 1700/2000 [03:01<00:11, 26.40it/s][A
+Running chain 1:  90%|█████████ | 1800/2000 [03:03<00:06, 32.22it/s][A
+Running chain 1:  95%|█████████▌| 1900/2000 [03:04<00:02, 38.89it/s][A
+Running chain 1: 100%|██████████| 2000/2000 [03:05<00:00, 47.43it/s][ARunning chain 1: 100%|██████████| 2000/2000 [03:05<00:00, 10.77it/s]
+Running chain 0:  55%|█████▌    | 1100/2000 [03:13<02:21,  6.36it/s]Running chain 0:  60%|██████    | 1200/2000 [03:29<02:06,  6.34it/s]Running chain 0:  65%|██████▌   | 1300/2000 [03:45<01:50,  6.33it/s]Running chain 0:  70%|███████   | 1400/2000 [04:00<01:33,  6.39it/s]Running chain 0:  75%|███████▌  | 1500/2000 [04:16<01:18,  6.40it/s]Running chain 0:  80%|████████  | 1600/2000 [04:32<01:03,  6.31it/s]Running chain 0:  85%|████████▌ | 1700/2000 [04:48<00:47,  6.27it/s]Running chain 0:  90%|█████████ | 1800/2000 [05:04<00:31,  6.27it/s]Running chain 0:  95%|█████████▌| 1900/2000 [05:20<00:15,  6.27it/s]Running chain 0: 100%|██████████| 2000/2000 [05:36<00:00,  6.25it/s]Running chain 0: 100%|██████████| 2000/2000 [05:36<00:00,  5.94it/s]
+saved ../runs/endO5_val/O5_val_true_9000.nc
+
+param            truth  post mean   post sd      z
+h               0.6740     0.6356    0.0160  -2.40
+a              -0.9426     0.7447    0.6706   2.52
+b               0.2370     0.9524    0.1291   5.54
+c               2.3600     3.0870    0.1328   5.47
+mpisn          33.2900    33.0376    0.5756  -0.44
+dmbhmax         3.4445     3.8002    0.2624   1.36
+sigma           0.0539     0.0513    0.0009  -2.90
+log_fpl        -0.4477    -1.3765    0.1745  -5.32
+lam             4.8140     4.8059    0.2093  -0.04
+dkappa          3.5519     3.8128    0.2017   1.29
+zp              0.9540     0.9548    0.0404   0.02
+beta           -2.4300    -1.3351    0.1305   8.39
+msigma_low      4.0000     2.8784    0.4385  -2.56
+mp_low          9.1210    10.2307    0.6206   1.79
+log_flow       -0.5067    -1.0795    0.4800  -1.19
+Traceback (most recent call last):
+  File "/mnt/home/misi/src/GW_pop_cosmo_inference/scripts/run_inf_true.py", line 103, in <module>
+    print(f"{p:12s} {t:9.4f} {m:10.4f} {s:9.4f} {(m - t) / s:6.2f}")
+                                                 ~~~~~~~~^~~
+ZeroDivisionError: float division by zero
+srun: error: workergpu165: task 0: Exited with exit code 1
