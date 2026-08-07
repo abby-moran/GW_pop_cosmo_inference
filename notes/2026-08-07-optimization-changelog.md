@@ -6,6 +6,7 @@ in one place.  Companion notes:*
 - `2026-08-07-neff-penalty-redesign.md` — the new Monte-Carlo accuracy guard
 - `2026-08-07-jax-performance-improvements-explained.md` — why each speedup works
 - `2026-08-07-profiling-jax-numpyro-guide.md` — how to profile / avoid pitfalls
+- `2026-08-07-mass-table-2d.md` — 2-D mass table when mpisndot is sampled
 - `2026-08-06-join-point-machinery-removed.md`, `2026-08-06-mco-floor-configurable.md`
   — related archaeology in the same mass function
 
@@ -55,10 +56,16 @@ against float64 references).
 5. `mpisndot == 0` detected statically -> PISN grid built with 1 z-slice
    instead of 30, interpolation collapses to 1-D.
 6. Single-pass fused logsumexp + n_eff over the (nobs, nsamp) weight array.
-7. **Tabulated mass function** (`tabulate_mass_function`, default on whenever
-   mpisndot is pinned to 0): the z-independent log dN/dm is evaluated once
-   per likelihood call on an 8192-node log-m grid, and every per-sample mass
-   evaluation becomes a 1-D lerp.  ~2x on top of everything else.
+7. **Tabulated mass function** (`tabulate_mass_function`, default on): the
+   log dN/dm is evaluated once per likelihood call on an 8192-node log-m
+   grid, and every per-sample mass evaluation becomes a table lerp.  ~2x on
+   top of everything else when mpisndot is pinned to 0 (1-D table).  When
+   mpisndot is *sampled* the table gains a z axis on the PISN grid's own 30
+   z nodes and the lookup becomes bilinear; the selection set keeps the
+   direct evaluation because the selection factor amplifies the table's
+   small z-lerp bias by nobs.  Measured for the mpisndot-free case at
+   production scale: gradient 68.5 -> 38.0 ms, peak memory 20.4 -> 9.4 GiB.
+   Details: `2026-08-07-mass-table-2d.md`.
 8. Constant-in-the-sampler data quantities (logs of masses, ratios, pdraw)
    hoisted out of the per-step computation.
 9. **Default cosmology prior samples `Omh2 = Om*h^2`** (not `Om`); the model

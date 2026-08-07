@@ -253,6 +253,9 @@ def main():
     p.add_argument("--mpisndot_free", action="store_true",
                    help="sample mpisndot (default: fixed to 0)")
     p.add_argument("--no_low_bump", action="store_true")
+    p.add_argument("--no_tab", action="store_true",
+                   help="force tabulate_mass_function=False (A/B the direct "
+                        "per-sample evaluation against the tabulated default)")
     p.add_argument("--mcmc", type=int, default=0,
                    help="if >0, also run this many warmup+sample steps of real NUTS")
     p.add_argument("--out", default=None)
@@ -287,6 +290,8 @@ def main():
         data["Ndraw"], prior,
     )
     model_kwargs = dict(use_low_bump=use_low_bump)
+    if args.no_tab:
+        model_kwargs["tabulate_mass_function"] = False
 
     truth = {k: jnp.asarray(v) for k, v in TRUTH.items() if k in prior
              and not isinstance(prior[k], float)}

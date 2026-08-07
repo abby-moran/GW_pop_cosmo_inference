@@ -304,25 +304,28 @@ def test_tabulated_path(nobs=400, nsamp=300, nsel=40000):
     _, _, vt, gt = outs["tab"]
     report("tab vs direct: potential", np.array([vd]), np.array([vt]),
            rtol=1e-4, atol=0.5)
-    edge_params = {"h", "mpisn", "dmbhmax"}
+    # Omh2 is an edge parameter for the same reason h is: it moves z(dL) and
+    # therefore every source-frame mass across the m = mbhmax discontinuity
+    # (added when the default prior switched from fixed Om to sampled Omh2).
+    edge_params = {"h", "Omh2", "mpisn", "dmbhmax"}
     keys = sorted(set(gd) & set(gt) - edge_params)
     report("tab vs direct: gradients (non-edge params)",
            np.array([gd[k] for k in keys]), np.array([gt[k] for k in keys]),
            rtol=2e-2, atol=5e-2)
 
-    # AD-vs-FD self-consistency.  The tabulated path repairs d/dh (the query
-    # points move across the table's smeared edge, so cell slopes carry the
-    # jump).  d/dmpisn and d/ddmbhmax move the edge *through* the fixed nodes,
-    # so their jump contribution stays invisible to AD in any evaluation
-    # scheme -- only smooth_tail_edge (a continuous density) fixes those.
-    # FD steps: small enough that curvature error is < 3% (at 1e-2 in mpisn
-    # the FD is not converged and off by ~30%), large enough that float32
-    # rounding of the potential stays a few % of the numerator.
-    for label, must_pass in (("tab", {"h"}),
-                             ("tab+smooth", {"h", "mpisn", "dmbhmax"})):
+    # AD-vs-FD self-consistency.  The tabulated path repairs d/dh and d/dOmh2
+    # (the query points move across the table's smeared edge, so cell slopes
+    # carry the jump).  d/dmpisn and d/ddmbhmax move the edge *through* the
+    # fixed nodes, so their jump contribution stays invisible to AD in any
+    # evaluation scheme -- only smooth_tail_edge (a continuous density) fixes
+    # those.  FD steps: small enough that curvature error is < 3% (at 1e-2 in
+    # mpisn the FD is not converged and off by ~30%), large enough that
+    # float32 rounding of the potential stays a few % of the numerator.
+    for label, must_pass in (("tab", {"h", "Omh2"}),
+                             ("tab+smooth", {"h", "Omh2", "mpisn", "dmbhmax"})):
         fn_t, z0_t, _, gt_ = outs[label]
         for k in sorted(edge_params):
-            eps = 1e-3 if k == "h" else 3e-3
+            eps = 1e-3 if k in ("h", "Omh2") else 3e-3
             zp = dict(z0_t); zp[k] = z0_t[k] + eps
             zm = dict(z0_t); zm[k] = z0_t[k] - eps
             fd = (float(fn_t(zp)) - float(fn_t(zm))) / (2 * eps)
@@ -336,6 +339,112 @@ def test_tabulated_path(nobs=400, nsamp=300, nsel=40000):
             else:
                 tag = "-- "  # informational: expected to disagree
             print(f"  [{tag}] {label:10s} d/d{k:8s} AD={ad:+.6e} FD={fd:+.6e} "
+                  f"rel={rel:.2e}")
+
+
+def test_tabulated_path_zdep(nobs=400, nsamp=300, nsel=40000):
+    """The 2-D (z-dependent) tabulated path, active when mpisndot is sampled:
+    same potential as the direct evaluation, and AD gradients that agree with
+    finite differences of its own potential -- including d/dmpisndot, whose
+    direct-path gradient cannot see samples crossing the moving mbhmax(z)
+    edge."""
+    print(f"\n=== 7. 2-D tabulated path, mpisndot sampled "
+          f"(nobs={nobs}, nsamp={nsamp}) ===")
+    data = make_synthetic_data(nobs, nsamp, nsel, seed=19)
+    prior = build_prior(False, "/tmp/equiv_prior4.prior")   # mpisndot free
+    truth = {k: jnp.asarray(v) for k, v in TRUTH.items()
+             if k in prior and not isinstance(prior[k], float)}
+    # A nonzero evolution rate so the z axis of the table actually matters.
+    truth["mpisndot"] = jnp.asarray(3.0)
+    model_args = (data["m1s_det"], data["qs"], data["dls"], data["log_pdraw"],
+                  data["m1s_det_sel"], data["qs_sel"], data["dls_sel"],
+                  data["pdraw_sel"], data["Ndraw"], prior)
+
+    from numpyro.infer.util import initialize_model
+    from numpyro.infer import init_to_value
+
+    outs = {}
+    # neff_penalty="none" here: the min_neff guard takes a min over events,
+    # which kinks whenever the argmin event switches; with mpisndot free the
+    # FD probes below straddle such kinks and would contaminate the AD-vs-FD
+    # comparison with guard noise unrelated to the table.  The guards' own
+    # equivalence is covered by test 6.
+    for label, kwargs in (
+        ("direct", dict(tabulate_mass_function=False, smooth_tail_edge=False)),
+        ("tab2d", dict(tabulate_mass_function=True, smooth_tail_edge=False)),
+        ("direct+smooth", dict(tabulate_mass_function=False, smooth_tail_edge=True)),
+        ("tab2d+smooth", dict(tabulate_mass_function=True, smooth_tail_edge=True)),
+    ):
+        mi = initialize_model(
+            jax.random.PRNGKey(0), fast.pop_cosmo_model,
+            model_args=model_args,
+            model_kwargs=dict(use_low_bump=True, neff_penalty="none", **kwargs),
+            dynamic_args=False, init_strategy=init_to_value(values=truth),
+        )
+        z0 = mi.param_info.z
+        fn = jax.jit(mi.potential_fn)
+        v, g = jax.jit(jax.value_and_grad(mi.potential_fn))(z0)
+        outs[label] = (fn, z0, float(v), {k: float(x) for k, x in g.items()})
+        bad = [k for k, x in g.items() if not np.isfinite(x)]
+        print(f"  {label:14s} potential={float(v):+.8e}  "
+              f"non-finite grads: {bad or 'none'}")
+        if bad:
+            FAIL.append(f"{label} non-finite grads with mpisndot free")
+
+    # Selection is on the direct path in both tab2d models, so the
+    # nobs-amplified selfactor is common and only the per-event z-lerp
+    # differences remain.
+    _, _, vd, gd = outs["direct"]
+    _, _, vt, gt = outs["tab2d"]
+    report("tab2d vs direct: potential (hard edge)", np.array([vd]), np.array([vt]),
+           rtol=1e-4, atol=0.5)
+    # Gradients are compared on the smooth pair (the production default): the
+    # hard edge makes the density discontinuous at the moving mbhmax(z), so
+    # z-lerping across the step amplifies tab-vs-direct gradient differences
+    # that the smooth model does not have.
+    _, _, vds, gds = outs["direct+smooth"]
+    _, _, vts, gts = outs["tab2d+smooth"]
+    report("tab2d vs direct: potential (smooth edge)", np.array([vds]),
+           np.array([vts]), rtol=1e-4, atol=0.5)
+    keys = sorted(set(gds) & set(gts))
+    report("tab2d vs direct: gradients, all params (smooth edge)",
+           np.array([gds[k] for k in keys]), np.array([gts[k] for k in keys]),
+           rtol=2e-2, atol=0.2)
+
+    # AD-vs-FD self-consistency on the recommended (tab2d+smooth) path.
+    # NOTE eps=1e-3 for every parameter: the PISN remnant map's
+    # `where(mco < mpisn, ...)` branch kinks the potential each time some
+    # mpisn(z_i) crosses an mco grid node, and with 30 z slices those kinks
+    # are ~9e-3 apart in mpisn -- an FD step of 3e-3 straddles them and
+    # produces garbage (verified: FD swings 81 -> 69 -> 30 -> 41 over
+    # eps = 1e-3..3e-2, identically for the direct path, so it is model
+    # structure, not the table).  AD differentiates the actual branch and is
+    # the trustworthy side there.
+    # tab2d (hard edge) is informational only: unlike the 1-D case, d/dh FD
+    # is not a usable reference here -- an h step moves every sample across
+    # the hard tail edge at 30 distinct mbhmax(z_i) positions, so the FD
+    # probe straddles discontinuities at any step size.  The hard edge is a
+    # legacy-exact mode, not recommended for sampling.
+    edge_params = {"h", "mpisn", "dmbhmax", "mpisndot"}
+    for label, must_pass in (("tab2d", set()),
+                             ("tab2d+smooth", {"h", "mpisn", "dmbhmax",
+                                               "mpisndot"})):
+        fn_t, z0_t, _, gt_ = outs[label]
+        for k in sorted(edge_params):
+            eps = 1e-3
+            zp = dict(z0_t); zp[k] = z0_t[k] + eps
+            zm = dict(z0_t); zm[k] = z0_t[k] - eps
+            fd = (float(fn_t(zp)) - float(fn_t(zm))) / (2 * eps)
+            ad = gt_[k]
+            rel = abs(ad - fd) / max(abs(fd), 1e-6)
+            if k in must_pass:
+                ok = rel < 0.1
+                if not ok:
+                    FAIL.append(f"{label} AD-vs-FD inconsistent for {k}")
+                tag = "OK " if ok else "FAIL"
+            else:
+                tag = "-- "
+            print(f"  [{tag}] {label:12s} d/d{k:9s} AD={ad:+.6e} FD={fd:+.6e} "
                   f"rel={rel:.2e}")
 
 
@@ -383,6 +492,7 @@ if __name__ == "__main__":
     test_full_model(mpisndot_free=False)
     test_full_model(mpisndot_free=True)
     test_tabulated_path()
+    test_tabulated_path_zdep()
     test_nan_gradient_robustness()
 
     print("\n" + "=" * 70)

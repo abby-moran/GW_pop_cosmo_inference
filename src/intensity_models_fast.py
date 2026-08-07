@@ -39,6 +39,12 @@ What changed, and why (see bench_model.py for the measurements):
    The default cosmology prior samples ``Omh2 = Om*h^2``; this helper then
    records ``Om = Omh2/h^2`` as a deterministic.
 
+7. The mass function is tabulated once per likelihood call and per-sample
+   evaluations become table lerps: a 1-D log-m table when ``mpisndot`` is
+   statically 0, a 2-D (z x log m) table when it is sampled (the selection
+   set then keeps the direct evaluation -- see the ``tabulate_mass_function``
+   docstring in ``pop_cosmo_model`` and notes/2026-08-07-mass-table-2d.md).
+
 Behaviour-preserving throughout except where noted with a "# CHANGED:" comment.
 """
 from astropy.cosmology import Planck18
@@ -970,19 +976,43 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         log likelihood is sqrt(sum 1/n_eff), so a budget of 5 keeps it below
         ~2.2 nats; a budget of 1 keeps it below 1 nat.
 
-    tabulate_mass_function: when mpisndot is pinned to 0 the single-mass
-        function log_dndm(m, z) has no z dependence, so it can be evaluated
-        once per likelihood call on a fine log-m grid (n_mass_table nodes) and
-        every per-sample mass evaluation becomes a single 1-D lerp; the rate
-        density log_dndv is likewise folded into the dL lookup table.  This is
-        ~2x faster and, as a side effect, smears the model's step discontinuity
-        at m = mbhmax (see LogDNDM.call_from_logs) over one table cell, which
-        makes the AD gradient of the potential agree with finite differences
-        of the potential -- the direct evaluation's d/dh, d/dmpisn and
-        d/ddmbhmax miss the contribution of samples crossing that edge and are
-        off by 10-20% at typical parameter points.  Default (None): enabled
-        exactly when mpisndot is statically 0.  Forced True is ignored when
-        mpisndot is sampled (the table would need a z axis).
+    tabulate_mass_function: evaluate the single-mass function log_dndm(m, z)
+        once per likelihood call on a fine log-m grid (n_mass_table nodes) so
+        that every per-sample mass evaluation becomes a table lerp; the rate
+        density log_dndv is likewise folded into the dL lookup table.
+
+        When mpisndot is pinned to 0 the mass function has no z dependence
+        and the table is 1-D (one lerp per mass).  When mpisndot is sampled,
+        the mass function's entire z dependence enters through the smooth
+        shift mpisn(z) = mpisn + mpisndot*z/(1+z), so the table gains a z
+        axis: it is built on the same n_z log1p-uniform z nodes the PISN
+        grid already uses (no nested interpolation -- the PISN component is
+        exact at the nodes) and looked up bilinearly with the same
+        linear-in-z cell weights as the direct evaluation's PISN interp.
+        Per-sample cost is then one bilinear lerp per mass instead of the
+        full direct evaluation (2-D PISN gather + tail + bump + window +
+        logaddexp chains).  Measured at production scale (9000x4000 PE +
+        1.7M selection): gradient 68.5 -> 38.0 ms per leapfrog step (1.8x),
+        peak GPU memory 20.4 -> 9.4 GiB (2.2x).
+
+        In the 2-D case the table is used only for the (nobs, nsamp) event
+        samples; the selection set keeps the direct evaluation.  The reason
+        is amplification, not accuracy per point: the z-lerp of the combined
+        log-density carries an O(3e-3) bias in log_mu_sel, and the selection
+        factor multiplies log_mu_sel by nobs, turning a negligible per-point
+        error into an O(nobs*3e-3) parameter-dependent distortion.  The
+        per-event log likelihoods carry no such amplification (measured
+        max 0.02, mean 5e-4 per event), and the selection set is ~5% of the
+        points, so evaluating it directly costs little.
+
+        Either way this is a large win and, as a side effect, smears the
+        model's step discontinuity at m = mbhmax (see LogDNDM.call_from_logs)
+        over one table cell, which makes the AD gradient of the potential
+        agree with finite differences of the potential -- the direct
+        evaluation's d/dh, d/dmpisn and d/ddmbhmax miss the contribution of
+        samples crossing that edge and are off by 10-20% at typical
+        parameter points.  Default (None): enabled.  Set False for the
+        direct per-sample evaluation.
 
     smooth_tail_edge: drop the hard zero of the power-law tail below
         m = mbhmax (see LogDNDM.smooth_tail_edge).  This makes the population
@@ -1073,8 +1103,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     ld = log_dN.log_dndm
 
     if tabulate_mass_function is None:
-        tabulate_mass_function = not ld._z_dependent
-    tabulate_mass_function = tabulate_mass_function and not ld._z_dependent
+        tabulate_mass_function = True
 
     if tabulate_mass_function:
         m_axis = _LogAxis(_mass_table_lo, _mass_table_hi, int(n_mass_table))
@@ -1082,7 +1111,16 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
 
         # -inf table entries (below mbh_min, above zmax) are floored so a lerp
         # between two dead nodes cannot form inf - inf = NaN.
-        f_tab = jnp.maximum(ld(m_axis.grid, 0.0), _LOG_ZERO_FLOOR)
+        if ld._z_dependent:
+            # 2-D table (n_z, n_mass): the mass function's z dependence is
+            # entirely through mpisn(z), tabulated on the PISN grid's own z
+            # nodes so the PISN component is exact there (no nested
+            # interpolation error on top of the direct path's own z interp).
+            f_tab = jnp.maximum(
+                ld(m_axis.grid[None, :], ld.z_array[:, None]), _LOG_ZERO_FLOOR
+            )
+        else:
+            f_tab = jnp.maximum(ld(m_axis.grid, 0.0), _LOG_ZERO_FLOOR)
         log1p_tab = cosmo._log1p_z_table
         Jg_tab = jnp.maximum(
             cosmo._J_table + 2 * jnp.log(cosmo.dH)
@@ -1099,15 +1137,40 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
             log1p_zs_ = _lerp1d(log1p_tab, t, cosmo._n_dl)
             Jg = _lerp1d(Jg_tab, t, cosmo._n_dl)
             log_m1s_ = log_m1s_det_ - log1p_zs_
-            f1 = _lerp1d(f_tab, m_axis.frac_index(log_m1s_), n_tab)
-            f2 = _lerp1d(f_tab, m_axis.frac_index(log_m1s_ + log_qs_), n_tab)
+            if ld._z_dependent:
+                # One z cell shared by the m1 and m2 lookups, computed with
+                # the same linear-in-z weights the direct path's PISN interp
+                # uses (see _Log1pAxis.cell_and_frac for why that matters).
+                zs_ = jnp.expm1(log1p_zs_)
+                iz0, fz = ld.z_axis.cell_and_frac(zs_, log1p_zs_)
+                im1, fm1 = m_axis.cell_and_frac(log_m1s_)
+                im2, fm2 = m_axis.cell_and_frac(log_m1s_ + log_qs_)
+                f1 = _gather_lerp2d(f_tab, im1, fm1, iz0, fz, n_tab, ld._n_z)
+                f2 = _gather_lerp2d(f_tab, im2, fm2, iz0, fz, n_tab, ld._n_z)
+            else:
+                f1 = _lerp1d(f_tab, m_axis.frac_index(log_m1s_), n_tab)
+                f2 = _lerp1d(f_tab, m_axis.frac_index(log_m1s_ + log_qs_), n_tab)
             return (f1 + f2
                     + log_dN.beta * (log_m1s_ + log1p_qs_ - log_pair_ref)
                     + log_m1s_ + Jg - log_dN.log_norm - log_pdraw_)
 
         log_wts = _log_weights(log_m1s_det, log_qs, jnp.log1p(qs), log_dls, log_pdraw)
-        log_sel_wts = _log_weights(log_m1s_det_sel, log_qs_sel, jnp.log1p(qs_sel),
-                                   log_dls_sel, log_pdraw_sel)
+        if ld._z_dependent:
+            # Selection stays on the direct path: log_mu_sel is multiplied by
+            # nobs in the selection factor, so the table's z-lerp bias there
+            # would be amplified ~nobs-fold (see the tabulate_mass_function
+            # docstring).  ~5% of the points, so this costs little.
+            log1p_zs_sel, J_sel = cosmo.z_and_log_jacobian(log_dls_sel)
+            opz_sel = jnp.exp(log1p_zs_sel)
+            log_sel_wts = (
+                log_dN.call_from_logs(m1s_det_sel / opz_sel,
+                                      log_m1s_det_sel - log1p_zs_sel,
+                                      log_qs_sel, opz_sel - 1.0, log1p_zs_sel)
+                - log_pdraw_sel + J_sel
+            )
+        else:
+            log_sel_wts = _log_weights(log_m1s_det_sel, log_qs_sel, jnp.log1p(qs_sel),
+                                       log_dls_sel, log_pdraw_sel)
     else:
         # --- detected events ---------------------------------------------
         log1p_zs, J = cosmo.z_and_log_jacobian(log_dls)
