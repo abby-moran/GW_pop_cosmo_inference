@@ -275,8 +275,19 @@ if __name__ == "__main__":
     rng = np.random.default_rng(251286134409181405721219170031242732711)
 
     chunk_size = run.getint("chunk_size", fallback=int(2e6))  # memory limit per read
-    num_tot    = run.getint("num_tot",    fallback=int(5e7))   # how many to reweight
+    num_tot    = run.getint("num_tot",    fallback=int(5e7))   # target/cap on population draws
     n_total    = run.getint("n_total",    fallback=int(8e7))   # total injections to consider
+    # "rejection" (default): accept each injection once with probability
+    #   w/w_max -- yields exact i.i.d. draws from the population with no
+    #   duplicates, at most ~Z draws (the pool's effective size); num_tot only
+    #   caps the yield.  "multinomial": the old resampling-with-replacement,
+    #   which silently replicates pool entries when num_tot exceeds the pool's
+    #   effective size (a 12.6M-draw pool supports only ~2e5 draws; asking for
+    #   2e7 gave events that were 55-fold copies of single injections and made
+    #   hyperposteriors ~3.6x overconfident in truth-recovery tests).
+    sampling_method = run.get("sampling_method", fallback="rejection").strip().lower()
+    if sampling_method not in ("rejection", "multinomial"):
+        raise ValueError(f"unknown sampling_method: {sampling_method!r}")
     
     with pd.HDFStore(inj_file, mode='r') as store:
         n_rows = store.get_storer('true_parameters').nrows   
@@ -338,6 +349,35 @@ if __name__ == "__main__":
 
         print(f"  Z = {Z:.4e}")
 
+        if sampling_method == "rejection":
+            # Decide every acceptance up front (cheap: only the cached log_w
+            # is touched) so the total number of population draws -- the
+            # 'ndraw' the selection-function estimate is normalized by -- is
+            # known before any chunk is written.
+            print("Pass 2b: rejection sampling from the cached weights...")
+            kept_idx = []
+            for fpath in chunk_files:
+                log_w = np.load(fpath).astype(np.float64)
+                p_acc = np.nan_to_num(np.exp(log_w - log_w_max), nan=0.0)
+                kept_idx.append(np.nonzero(rng.random(p_acc.size) < p_acc)[0])
+            n_pop = int(sum(k.size for k in kept_idx))
+            print(f"  accepted {n_pop:,} of {n_total:,} pool draws "
+                  f"(efficiency {n_pop / n_total:.3%}) -- exact i.i.d. "
+                  f"population draws, no duplicates")
+            if n_pop > num_tot:
+                frac = num_tot / n_pop
+                kept_idx = [k[rng.random(k.size) < frac] for k in kept_idx]
+                n_pop = int(sum(k.size for k in kept_idx))
+                print(f"  thinned to {n_pop:,} (num_tot = {num_tot:,})")
+            elif n_pop < num_tot:
+                print(f"  WARNING: pool supports only {n_pop:,} population draws "
+                      f"but num_tot = {num_tot:,} were requested.\n"
+                      f"           Proceeding with {n_pop:,}; to reach num_tot, "
+                      f"grow the injection file / n_total to ~"
+                      f"{int(1.2 * num_tot * n_total / max(n_pop, 1)):,} draws.")
+        else:
+            n_pop = num_tot
+
         print("Pass 3: sampling and processing...")
         first_chunk = True
         evt_offset  = 0
@@ -355,17 +395,20 @@ if __name__ == "__main__":
             log_w = np.load(chunk_files[idx]).astype(np.float64)
 
             w_chunk  = np.nan_to_num(np.exp(log_w - log_w_max), nan=0.0)
-            p_chunk  = w_chunk / Z
-            n_chunk  = int(np.round(p_chunk.sum() * num_tot))
 
-            chunk_sampled = np.sort(np.random.choice(len(chunk), p=p_chunk / p_chunk.sum(), size=n_chunk))
+            if sampling_method == "rejection":
+                chunk_sampled = kept_idx[idx]
+            else:
+                p_chunk  = w_chunk / Z
+                n_chunk  = int(np.round(p_chunk.sum() * num_tot))
+                chunk_sampled = np.sort(np.random.choice(len(chunk), p=p_chunk / p_chunk.sum(), size=n_chunk))
 
             df_det_chunk = chunk.iloc[chunk_sampled].copy()
             df_det_chunk['pdraw_sel'] = (w_chunk[chunk_sampled]
                                         * chunk['pdraw_cosmo'].values[chunk_sampled])
             df_det_chunk['dl']    = cosmo.dL(df_det_chunk['z'].to_numpy())
             df_det_chunk['m1d']   = df_det_chunk['m1'] * (1 + df_det_chunk['z'])
-            df_det_chunk['ndraw'] = num_tot
+            df_det_chunk['ndraw'] = n_pop
             df_det_chunk = df_det_chunk.reset_index(drop=True)
 
             detected_indices, evt_names = get_mock_obs(
@@ -377,7 +420,7 @@ if __name__ == "__main__":
 
             det_mask  = df_det_chunk.index.isin(detected_indices)
             sel_chunk = df_det_chunk[det_mask].copy()
-            sel_chunk['ndraw'] = num_tot
+            sel_chunk['ndraw'] = n_pop
             sel_chunk['evt']   = evt_names
             sel_chunk.to_hdf(sel_file, key='true_parameters',
                             mode='w' if first_chunk else 'a',
