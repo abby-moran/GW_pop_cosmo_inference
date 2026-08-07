@@ -6,7 +6,10 @@ import astropy.units as u
 import sys
 import jax
 sys.path.append('../src/')
-import intensity_models
+# Use the optimized module so the generated population matches the model
+# sampled in run_inf.py; re-import the original `intensity_models` to
+# reproduce the old behavior.
+import intensity_models_fast as intensity_models
 import numpy as np
 import os.path as op
 import pandas as pd
@@ -293,7 +296,10 @@ if __name__ == "__main__":
     pop_params  = {key: population_parameters[key]
                    for key in getfullargspec(log_dN_obj)[0][1:]
                    if key in population_parameters.keys()}
-    log_dN_func = intensity_models.build_population_model(pop_params, use_low_bump=use_low_bump)
+    # smooth_tail_edge=True matches the run_inf.py / pop_cosmo_model default;
+    # set smooth_tail_edge=False for the old hard-edged behavior.
+    log_dN_func = intensity_models.build_population_model(pop_params, use_low_bump=use_low_bump,
+                                                          smooth_tail_edge=True)
 
     if write_obs:
         print("Pass 1: computing weights, caching to disk...")

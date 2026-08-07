@@ -20,17 +20,13 @@ Broken into:
       interpolate against the same z-grid.
   (2) PISN GRID INTERP ONLY: just interp_2d_dndmpisn, called on m1 and m2
       (this is the map_coordinates bilinear lookup into the big grid).
-  (3) JOIN-POINT TERMS: join_point_terms(z), which itself calls
-      interp_2d_dndmpisn AGAIN (this is the suspected duplicate-work path
-      -- computed independently for the m1 call and the m2 call even
-      though z is identical between them).
-  (4) SHAPE TERMS ONLY: log_p_low (Gaussian) + log_p_pl (power-law tail),
+  (3) SHAPE TERMS ONLY: log_p_low (Gaussian) + log_p_pl (power-law tail),
       pure elementwise math, no interpolation -- this should be cheap and
       serves as a sanity-check baseline.
-  (5) FULL LogDNDM.__call__: for comparison against the sum of the above.
-  (6) FULL LogDNDMDQDV.__call__ (i.e. full log_dN as called in the model):
-      for comparison against (5)*2 plus mixture/dV bookkeeping.
-  (7) FULL likelihood expression (cosmology + log_dN + the surrounding
+  (4) FULL LogDNDM.__call__: for comparison against the sum of the above.
+  (5) FULL LogDNDMDQDV.__call__ (i.e. full log_dN as called in the model):
+      for comparison against (4)*2 plus mixture/dV bookkeeping.
+  (6) FULL likelihood expression (cosmology + log_dN + the surrounding
       Jacobian terms), matching pop_cosmo_model exactly, as the top-level
       check that the parts sum to the whole from the original profiler.
       Includes both the ORIGINAL (unfused) and FUSED cosmology paths so
@@ -163,7 +159,6 @@ def main():
     cosmo = im.FlatwCDMCosmology(full_sample['h'], full_sample['Om'], full_sample['w'], zmax=full_sample['zmax'])
     log_dN = im.build_population_model(full_sample)   # LogDNDMDQDV instance
     log_dndm = log_dN.log_dndm                         # LogDNDM instance (per-mass, pre-pairing)
-    log_dndv = log_dN.log_dndv                          # LogDNDV instance (merger rate density)
 
     dls_j = jnp.asarray(dls)
     qs_j = jnp.asarray(qs)
@@ -218,23 +213,7 @@ def main():
         name="interp_2d_dndmpisn called for BOTH m1 and m2")
 
     # ---------------------------------------------------------------
-    print("\n=== (3) JOIN-POINT TERMS (join_point_terms) ===")
-    print("Calls interp_2d_dndmpisn AGAIN internally -- this is evaluated")
-    print("independently inside the m1 call AND the m2 call in LogDNDMDQDV,")
-    print("even though z is identical between them. Isolating the cost of")
-    print("ONE call here tells you the size of that duplicated work.\n")
-
-    results['join_point_terms_once'] = timeit(
-        jax.jit(log_dndm.join_point_terms), zs,
-        n_repeat=args.n_repeat, name="join_point_terms(z)  [one call]")
-
-    results['join_point_terms_twice'] = timeit(
-        jax.jit(lambda z: (log_dndm.join_point_terms(z), log_dndm.join_point_terms(z))),
-        zs, n_repeat=args.n_repeat,
-        name="join_point_terms(z) called TWICE (current behavior)")
-
-    # ---------------------------------------------------------------
-    print("\n=== (4) SHAPE TERMS ONLY (no interpolation, pure elementwise) ===")
+    print("\n=== (3) SHAPE TERMS ONLY (no interpolation, pure elementwise) ===")
     print("Sanity-check baseline -- should be cheap.\n")
 
     def shape_terms_only(m, mu_low, sigma_low):
@@ -245,40 +224,23 @@ def main():
         n_repeat=args.n_repeat, name="log_normalized_gaussian (low-mass peak)")
 
     # ---------------------------------------------------------------
-    print("\n=== (5) FULL LogDNDM.__call__ (single mass, e.g. m1 only) ===")
-    print("Should be roughly (2, one-sided) + (3, one-sided) + (4) + overhead.\n")
+    print("\n=== (4) FULL LogDNDM.__call__ (single mass, e.g. m1 only) ===")
+    print("Should be roughly (2, one-sided) + (3) + overhead.\n")
 
     results['full_logdndm_m1'] = timeit(
         jax.jit(log_dndm.__call__), m1s, zs,
         n_repeat=args.n_repeat, name="log_dndm(m1, z)  [full LogDNDM call]")
 
     # ---------------------------------------------------------------
-    print("\n=== (6) FULL log_dN (LogDNDMDQDV.__call__): m1 + m2 + mixture/dV ===")
-    print("This is exactly what's called inside pop_cosmo_model as log_dN(m1s, qs, zs).")
-    print("log_dN.__call__ now computes join_point_terms(z) ONCE internally and")
-    print("threads it into both the m1 and m2 log_dndm calls via join_terms=,")
-    print("instead of each recomputing it independently. This times the actual")
-    print("(now-default) behavior, plus the old always-recompute behavior for")
-    print("direct comparison.\n")
+    print("\n=== (5) FULL log_dN (LogDNDMDQDV.__call__): m1 + m2 + mixture/dV ===")
+    print("This is exactly what's called inside pop_cosmo_model as log_dN(m1s, qs, zs).\n")
 
     results['full_log_dN'] = timeit(
         jax.jit(log_dN.__call__), m1s, qs_j, zs,
-        n_repeat=args.n_repeat, name="log_dN(m1, q, z)  [join_terms shared, new default]")
-
-    def full_log_dN_no_sharing(m1, q, z):
-        # old behavior: force each side to recompute join_point_terms independently
-        m2 = q * m1
-        mt = m1 + m2
-        return (log_dndm(m1, z) + log_dndm(m2, z)
-                + log_dN.beta * jnp.log(mt / (log_dN.mref * (1 + log_dN.qref)))
-                + jnp.log(m1) + log_dndv(z) - log_dN.log_norm)
-
-    results['full_log_dN_no_sharing'] = timeit(
-        jax.jit(full_log_dN_no_sharing), m1s, qs_j, zs,
-        n_repeat=args.n_repeat, name="log_dN(m1, q, z)  [old: independent recompute]")
+        n_repeat=args.n_repeat, name="log_dN(m1, q, z)")
 
     # ---------------------------------------------------------------
-    print("\n=== (7) FULL LIKELIHOOD EXPRESSION (matches pop_cosmo_model exactly) ===")
+    print("\n=== (6) FULL LIKELIHOOD EXPRESSION (matches pop_cosmo_model exactly) ===")
     print("Shown for BOTH the original unfused cosmology path and the new")
     print("fused cosmo.full_cosmo_block path, so the real-world impact of")
     print("fusing is visible at the top level, not just in isolation.\n")
@@ -318,8 +280,6 @@ def main():
     cosmo_cost = results['cosmo_all_three_unfused']['min']
     cosmo_cost_fused = results['cosmo_all_three_fused']['min']
     pisn_cost = results['pisn_interp_m1_and_m2']['min']
-    join_cost = results['join_point_terms_twice']['min']
-    join_dup_savings = results['join_point_terms_twice']['min'] - results['join_point_terms_once']['min']
     full_dN = results['full_log_dN']['min']
 
     print(f"  Full likelihood expression (unfused cosmo): {full*1000:8.3f} ms  (100%)")
@@ -331,16 +291,7 @@ def main():
     print(f"    of which cosmology, unfused (3 interp calls): {cosmo_cost*1000:8.3f} ms  ({100*cosmo_cost/full:5.1f}%)")
     print(f"    of which cosmology, batched (1 map_coordinates call): {cosmo_cost_fused*1000:8.3f} ms  ({100*cosmo_cost_fused/full:5.1f}% of unfused total)")
     print(f"    of which full log_dN (mass function):   {full_dN*1000:8.3f} ms  ({100*full_dN/full:5.1f}%)")
-    print(f"    of which full log_dN, OLD (no join_terms sharing): {results['full_log_dN_no_sharing']['min']*1000:8.3f} ms")
-    print(f"      -> join_terms sharing saved: "
-          f"{(results['full_log_dN_no_sharing']['min']-full_dN)*1000:8.3f} ms "
-          f"({100*(results['full_log_dN_no_sharing']['min']-full_dN)/full:5.1f}% of total)")
     print(f"      of which PISN grid interp (m1+m2):    {pisn_cost*1000:8.3f} ms  ({100*pisn_cost/full:5.1f}% of total)")
-    print(f"      of which join_point_terms (x2 calls): {join_cost*1000:8.3f} ms  ({100*join_cost/full:5.1f}% of total)")
-    print(f"        -> redundant 2nd join_point_terms call costs "
-          f"~{join_dup_savings*1000:.3f} ms ({100*join_dup_savings/full:5.1f}% of total)")
-    print(f"        -> that's the specific savings available from passing")
-    print(f"           join_terms= through to avoid recomputation for m2")
     print()
     print("  If cosmology % is large: check whether the FUSED number above")
     print("  actually beats the unfused one. If not, the ~10ms/call floor is")
@@ -350,10 +301,6 @@ def main():
     print("  If PISN grid interp % is large: this is fundamental to your")
     print("  interpolation-based approach -- the fix is grid resolution (n_m)")
     print("  from the previous profiling round, not this call site.")
-    print()
-    print("  If join_point_terms duplication is a meaningful %: wiring")
-    print("  join_terms= through LogDNDMDQDV.__call__ (as discussed) directly")
-    print("  removes exactly that cost.")
 
     with open("profile_results_detailed.json", "w") as f:
         json.dump(results, f, indent=2)

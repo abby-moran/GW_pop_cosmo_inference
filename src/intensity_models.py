@@ -29,7 +29,7 @@ def largest_mco(mpisn, mbhmax):
 
 @jax.jit
 def log_dNdmCO(mco, a, b, mco_floor=6.0):
-    mtr = 20.0                     
+    mtr = 20.0
     mco_eff = jnp.maximum(mco, mco_floor)   # floors mco before evaluating the power law, mco_floor>=mco_min
     x = mco_eff / mtr
     return jnp.where(mco_eff < mtr, -a*jnp.log(x), -b*jnp.log(x))
@@ -174,27 +174,14 @@ class LogDNDM(object):
     def log_Z_pisn_at_z(self, z):
         return jnp.interp(z, self.z_array, self.log_Z_pisn_grid)
 
-    def join_point_terms(self, z):
-        mbhmax_at_samples = jnp.array(self.mpisn + self.mpisndot*(1 - 1/(1+z)) + self.dmbhmax)
-        log_pisn_at_join = jnp.where(
-            mbhmax_at_samples >= self.log_dndm_pisn.mbh_grid[-1], -np.inf,
-            self.interp_2d_dndmpisn(mbhmax_at_samples, z) - self.log_Z_pisn_at_z(z)
-        )
-        log_peak_at_join = log_normalized_gaussian(mbhmax_at_samples, self.mp_low, self.msigma_low)
-        log_mix_at_join = jnp.logaddexp(log_pisn_at_join, safe_log(self.flow) + log_peak_at_join)
-        return mbhmax_at_samples, log_mix_at_join
-
-    def __call__(self, m, z, join_terms=None):
+    def __call__(self, m, z):
         m = jnp.atleast_1d(m)
         z = jnp.atleast_1d(z)
         log_p_pisn_raw = self.interp_2d_dndmpisn(m, z)
         log_p_pisn_raw = jnp.where(m >= self.log_dndm_pisn.mbh_grid[-1], -np.inf, log_p_pisn_raw)
         log_p_pisn = log_p_pisn_raw - self.log_Z_pisn_at_z(z)   # unit-area shape
 
-        if join_terms is None:
-            mbhmax_at_samples, _ = self.join_point_terms(z)
-        else:
-            mbhmax_at_samples, _ = join_terms
+        mbhmax_at_samples = jnp.array(self.mpisn + self.mpisndot*(1 - 1/(1+z)) + self.dmbhmax)
         # Tail shape: closed-form normalized power law (integrates to unit area over m > mbhmax exactly) with a smooth turn-on at mbhmax (continuity)
         log_p_pl_raw = jnp.where(m < mbhmax_at_samples, -jnp.inf,
             log_normalized_power_law_tail(m, mbhmax_at_samples, self.c))

@@ -41,8 +41,10 @@ os.makedirs(base_runs_dir, exist_ok=True)
 run_dir = os.path.join(base_runs_dir, f"{run_name}")
 os.makedirs(run_dir, exist_ok=False)
 
-# Real output file lives on ceph
-ceph_run_dir = os.path.abspath(os.path.join("../../ceph/GW_pop_cosmo_inference/", run_name))
+# Real output file lives on ceph.  Resolve via $HOME so this works regardless
+# of where the repo is checked out (the old relative ../../ceph assumed the
+# repo sat directly in the home directory).
+ceph_run_dir = os.path.join(os.path.expanduser("~"), "ceph", "GW_pop_cosmo_inference", run_name)
 os.makedirs(ceph_run_dir, exist_ok=True)
 ceph_output_file = os.path.join(ceph_run_dir, cfg["run"]["output_file_inj"])
 
@@ -161,7 +163,10 @@ if __name__ == "__main__":
     dL_fid   = float(grid["dL_fid"])
     
     log_snr_interp = RegularGridInterpolator((m1_grid, q_grid), np.log(snr_grid), bounds_error=False, fill_value=-np.inf)
-    num_loops=150
+    # 1e7 draws per loop; configurable so short validation runs don't have to
+    # generate the full 1.5e9 draws (reweight_res.py only reads the first
+    # n_total rows anyway).
+    num_loops = cfg["run"].getint("num_loops", fallback=150)
     for i in range(num_loops):
         ndraw=int(1e7)
         zpdf = scipy.stats.uniform(loc=0, scale=population_parameters["zmax"])        

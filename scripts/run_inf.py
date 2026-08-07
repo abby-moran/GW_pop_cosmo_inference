@@ -3,7 +3,19 @@ import os
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 import sys
 sys.path.append('../src/')
-import intensity_models
+# Optimized drop-in for intensity_models (~25x faster and 5x less GPU memory;
+# see scripts/test_fast_equivalence.py and scripts/bench_model.py).  Revert to
+# the original by importing intensity_models.
+# NOTE: by default this samples with smooth_tail_edge=True, a small change to
+# the population model (the power-law tail is no longer hard-zeroed below
+# m = mbhmax) that makes the density continuous and the NUTS gradients for h,
+# mpisn, dmbhmax correct.  Pass smooth_tail_edge=False to pop_cosmo_model (via
+# mcmc.run kwargs below) to reproduce the original model exactly.
+# The Monte-Carlo accuracy guard also defaults to neff_penalty="mc_variance"
+# (penalize sum_i 1/n_eff_i above mc_variance_budget=5, i.e. MC sigma of the
+# total log likelihood above ~2.2 nats); pass neff_penalty="min_neff" to
+# reproduce the original min-over-events n_eff >= nobs guard.
+import intensity_models_fast as intensity_models
 import numpy as np
 import pandas as pd
 from utils import get_priors_from_file
