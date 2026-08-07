@@ -1,12 +1,14 @@
 """
 Consistency test: generation pipeline vs inference model, point by point.
 
-reweight_res.py recorded, for every detected injection,
-    pdraw_sel = exp(log_w - log_w_max) * pdraw_cosmo
-              = [population density at truth in (m1_det, q, dL)] * exp(-log_w_max)
-so if the inference model is consistent with the generation model,
+reweight_res.py records, for every detected injection, pdraw_sel
+proportional to the population density at truth in (m1_det, q, dL), so if
+the inference model is consistent with the generation model,
     resid := log_pop_inference(m1d, q, dl | truth) - log(pdraw_sel)
-must be CONSTANT (= log_w_max) across all samples.  Any trend of `resid` with
+must be CONSTANT across all samples.  The constant is log_C = log(Z) +
+log_w_max - log(n_total) for files made after the pdraw normalization fix
+(pdraw_sel is the properly normalized drawing density), or log_w_max for
+older files.  Any trend of `resid` with
 m1, q or z localizes an inconsistency (population shape, cosmology Jacobians,
 frame conversions, pdraw bookkeeping).
 
@@ -84,7 +86,8 @@ def main():
     resid = np.asarray(log_pop_inf) - np.log(sel["pdraw_sel"].to_numpy())
 
     good = np.isfinite(resid)
-    print(f"\nresid = log_pop_inference - log(pdraw_sel)   [expect constant = log_w_max]")
+    print(f"\nresid = log_pop_inference - log(pdraw_sel)   "
+          f"[expect constant: log_C for normalized files, log_w_max for legacy]")
     print(f"  non-finite resid: {np.sum(~good)} of {len(resid)}")
     r = resid[good]
     print(f"  mean {r.mean():+.4f}  std {r.std():.4f}  "

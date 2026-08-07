@@ -378,6 +378,12 @@ if __name__ == "__main__":
         else:
             n_pop = num_tot
 
+        # With pdraw_sel properly normalized (see below), the rate the
+        # inference should recover from this mock is exactly n_pop / C.
+        log_C = np.log(Z) + log_w_max - np.log(n_total)
+        print(f"  population normalization log_C = {log_C:.4f}; "
+              f"true rate of this mock dataset: R = n_pop/C = {n_pop * np.exp(-log_C):.4f}")
+
         print("Pass 3: sampling and processing...")
         first_chunk = True
         evt_offset  = 0
@@ -404,8 +410,17 @@ if __name__ == "__main__":
                 chunk_sampled = np.sort(np.random.choice(len(chunk), p=p_chunk / p_chunk.sum(), size=n_chunk))
 
             df_det_chunk = chunk.iloc[chunk_sampled].copy()
+            # The draws follow the *normalized* population density
+            #   p(theta) = pop(theta) / C,  C = int pop ~ Z*exp(log_w_max)/n_total,
+            # and the selection estimator mu_sel = (1/ndraw) sum pop(Lambda)/pdraw_sel
+            # needs pdraw_sel to be exactly that normalized density.
+            # w*pdraw_cosmo alone is pop*exp(-log_w_max); the n_total/Z factor
+            # completes the normalization.  (Before this fix the recovered rate
+            # R = nobs/mu_sel was deflated by the constant Z/n_total; population
+            # -shape posteriors were unaffected.)
             df_det_chunk['pdraw_sel'] = (w_chunk[chunk_sampled]
-                                        * chunk['pdraw_cosmo'].values[chunk_sampled])
+                                        * chunk['pdraw_cosmo'].values[chunk_sampled]
+                                        * (n_total / Z))
             df_det_chunk['dl']    = cosmo.dL(df_det_chunk['z'].to_numpy())
             df_det_chunk['m1d']   = df_det_chunk['m1'] * (1 + df_det_chunk['z'])
             df_det_chunk['ndraw'] = n_pop
