@@ -179,6 +179,8 @@ def run_leg(args):
                                            use_low_bump=not args.no_low_bump)
             ref = dict(loglike_ref=np.asarray(ref["loglike_ref"]).tolist(),
                        log_mu_sel_ref=ref["log_mu_sel_ref"],
+                       log_pdraw_sel_scale=ref["log_pdraw_sel_scale"],
+                       log_mu_sel_phys_ref=ref["log_mu_sel_phys_ref"],
                        offset=ref["offset"])
             if args.ref_out:
                 with open(args.ref_out, "w") as f:
@@ -186,8 +188,11 @@ def run_leg(args):
         recenter_kwargs = dict(
             loglike_ref=np.asarray(ref["loglike_ref"], np.float64),
             log_mu_sel_ref=float(ref["log_mu_sel_ref"]),
+            log_pdraw_sel_scale=float(ref["log_pdraw_sel_scale"]),
         )
-        print(f"  recentering on: dropped offset = {ref['offset']:.6e}", flush=True)
+        print(f"  recentering on: log_pdraw_sel_scale = "
+              f"{ref['log_pdraw_sel_scale']:.6f}, "
+              f"dropped offset = {ref['offset']:.6e}", flush=True)
 
     pe_fn, z0, factors = _build(im, data, prior, truth, not args.no_low_bump,
                                 z0_override=z0_override,
