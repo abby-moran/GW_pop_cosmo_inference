@@ -290,10 +290,19 @@ if __name__ == "__main__":
         raise ValueError(f"unknown sampling_method: {sampling_method!r}")
     
     with pd.HDFStore(inj_file, mode='r') as store:
-        n_rows = store.get_storer('true_parameters').nrows   
+        n_rows = store.get_storer('true_parameters').nrows
     if n_total > n_rows:
-        print(f"  Warning: n_total={n_total} exceeds file size {n_rows}, clamping.")
+        print(f"  Warning: n_total={n_total:,} exceeds file size {n_rows:,}, clamping.")
         n_total = n_rows
+    elif n_total < n_rows:
+        # Leaving rows unread is safe with rejection sampling (no silent
+        # duplicates), but it still wastes pool size that could raise the
+        # acceptance yield -- the usual reason a production .ini with
+        # n_total=3e7 under-uses a num_loops=150 injection file.
+        print(f"  Warning: n_total={n_total:,} uses only {100 * n_total / n_rows:.1f}% "
+              f"of the injection file ({n_rows:,} rows); "
+              f"{n_rows - n_total:,} draws will be left unread.  "
+              f"Raise n_total (and chunk_size) to use the full pool.")
     population_parameters, cosmo = get_pop_params(pop_config_file)
 
     m1_grid  = grid["m1_grid"]
