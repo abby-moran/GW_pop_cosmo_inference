@@ -253,6 +253,12 @@ def main():
     p.add_argument("--mpisndot_free", action="store_true",
                    help="sample mpisndot (default: fixed to 0)")
     p.add_argument("--no_low_bump", action="store_true")
+    p.add_argument("--split", action="store_true",
+                   help="tabulate_selection=False: put the selection set back "
+                        "on the direct evaluation while the event samples use "
+                        "the table.  Timing A/B only -- this is not a valid "
+                        "likelihood (see notes/2026-08-08-tabulated-selection-"
+                        "consistency.md)")
     p.add_argument("--no_tab", action="store_true",
                    help="force tabulate_mass_function=False (A/B the direct "
                         "per-sample evaluation against the tabulated default)")
@@ -292,6 +298,8 @@ def main():
     model_kwargs = dict(use_low_bump=use_low_bump)
     if args.no_tab:
         model_kwargs["tabulate_mass_function"] = False
+    if args.split:
+        model_kwargs["tabulate_selection"] = False
 
     truth = {k: jnp.asarray(v) for k, v in TRUTH.items() if k in prior
              and not isinstance(prior[k], float)}

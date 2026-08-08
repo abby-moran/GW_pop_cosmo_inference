@@ -61,9 +61,9 @@ against float64 references).
    grid, and every per-sample mass evaluation becomes a table lerp.  ~2x on
    top of everything else when mpisndot is pinned to 0 (1-D table).  When
    mpisndot is *sampled* the table gains a z axis on the PISN grid's own 30
-   z nodes and the lookup becomes bilinear; the selection set keeps the
-   direct evaluation because the selection factor amplifies the table's
-   small z-lerp bias by nobs.  Measured for the mpisndot-free case at
+   z nodes and the lookup becomes bilinear.  The selection set uses the same
+   table as the event samples -- it briefly did not, which was a bug; see the
+   correction at the end of this file.  Measured for the mpisndot-free case at
    production scale: gradient 68.5 -> 38.0 ms, peak memory 20.4 -> 9.4 GiB.
    Details: `2026-08-07-mass-table-2d.md`.
 8. Constant-in-the-sampler data quantities (logs of masses, ratios, pdraw)
@@ -141,7 +141,7 @@ neff_penalty="min_neff"` (or import `intensity_models`).
 
 | script | purpose |
 |---|---|
-| `scripts/test_fast_equivalence.py` | numerical equivalence vs original, AD-vs-FD gradient checks, dead-event safety |
+| `scripts/test_fast_equivalence.py` | numerical equivalence vs original, AD-vs-FD gradient checks, dead-event safety, tabulated-selection consistency |
 | `scripts/test_mco_floor.py` | mco_floor plumbed end to end |
 | `scripts/bench_model.py` | gradient-of-potential benchmark + `--diagnose` site tracer |
 | `scripts/bench_breakdown.py` | per-term cost bisection of the potential |
@@ -164,3 +164,14 @@ dmbhmax) recover their truths within ~1 sigma; some mass/redshift shape
 parameters land 2-6 sigma off, consistent with a single mock realization
 from a reduced injection pool — flagged for follow-up, not attributed to the
 optimization (posterior: `runs/endO5_val/O5_val.nc`).
+
+## Correction (2026-08-08): tabulated selection consistency
+
+The 2-D mass table shipped with the selection set on the *direct* evaluation
+while the event samples used the table.  That is not a valid hierarchical
+likelihood -- the R-marginalized form is a ratio, so both sides must use the
+same density -- and it made every mock run with `mpisndot` free walk onto the
+prior walls (`runs/endO5_evo`, `runs/endO5_fullcosmo_evo`).  Fixed by
+`tabulate_selection` (default: follow `tabulate_mass_function`).  Full
+account, measurements and regression guard:
+`2026-08-08-tabulated-selection-consistency.md`.

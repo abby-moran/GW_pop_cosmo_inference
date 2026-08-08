@@ -46,7 +46,13 @@ a z axis:
   the z cell, so the extra per-sample cost over the 1-D case is one `expm1`
   and two more gathers.
 
-## Selection stays on the direct path (important!)
+## Selection stays on the direct path (WRONG -- retracted 2026-08-08)
+
+**This section described the original design and it was a bug.  See
+`2026-08-08-tabulated-selection-consistency.md`.  The selection set now uses
+the same table as the event samples (`tabulate_selection`, default
+consistent).  Kept here because the reasoning below is a plausible-looking
+trap worth recognizing.**
 
 First attempt used the 2-D table for the selection set too, and the
 equivalence test failed by ~1.3 nats at nobs=400.  Per-factor tracing showed
@@ -65,6 +71,18 @@ and the selection weights keep the direct evaluation.  With that split the
 tab-vs-direct potential difference at nobs=400 drops to 9e-3 nats and every
 per-parameter gradient agrees to <= 0.6% (smooth_tail_edge=True pair).
 
+**Why that is wrong.**  The R-marginalized likelihood is the ratio
+`prod_i lambda(x_i) / (int lambda p_det)^nobs`, so agreement with the direct
+path *per factor* is not the requirement -- using the same `lambda` on both
+sides is.  Matching the selection factor to the direct path while the event
+sum used the table left the event sum's z-lerp bias uncancelled, and because
+that bias is parameter dependent the sampler climbed it: at the corner
+`runs/endO5_evo` walked to it was worth +125 nats, enough to beat the truth
+by 99.  With both sides tabulated the same +125 appears as -125 in
+`selfactor` and the ratio is right to 0.5 nats.  The 1.3-nat "failure" that
+motivated the split was the harmless part -- a slightly different but
+self-consistent population model -- not the dangerous one.
+
 ## AD vs FD with mpisndot free: FD is the fragile side
 
 `test_tabulated_path_zdep` checks AD gradients against central finite
@@ -80,6 +98,15 @@ they are model structure, not table artifacts):
    identically for direct and tabulated.  The test uses eps = 1e-3, where FD
    and AD agree to ~2-3%.
 
+   **Corrected 2026-08-08:** concluding that AD was the trustworthy side here
+   was wrong.  Refining the z grid gives d/dmpisn = 32.0 / 28.6 / 29.1 at
+   n_z = 60 / 120 / 240, so ~29 is the model's actual gradient and the
+   *large*-step FD was the closer one.  At n_z = 30 with mpisndot = 3 the AD
+   value is the exact slope of a grid ripple rather than of the model.  This
+   costs HMC efficiency, not correctness -- the potential defines the
+   posterior, and on the real data its profiles are converged at n_z = 30.
+   See `2026-08-08-tabulated-selection-consistency.md`.
+
 2. With the hard tail edge (`smooth_tail_edge=False`) an h step moves every
    sample across the moving discontinuity at 30 distinct mbhmax(z_i)
    positions, so d/dh FD is not a usable reference at any step size; that
@@ -92,12 +119,19 @@ they are model structure, not table artifacts):
 - `pop_cosmo_model(tabulate_mass_function=...)` default (None) now means
   *enabled always*: 1-D table when mpisndot is statically 0, 2-D otherwise.
   `False` still selects the direct per-sample evaluation everywhere.
+- `pop_cosmo_model(tabulate_selection=...)` (added 2026-08-08) default (None)
+  follows `tabulate_mass_function`.  `False` reinstates the split described
+  above and is for diagnostics only.
 - `scripts/bench_model.py --no_tab` forces the direct path for A/B timing.
 - `scripts/test_fast_equivalence.py` gained `test_tabulated_path_zdep`
   (test 7): potential + all-parameter gradient equivalence tab2d-vs-direct,
   finite-grad check, and AD-vs-FD on the edge parameters including mpisndot.
 
 ## Measured (float32, nobs=9000, nsamp=4000, nsel=1.7M, mpisndot free)
+
+*These numbers predate the 2026-08-08 consistency fix, i.e. they were taken
+with the selection set on the direct path.  Tabulating it too can only be
+faster.*
 
 Same GPU, back-to-back A/B via `bench_model.py --module intensity_models_fast
 --mpisndot_free [--no_tab]`:

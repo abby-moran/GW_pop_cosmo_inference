@@ -391,25 +391,43 @@ def test_tabulated_path_zdep(nobs=400, nsamp=300, nsel=40000):
         if bad:
             FAIL.append(f"{label} non-finite grads with mpisndot free")
 
-    # Selection is on the direct path in both tab2d models, so the
-    # nobs-amplified selfactor is common and only the per-event z-lerp
-    # differences remain.
-    _, _, vd, gd = outs["direct"]
-    _, _, vt, gt = outs["tab2d"]
-    report("tab2d vs direct: potential (hard edge)", np.array([vd]), np.array([vt]),
-           rtol=1e-4, atol=0.5)
-    # Gradients are compared on the smooth pair (the production default): the
-    # hard edge makes the density discontinuous at the moving mbhmax(z), so
-    # z-lerping across the step amplifies tab-vs-direct gradient differences
-    # that the smooth model does not have.
+    # tab2d vs direct is NOT an equivalence check at the production n_z.  Both
+    # sides of the ratio use the table now (tabulate_selection follows
+    # tabulate_mass_function), so the z-lerp bias is common-mode and cancels --
+    # but what is left is a genuine O(dz^2) discretization difference between
+    # two slightly different models, and at n_z=30 with mpisndot=3 that is
+    # ~1.2 nats at nobs=400.  Asserting a tight tolerance there would only be
+    # satisfiable by the broken split path (which agrees with direct on the
+    # selection factor by construction, and so looked deceptively good).
+    #
+    # The meaningful assertion is convergence: tab2d -> direct as n_z grows,
+    # at the second-order rate linear interpolation must have.  Measured
+    # 1.216 / 0.383 / 0.097 / 0.024 nats for n_z = 30 / 60 / 120 / 240.
     _, _, vds, gds = outs["direct+smooth"]
     _, _, vts, gts = outs["tab2d+smooth"]
-    report("tab2d vs direct: potential (smooth edge)", np.array([vds]),
-           np.array([vts]), rtol=1e-4, atol=0.5)
-    keys = sorted(set(gds) & set(gts))
-    report("tab2d vs direct: gradients, all params (smooth edge)",
-           np.array([gds[k] for k in keys]), np.array([gts[k] for k in keys]),
-           rtol=2e-2, atol=0.2)
+    print(f"  tab2d - direct at production n_z=30: {vts - vds:+.4f} nats "
+          f"(informational; see convergence below)")
+    prev = None
+    for nz in (30, 60, 120):
+        pair = {}
+        for label, kwargs in (("d", dict(tabulate_mass_function=False)),
+                              ("t", dict(tabulate_mass_function=True))):
+            mi = initialize_model(
+                jax.random.PRNGKey(0), fast.pop_cosmo_model, model_args=model_args,
+                model_kwargs=dict(use_low_bump=True, neff_penalty="none",
+                                  smooth_tail_edge=True, n_z=nz, **kwargs),
+                dynamic_args=False, init_strategy=init_to_value(values=truth),
+            )
+            pair[label] = float(jax.jit(mi.potential_fn)(mi.param_info.z))
+        d = abs(pair["t"] - pair["d"])
+        rate = "" if prev is None else f"  ({prev / max(d, 1e-9):.1f}x smaller)"
+        # Linear interpolation is second order, so each doubling of n_z should
+        # cut the gap ~4x; require a clear 2.5x to allow for float32 noise.
+        if prev is not None and prev / max(d, 1e-9) < 2.5:
+            FAIL.append(f"tab2d vs direct does not converge in n_z "
+                        f"({prev:.4f} -> {d:.4f} at n_z={nz})")
+        print(f"  n_z={nz:4d}: |tab2d - direct| = {d:9.5f} nats{rate}")
+        prev = d
 
     # AD-vs-FD self-consistency on the recommended (tab2d+smooth) path.
     # NOTE eps=1e-3 for every parameter: the PISN remnant map's
@@ -446,6 +464,96 @@ def test_tabulated_path_zdep(nobs=400, nsamp=300, nsel=40000):
                 tag = "-- "
             print(f"  [{tag}] {label:12s} d/d{k:9s} AD={ad:+.6e} FD={fd:+.6e} "
                   f"rel={rel:.2e}")
+
+
+def test_tabulated_selection_consistency(nobs=400, nsamp=300, nsel=40000):
+    """The tabulated event samples and the tabulated selection set must use the
+    SAME density.
+
+    The R-marginalized hierarchical likelihood is prod_i lambda(x_i) /
+    (int lambda p_det)^nobs, so a table on the numerator and a direct
+    evaluation on the denominator is not a probability model: the numerator's
+    interpolation error survives uncancelled, it is parameter dependent, and
+    the sampler climbs it.  That is what drove the mpisndot-free mock runs onto
+    the prior walls (runs/endO5_evo: +125 nats of spurious log likelihood at
+    the wall point, beating the truth by 99).
+
+    Tested as an exact identity rather than a tolerance.  Feed the model a
+    selection set that IS the event samples, flattened, with the matching
+    pdraw.  Then the same points go through both code paths and
+
+        log_mu_sel + log(Ndraw) == logsumexp_i(loglike_i) + log(nsamp)
+
+    holds to roundoff *if and only if* the two paths evaluate the same
+    density.  No tolerance on a physical difference, no dependence on how the
+    bench data happens to distribute its selection samples -- and it cannot go
+    blind the way an "is the split visibly worse" check can.  (It can be
+    worse or better depending on how the two populations' interpolation
+    biases happen to line up: on the real 9000-event data the split cost +125
+    nats, but on this synthetic bench data, whose selection samples are drawn
+    from a much broader population than its events, it lands closer to the
+    direct path by luck.  Luck is not a guard.)"""
+    print(f"\n=== 8. tabulated selection consistency (nobs={nobs}) ===")
+    data = make_synthetic_data(nobs, nsamp, nsel, seed=19)
+    prior = build_prior(False, "/tmp/equiv_prior5.prior")   # mpisndot free
+
+    # Selection set := the event samples themselves.
+    npe = nobs * nsamp
+    Ndraw = float(npe)
+    model_args = (data["m1s_det"], data["qs"], data["dls"], data["log_pdraw"],
+                  data["m1s_det"].ravel(), data["qs"].ravel(),
+                  data["dls"].ravel(), np.exp(data["log_pdraw"]).ravel(),
+                  Ndraw, prior)
+
+    import numpyro.handlers as handlers
+
+    # Both the truth and a corner like the one runs/endO5_evo walked to: the
+    # mass function as narrow and as fast-moving in z as the priors allow,
+    # where a 30-node z-lerp is least accurate.  Nudged just *inside* the
+    # bounds -- exactly on them the truncated log prob is -inf.
+    # `sharp` mirrors the actual failed mode of runs/endO5_evo.
+    sharp = dict(TRUTH, sigma=0.051, dmbhmax=0.52, mpisndot=-1.99, a=-1.6,
+                 b=-2.0, c=1.5, mpisn=38.5, log_fpl=0.577, beta=-3.78)
+    resid = {}
+    for label, point in (("truth", TRUTH), ("sharp", sharp)):
+        vals = {k: jnp.asarray(v) for k, v in point.items()
+                if k in prior and not isinstance(prior[k], float)}
+        for cl, kw in (("default", dict()), ("split", dict(tabulate_selection=False))):
+            with handlers.seed(rng_seed=0), handlers.substitute(data=vals):
+                tr = handlers.trace(fast.pop_cosmo_model).get_trace(
+                    *model_args, use_low_bump=True, neff_penalty="none",
+                    store_per_event=True, **kw)
+            loglike = np.asarray(tr["loglik_array_dim"]["value"], dtype=np.float64)
+            log_mu_sel = float(np.asarray(tr["log_mu_sel"]["value"]))
+            lhs = log_mu_sel + np.log(Ndraw)
+            mx = loglike.max()
+            rhs = float(mx + np.log(np.exp(loglike - mx).sum())) + np.log(nsamp)
+            d = lhs - rhs
+            resid[(label, cl)] = d
+            # Only the default is asserted, and only that the identity holds:
+            # it is structural, so anything above float32 roundoff on a
+            # 1.2e5-term logsumexp means the two paths have drifted apart.
+            # `selfactor` multiplies this residual by nobs, so the second
+            # column is the potential error it would cause at this nobs --
+            # at the production nobs=9000 it is 22x larger again.
+            if cl == "default":
+                ok = abs(d) < 1e-3
+                if not ok:
+                    FAIL.append(f"tabulated selection ({label}): identity broken, "
+                                f"residual {d:.5f} nats -> {abs(d) * nobs:.1f} nats "
+                                f"of potential at nobs={nobs}")
+                tag = "OK " if ok else "FAIL"
+            else:
+                tag = "-- "
+            print(f"  [{tag}] {label:6s} {cl:8s} identity residual = {d:+9.5f} nats"
+                  f"  -> {d * nobs:+9.2f} nats of potential at nobs={nobs}")
+
+    # The check must have teeth: at the sharp point the split has to be clearly
+    # worse than the default, or this test is no longer a guard against the
+    # split coming back.
+    if abs(resid[("sharp", "split")]) < 10 * max(abs(resid[("sharp", "default")]), 1e-5):
+        FAIL.append("tabulated selection: the sharp point no longer separates the "
+                    "split from the default -- the regression guard has gone blind")
 
 
 def test_nan_gradient_robustness():
@@ -493,6 +601,7 @@ if __name__ == "__main__":
     test_full_model(mpisndot_free=True)
     test_tabulated_path()
     test_tabulated_path_zdep()
+    test_tabulated_selection_consistency()
     test_nan_gradient_robustness()
 
     print("\n" + "=" * 70)

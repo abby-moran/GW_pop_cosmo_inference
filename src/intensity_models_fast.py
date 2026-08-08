@@ -929,7 +929,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                     store_per_event=False, neff_criterion=None,
                     neff_penalty="mc_variance", mc_variance_budget=5.0,
                     tabulate_mass_function=None, n_mass_table=8192,
-                    smooth_tail_edge=True,
+                    tabulate_selection=None, smooth_tail_edge=True,
                     loglike_ref=None, log_mu_sel_ref=None,
                     log_pdraw_sel_scale=0.0):
     """
@@ -995,16 +995,6 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         1.7M selection): gradient 68.5 -> 38.0 ms per leapfrog step (1.8x),
         peak GPU memory 20.4 -> 9.4 GiB (2.2x).
 
-        In the 2-D case the table is used only for the (nobs, nsamp) event
-        samples; the selection set keeps the direct evaluation.  The reason
-        is amplification, not accuracy per point: the z-lerp of the combined
-        log-density carries an O(3e-3) bias in log_mu_sel, and the selection
-        factor multiplies log_mu_sel by nobs, turning a negligible per-point
-        error into an O(nobs*3e-3) parameter-dependent distortion.  The
-        per-event log likelihoods carry no such amplification (measured
-        max 0.02, mean 5e-4 per event), and the selection set is ~5% of the
-        points, so evaluating it directly costs little.
-
         Either way this is a large win and, as a side effect, smears the
         model's step discontinuity at m = mbhmax (see LogDNDM.call_from_logs)
         over one table cell, which makes the AD gradient of the potential
@@ -1013,6 +1003,30 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         samples crossing that edge and are off by 10-20% at typical
         parameter points.  Default (None): enabled.  Set False for the
         direct per-sample evaluation.
+
+    tabulate_selection: whether the selection samples use the same table as
+        the event samples.  Default (None): follow `tabulate_mass_function`,
+        i.e. *always consistent*.
+
+        Do not set this to False for production.  The R-marginalized
+        hierarchical likelihood is the ratio prod_i lambda(x_i) /
+        (int lambda p_det)^nobs, so it is only a valid probability model when
+        numerator and denominator evaluate the *same* density.  Splitting them
+        leaves the interpolation error of the numerator uncancelled, and
+        because that error is parameter dependent the sampler can climb it
+        without bound.  Measured on the 9000-event mock with mpisndot free:
+        the split cost +125 nats of spurious log likelihood at a corner of
+        parameter space where sigma, dmbhmax, a, b and mpisndot all sit on
+        their prior walls (sharpest, fastest-moving-in-z mass function, where
+        the 30-node z-lerp is worst), enough to beat the truth by 99 nats and
+        drive the chains into that corner.  With both sides on the table --
+        or both on the direct path -- the truth wins, as it should.
+
+        An interpolated-but-consistent model is a slightly different
+        population model, not a broken one: whatever bias the z-lerp carries
+        is common to numerator and denominator and largely cancels in the
+        ratio.  Accuracy per point is the wrong criterion here; consistency
+        is the requirement.
 
     smooth_tail_edge: drop the hard zero of the power-law tail below
         m = mbhmax (see LogDNDM.smooth_tail_edge).  This makes the population
@@ -1104,6 +1118,8 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
 
     if tabulate_mass_function is None:
         tabulate_mass_function = True
+    if tabulate_selection is None:
+        tabulate_selection = tabulate_mass_function
 
     if tabulate_mass_function:
         m_axis = _LogAxis(_mass_table_lo, _mass_table_hi, int(n_mass_table))
@@ -1155,11 +1171,11 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                     + log_m1s_ + Jg - log_dN.log_norm - log_pdraw_)
 
         log_wts = _log_weights(log_m1s_det, log_qs, jnp.log1p(qs), log_dls, log_pdraw)
-        if ld._z_dependent:
-            # Selection stays on the direct path: log_mu_sel is multiplied by
-            # nobs in the selection factor, so the table's z-lerp bias there
-            # would be amplified ~nobs-fold (see the tabulate_mass_function
-            # docstring).  ~5% of the points, so this costs little.
+        if not tabulate_selection:
+            # Diagnostic / benchmarking only.  Evaluating the selection set on
+            # a different density from the event samples breaks the ratio the
+            # hierarchical likelihood is built on and is exploitable by the
+            # sampler -- see the tabulate_selection docstring.
             log1p_zs_sel, J_sel = cosmo.z_and_log_jacobian(log_dls_sel)
             opz_sel = jnp.exp(log1p_zs_sel)
             log_sel_wts = (
