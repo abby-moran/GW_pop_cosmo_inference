@@ -436,8 +436,17 @@ def test_tabulated_path_zdep(nobs=400, nsamp=300, nsel=40000):
     # are ~9e-3 apart in mpisn -- an FD step of 3e-3 straddles them and
     # produces garbage (verified: FD swings 81 -> 69 -> 30 -> 41 over
     # eps = 1e-3..3e-2, identically for the direct path, so it is model
-    # structure, not the table).  AD differentiates the actual branch and is
-    # the trustworthy side there.
+    # structure, not the table).
+    #
+    # What this checks is IMPLEMENTATION self-consistency only: that AD
+    # returns the derivative of the potential actually evaluated (a tiny-eps
+    # FD measures the same n_z=30 surface, ripples included).  It says
+    # nothing about closeness to the z-continuum gradient -- at this
+    # adversarial point (mpisndot=3) the n_z=30 value is dominated by a grid
+    # ripple and is ~3x the n_z->inf answer (d/dmpisn ~ 93 here vs ~29
+    # converged; see notes/2026-08-08-tabulated-selection-consistency.md).
+    # That costs HMC efficiency, not correctness, and the ripple is
+    # negligible where the real data puts posterior mass.
     # tab2d (hard edge) is informational only: unlike the 1-D case, d/dh FD
     # is not a usable reference here -- an h step moves every sample across
     # the hard tail edge at 30 distinct mbhmax(z_i) positions, so the FD
@@ -533,11 +542,14 @@ def test_tabulated_selection_consistency(nobs=400, nsamp=300, nsel=40000):
             # Only the default is asserted, and only that the identity holds:
             # it is structural, so anything above float32 roundoff on a
             # 1.2e5-term logsumexp means the two paths have drifted apart.
-            # `selfactor` multiplies this residual by nobs, so the second
-            # column is the potential error it would cause at this nobs --
-            # at the production nobs=9000 it is 22x larger again.
+            # Threshold budgeted against production, where `selfactor`
+            # multiplies this residual by nobs = 9000: 1e-4 nats caps the
+            # permitted distortion at 0.9 nats of potential there, while the
+            # measured float32 roundoff of the identity is < 5e-6 nats
+            # (loglike and log_mu_sel are accumulated by different reduction
+            # orders), so the threshold keeps a ~20x margin above noise.
             if cl == "default":
-                ok = abs(d) < 1e-3
+                ok = abs(d) < 1e-4
                 if not ok:
                     FAIL.append(f"tabulated selection ({label}): identity broken, "
                                 f"residual {d:.5f} nats -> {abs(d) * nobs:.1f} nats "

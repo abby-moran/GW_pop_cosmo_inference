@@ -19,10 +19,14 @@ Three production-scale mock-O5 tests (9000 events, truth `mpisndot = 0`):
 went through the table, so those runs were consistent all along — which is
 exactly why only the evo runs failed.)
 
-The failure tracked freeing `mpisndot`, not freeing cosmology.  Convergence
-diagnostics were clean (r̂ ≈ 1, ESS in the hundreds, `min_neff` ≈ 7.5,
-`mc_var_loglike` ≈ 3.7 against a budget of 5): a real posterior mode against
-the walls, not a broken warmup or an MC-noise artifact.
+The failure tracked freeing `mpisndot`, not freeing cosmology.  The
+Monte-Carlo / importance-sampling diagnostics were healthy (`min_neff` ≈ 7.5,
+`mc_var_loglike` ≈ 3.7 against a budget of 5, `neff_sel` ≈ 1.3e5 against a
+3.6e4 hinge), so this was not an MC-noise artifact -- the chains were
+genuinely attracted to the walls.  MCMC convergence, however, was *not*
+clean: `runs/endO5_evo` has max r̂ = 1.83 (`mpisn`) with 14 divergences
+(the between-chain agreement reported for the both-free run just meant both
+of its chains found the same wall mode).
 
 The mode's tell is that *almost every* parameter sat on a prior boundary:
 `sigma` → 0.0501 (floor 0.05), `dmbhmax` → 0.508 (floor 0.5), `a` → −1.636
@@ -201,6 +205,19 @@ kinks are not contributing.  The n_z=30 gradient artifact appears only at
 data disfavours by 6.7 nats already at `mpisndot = +1`.  **n_z = 30 stays the
 production default.**
 
+**Posterior-wide check (2026-08-08, addressing review):** the profile scans
+above only probe fixed-parameter slices, so the `endO5_evo2` posterior was
+importance-reweighted from the n_z=30 model it was sampled with to n_z=60
+(all 3600 draws) and n_z=120 (every 4th draw), via
+`scripts/diag_nz_reweight.py`.  Result: the per-draw log-posterior
+differences have std 0.04 nats, the reweighting ESS is **99.8%** for both
+refinements, and every parameter's reweighted median moves by <= 0.004 of a
+posterior sigma.  At n_z=30 the z-discretization is statistically invisible
+across the entire posterior, not just on slices.  (Rerun the same command
+with `--nc ../runs/endO5_fullcosmo_evo2/... --config ... --prior
+../runs/priors/gwtc5_fullcosmo_evo.prior` once the both-free rerun lands to
+validate that posterior too.)
+
 Worth noting for the science: on the fixed model the `mpisndot` slice has an
 *interior* maximum near -0.6 (+3.4 nats over the truth) and falls back to
 +1.8 at the -2 floor.  There is no runaway to the wall any more.  The mild
@@ -250,6 +267,7 @@ Ad-hoc diagnostics used above, all in `scripts/` and all run from there:
 | `diag_evo.py` | potential + per-factor decomposition at truth vs. the failed mode, for split / consistent / direct, on the real run data; `--profile` adds the `mpisndot` scan |
 | `diag_nz.py` | tab-vs-direct potential and per-parameter gradients as n_z is refined (the O(dz^2) convergence table) |
 | `diag_nz_profile.py` | logpost profiles along `mpisndot` and `mpisn` at several n_z on the real data (the "n_z=30 is enough" evidence) |
+| `diag_nz_reweight.py` | importance-reweights a finished posterior from n_z=30 to n_z=60/120: reweighting ESS + per-parameter quantile shifts (the posterior-wide "n_z=30 is enough" evidence) |
 
 ## Lesson
 

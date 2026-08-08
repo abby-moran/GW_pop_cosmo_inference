@@ -1028,6 +1028,10 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         ratio.  Accuracy per point is the wrong criterion here; consistency
         is the requirement.
 
+        Setting this to False while tabulation is on emits a RuntimeWarning
+        at trace time; it exists only so diagnostics and benchmarks can
+        reproduce the broken configuration deliberately.
+
     smooth_tail_edge: drop the hard zero of the power-law tail below
         m = mbhmax (see LogDNDM.smooth_tail_edge).  This makes the population
         density continuous at the edge, which is what makes d/dmpisn and
@@ -1120,6 +1124,18 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         tabulate_mass_function = True
     if tabulate_selection is None:
         tabulate_selection = tabulate_mass_function
+    if tabulate_mass_function and not tabulate_selection:
+        # Trace-time warning (fires once per compile, not per step).
+        import warnings
+        warnings.warn(
+            "tabulate_selection=False with tabulate_mass_function on evaluates "
+            "the selection integral with a DIFFERENT density than the event "
+            "samples.  This is not a valid hierarchical likelihood and is "
+            "exploitable by the sampler (see "
+            "notes/2026-08-08-tabulated-selection-consistency.md).  "
+            "Diagnostics/benchmarking only -- never use for inference.",
+            stacklevel=2,
+        )
 
     if tabulate_mass_function:
         m_axis = _LogAxis(_mass_table_lo, _mass_table_hi, int(n_mass_table))
