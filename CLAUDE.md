@@ -24,6 +24,10 @@ This file keeps agent-facing guidance brief. Project overview, science backgroun
     `notes/2026-08-09-log-fpeak-parametrization.md`)
   - `Om = Omh2 / h^2` when the prior samples `Omh2` (default in
     `gwtc5_cosmo.prior`; do not also set `Om` in that prior)
+  - `mpisn = mpisn_ref - mpisndot * zpivot/(1+zpivot)` when the prior samples
+    `mpisn_ref` with a fixed `zpivot` (pivoted mass scale; use tightened
+    `mpisn_ref` bounds and keep `sigma`'s hard floor -- see
+    `notes/2026-08-09-pivot-reparam.md`)
 - Prefer sampling `Omh2 = Om*h^2` over `Om` whenever matter density is free:
   it is much less degenerate with `h`.
 - The low-mass Gaussian bump is for narrow features only: keep `msigma_low`

@@ -149,6 +149,13 @@ if __name__ == "__main__":
     # Sampling log_flow is deprecated in favor of log_fpeak.
     if "log_flow" in prior and "log_fpeak" not in prior:
         warn_log_flow_deprecated(context=prior_file_name)
+
+    # Reparameterized priors (e.g. mpisn_ref + zpivot; see
+    # notes/2026-08-09-pivot-reparam.md) sample different site names than the
+    # pop-config truths; map the truths into the prior's coordinates so
+    # init_to_value and the recentering baselines still start at the truth.
+    if truth_params and hasattr(intensity_models, "map_truths_to_prior_coords"):
+        truth_params = intensity_models.map_truths_to_prior_coords(truth_params, prior)
     
     try:
         with h5py.File(pe_file, "r") as f:

@@ -665,6 +665,130 @@ def test_nan_gradient_robustness():
                 FAIL.append("fast model failed to initialize on a dead event")
 
 
+def test_reparam_equivalence(nobs=400, nsamp=300, nsel=40000):
+    """Reparameterized sampling (log_h / log_sigma / log_mp_low /
+    log_mpisn_ref + zpivot) must hit the same likelihood as the canonical
+    parameterization at matched points.
+
+    The reparam coordinates are chosen first and the canonical values are
+    derived with the same float32 ops the model uses (jnp.exp, the pivot
+    subtraction), so every likelihood factor should agree to float32
+    round-off.  Prior densities of course differ; only likelihood factors
+    and derived deterministics are compared."""
+    print(f"\n=== 10. reparameterized sampling: matched-point likelihood ===")
+    data = make_synthetic_data(nobs, nsamp, nsel, seed=7)
+
+    base_prior = build_prior(False, "/tmp/equiv_prior_base.prior")
+
+    zpivot = 1.1
+    xpivot = zpivot / (1.0 + zpivot)
+    reparam_text = """log_h = TruncatedNormal(np.log(0.7), 0.29, low=np.log(0.4), high=np.log(1.2))
+Omh2 = TruncatedNormal(0.143, 0.05, low=0.02, high=0.4)
+w = -1
+a = TruncatedNormal(2.35, 2, low=-1.65, high=6.35)
+b = TruncatedNormal(1.9, 2, low=-2.1, high=5.9)
+c = TruncatedNormal(4, 2, low=0, high=8)
+log_mpisn_ref = TruncatedNormal(np.log(35.0), 0.145, low=np.log(20.0), high=np.log(50.0))
+dmbhmax = TruncatedNormal(3.0, 2.0, low=0.5, high=7.0)
+log_sigma = Normal(np.log(0.1), 1.0)
+beta = Normal(0, 2)
+log_fpl = Uniform(np.log(1e-2), np.log(2))
+lam = TruncatedNormal(2.7, 2.0, low=-1.3, high=6.7)
+dkappa = TruncatedNormal(2.9, 2.0, low=1, high=6.9)
+zp = TruncatedNormal(1.9, 1, low=0, high=3.9)
+log_mp_low = TruncatedNormal(np.log(9.0), 0.22, low=np.log(5.0), high=np.log(15.0))
+msigma_low = TruncatedNormal(4.0, 2.0, low=0.5, high=8.0)
+log_flow = Uniform(np.log(1e-3), np.log(2))
+mpisndot = Uniform(low=-2, high=8)
+zpivot = %s
+zmax = 6.5
+mbh_min = 3.0
+delta_m = 1.6
+""" % zpivot
+    with open("/tmp/equiv_prior_reparam.prior", "w") as f:
+        f.write(reparam_text)
+    from utils import get_priors_from_file
+    reparam_prior = get_priors_from_file("/tmp/equiv_prior_reparam.prior")
+
+    factor_sites = ("loglike", "selfactor", "neff_criteria", "neff_sel_criteria")
+    derived_sites = ("h", "sigma", "mp_low", "mpisn", "mbhmax", "Om", "kappa")
+
+    def trace_model(prior, subs):
+        model_args = (data["m1s_det"], data["qs"], data["dls"], data["log_pdraw"],
+                      data["m1s_det_sel"], data["qs_sel"], data["dls_sel"],
+                      data["pdraw_sel"], data["Ndraw"], prior)
+        with handlers.seed(rng_seed=0), handlers.substitute(data=subs):
+            return handlers.trace(fast.pop_cosmo_model).get_trace(
+                *model_args, use_low_bump=True)
+
+    for i, (mpisndot, dsig) in enumerate([(0.0, 0.0), (2.5, 0.4), (-1.0, -0.6)]):
+        # reparam point first; canonical values derived with the model's ops
+        rp = dict(
+            log_h=jnp.asarray(np.log(0.674)),
+            log_mpisn_ref=jnp.asarray(np.log(33.29 + 1.0 * i)),
+            log_sigma=jnp.asarray(np.log(0.09) + dsig),
+            log_mp_low=jnp.asarray(np.log(9.121)),
+            mpisndot=jnp.asarray(mpisndot),
+            Omh2=jnp.asarray(TRUTH["Omh2"]), a=jnp.asarray(TRUTH["a"]),
+            b=jnp.asarray(TRUTH["b"]), c=jnp.asarray(TRUTH["c"]),
+            dmbhmax=jnp.asarray(TRUTH["dmbhmax"]), beta=jnp.asarray(TRUTH["beta"]),
+            log_fpl=jnp.asarray(TRUTH["log_fpl"]), lam=jnp.asarray(TRUTH["lam"]),
+            dkappa=jnp.asarray(TRUTH["dkappa"]), zp=jnp.asarray(TRUTH["zp"]),
+            msigma_low=jnp.asarray(TRUTH["msigma_low"]),
+            log_flow=jnp.asarray(TRUTH["log_flow"]),
+            R_unit=jnp.asarray(0.0),
+        )
+        cp = dict(rp)
+        for name in ("log_h", "log_mpisn_ref", "log_sigma", "log_mp_low"):
+            del cp[name]
+        cp["h"] = jnp.exp(rp["log_h"])
+        cp["sigma"] = jnp.exp(rp["log_sigma"])
+        cp["mp_low"] = jnp.exp(rp["log_mp_low"])
+        cp["mpisn"] = jnp.exp(rp["log_mpisn_ref"]) - rp["mpisndot"] * xpivot
+
+        tr_base = trace_model(base_prior, cp)
+        tr_rep = trace_model(reparam_prior, rp)
+
+        for site in factor_sites:
+            a = np.asarray(tr_base[site]["fn"].log_factor)
+            b = np.asarray(tr_rep[site]["fn"].log_factor)
+            report(f"pt{i} (mpisndot={mpisndot}) factor {site}", a, b,
+                   rtol=1e-6, atol=1e-4)
+        for site in derived_sites:
+            a = np.asarray(tr_base[site]["value"] if site in tr_base
+                           else tr_base[site])
+            b = np.asarray(tr_rep[site]["value"])
+            report(f"pt{i} derived {site}", np.atleast_1d(a), np.atleast_1d(b),
+                   rtol=1e-6, atol=1e-6)
+
+    # And the reparam model must initialize with finite gradients wrt the
+    # *new* coordinates.
+    from numpyro.infer.util import initialize_model
+    from numpyro.infer import init_to_value
+    truth_rp = {k: v for k, v in dict(
+        log_h=np.log(0.674), log_mpisn_ref=np.log(33.29),
+        log_sigma=np.log(0.0539), log_mp_low=np.log(9.121), mpisndot=0.0,
+        Omh2=TRUTH["Omh2"], a=TRUTH["a"], b=TRUTH["b"], c=TRUTH["c"],
+        dmbhmax=TRUTH["dmbhmax"], beta=TRUTH["beta"], log_fpl=TRUTH["log_fpl"],
+        lam=TRUTH["lam"], dkappa=TRUTH["dkappa"], zp=TRUTH["zp"],
+        msigma_low=TRUTH["msigma_low"], log_flow=TRUTH["log_flow"],
+    ).items()}
+    model_args = (data["m1s_det"], data["qs"], data["dls"], data["log_pdraw"],
+                  data["m1s_det_sel"], data["qs_sel"], data["dls_sel"],
+                  data["pdraw_sel"], data["Ndraw"], reparam_prior)
+    mi = initialize_model(
+        jax.random.PRNGKey(0), fast.pop_cosmo_model, model_args=model_args,
+        model_kwargs=dict(use_low_bump=True), dynamic_args=False,
+        init_strategy=init_to_value(values={k: jnp.asarray(v)
+                                            for k, v in truth_rp.items()}),
+    )
+    v, g = jax.jit(jax.value_and_grad(mi.potential_fn))(mi.param_info.z)
+    bad = [k for k, x in g.items() if not np.isfinite(float(x))]
+    print(f"  reparam potential={float(v):+.6e}  non-finite grads: {bad or 'none'}")
+    if bad:
+        FAIL.append("reparam model has non-finite gradients at truth")
+
+
 if __name__ == "__main__":
     test_cosmology()
     test_pisn_grid()
@@ -677,6 +801,7 @@ if __name__ == "__main__":
     test_tabulated_selection_consistency()
     test_scatter_free_vjp()
     test_nan_gradient_robustness()
+    test_reparam_equivalence()
 
     print("\n" + "=" * 70)
     if FAIL:

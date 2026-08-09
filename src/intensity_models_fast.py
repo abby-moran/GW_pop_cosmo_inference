@@ -1147,10 +1147,48 @@ coords = {
 # site during the *inner* trace, so on a jit cache hit the sites disappear and
 # kappa / mbhmax / fpl / flow never appear in the MCMC output at all.
 def get_deterministic_parameters(sample, use_low_bump=True):
-    kappa = numpyro.deterministic('kappa', sample['lam'] + sample['dkappa'])
-    mbhmax = numpyro.deterministic('mbhmax', sample['mpisn'] + sample['dmbhmax'])
+    out = {}
 
-    out = dict(kappa=kappa, mbhmax=mbhmax)
+    # ---- optional reparameterizations (notes/model-suggestions.md) --------
+    # Log-space alternates for parameters whose degeneracies are
+    # multiplicative (the spectral-siren mass/(1+z(dL;h)) trade-off is a
+    # power law, i.e. linear in log space where a dense mass matrix can
+    # absorb it).  Each is installed only when the prior samples the log_*
+    # name and not the linear one, so existing prior files are unchanged.
+    if 'log_h' in sample and 'h' not in sample:
+        out['h'] = numpyro.deterministic('h', jnp.exp(sample['log_h']))
+    if 'log_sigma' in sample and 'sigma' not in sample:
+        out['sigma'] = numpyro.deterministic('sigma', jnp.exp(sample['log_sigma']))
+    if 'log_mp_low' in sample and 'mp_low' not in sample:
+        out['mp_low'] = numpyro.deterministic('mp_low', jnp.exp(sample['log_mp_low']))
+    h = out.get('h', sample.get('h'))
+
+    # Pivoted mass scale: the model's evolution is
+    #   mpisn(z) = mpisn + mpisndot * z/(1+z),
+    # with mpisn defined at z=0 while the data constrain the mass scale
+    # best near the bulk of detections.  Sampling the value at a pivot
+    # redshift z* (mpisn_ref, or log_mpisn_ref for the log-space variant)
+    # and deriving the z=0 value removes the built-in mpisn--mpisndot
+    # correlation.  zpivot must be a fixed number in the prior file.
+    if 'mpisn' not in sample and ('mpisn_ref' in sample or 'log_mpisn_ref' in sample):
+        if 'zpivot' not in sample:
+            raise KeyError("Sampling mpisn_ref/log_mpisn_ref requires a fixed "
+                           "zpivot in the prior file")
+        if 'log_mpisn_ref' in sample:
+            mpisn_ref = numpyro.deterministic(
+                'mpisn_ref', jnp.exp(sample['log_mpisn_ref']))
+        else:
+            mpisn_ref = sample['mpisn_ref']
+        xpivot = sample['zpivot'] / (1.0 + sample['zpivot'])
+        out['mpisn'] = numpyro.deterministic(
+            'mpisn', mpisn_ref - sample['mpisndot'] * xpivot)
+    elif 'log_mpisn' in sample and 'mpisn' not in sample:
+        out['mpisn'] = numpyro.deterministic('mpisn', jnp.exp(sample['log_mpisn']))
+    mpisn = out.get('mpisn', sample.get('mpisn'))
+    # -----------------------------------------------------------------------
+
+    out['kappa'] = numpyro.deterministic('kappa', sample['lam'] + sample['dkappa'])
+    out['mbhmax'] = numpyro.deterministic('mbhmax', mpisn + sample['dmbhmax'])
 
     # Default cosmology parameterization: sample Omh2 = Om*h^2 (less
     # degenerate with h than Om) and derive Om.  A prior that still samples
@@ -1158,7 +1196,7 @@ def get_deterministic_parameters(sample, use_low_bump=True):
     # is absent.
     if 'Omh2' in sample and 'Om' not in sample:
         out['Om'] = numpyro.deterministic(
-            'Om', sample['Omh2'] / jnp.square(sample['h'])
+            'Om', sample['Omh2'] / jnp.square(h)
         )
 
     if use_low_bump:
@@ -1195,6 +1233,28 @@ def get_deterministic_parameters(sample, use_low_bump=True):
         raise KeyError("Need one of logit_fpl, fpl, or log_fpl")
 
     return out
+
+
+def map_truths_to_prior_coords(truths, prior):
+    """Map canonical truth values (mpisn, h, sigma, mp_low, ...) into whatever
+    coordinates the prior file actually samples, so init_to_value and
+    recentering_baselines can start at the truth under a reparameterized
+    prior.  Inverse of the derivations in get_deterministic_parameters.
+    No-op for priors that sample the canonical names."""
+    tv = dict(truths)
+    if ('mpisn_ref' in prior or 'log_mpisn_ref' in prior) and 'mpisn' in tv:
+        zpivot = prior['zpivot']  # fixed float in the prior file
+        xpivot = zpivot / (1.0 + zpivot)
+        ref = tv['mpisn'] + tv.get('mpisndot', 0.0) * xpivot
+        if 'mpisn_ref' in prior:
+            tv['mpisn_ref'] = ref
+        else:
+            tv['log_mpisn_ref'] = jnp.log(ref)
+    for lin, log in (('h', 'log_h'), ('mpisn', 'log_mpisn'),
+                     ('sigma', 'log_sigma'), ('mp_low', 'log_mp_low')):
+        if log in prior and lin in tv:
+            tv[log] = jnp.log(tv[lin])
+    return tv
 
 
 def log_smooth_neff_boundary(values, criteria):
