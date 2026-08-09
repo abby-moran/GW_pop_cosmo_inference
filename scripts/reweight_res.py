@@ -14,6 +14,7 @@ import numpy as np
 import os.path as op
 import pandas as pd
 from weighting import get_pop_params
+from utils import warn_if_bump_too_broad
 import mock_observations
 from scipy.stats import norm, truncnorm
 import argparse
@@ -304,6 +305,9 @@ if __name__ == "__main__":
               f"{n_rows - n_total:,} draws will be left unread.  "
               f"Raise n_total (and chunk_size) to use the full pool.")
     population_parameters, cosmo = get_pop_params(pop_config_file)
+    if use_low_bump:
+        warn_if_bump_too_broad(population_parameters.get("msigma_low"),
+                               context=f"true population, {pop_file}")
 
     m1_grid  = grid["m1_grid"]
     q_grid   = grid["q_grid"]

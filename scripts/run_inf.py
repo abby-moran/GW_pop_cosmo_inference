@@ -18,7 +18,7 @@ sys.path.append('../src/')
 import intensity_models_fast as intensity_models
 import numpy as np
 import pandas as pd
-from utils import get_priors_from_file
+from utils import get_priors_from_file, warn_if_bump_too_broad
 import arviz as az
 import configparser
 import argparse
@@ -128,7 +128,17 @@ if __name__ == "__main__":
     #nchain = 1
     random_seed = 1652819403
     print("loading in prior file: ", prior)
+    prior_file_name = prior
     prior = get_priors_from_file(prior)
+
+    # A msigma_low prior that admits broad bumps makes the CO-IMF index `a`
+    # unidentifiable; a fixed float is checked the same way.
+    _msl = prior.get("msigma_low")
+    if _msl is not None:
+        _msl_high = _msl if isinstance(_msl, float) else getattr(_msl, "high", None)
+        if _msl_high is None:
+            _msl_high = getattr(getattr(_msl, "support", None), "upper_bound", None)
+        warn_if_bump_too_broad(_msl_high, context=f"prior upper bound, {prior_file_name}")
     
     try:
         with h5py.File(pe_file, "r") as f:

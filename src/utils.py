@@ -406,6 +406,39 @@ def get_priors_from_file(filename):
         prior[param] = func
     return prior
 
+
+# The low-mass Gaussian bump exists to capture narrow features that the
+# broken-power-law CO IMF cannot express.  Once its width approaches the
+# 6-20 Msun window -- the only region where the CO-IMF index `a` has any
+# identifiable leverage -- the bump degenerates into a second continuum and
+# `a` becomes prior-dominated (Fisher sigma(a) ~ 2.5 at width 4 vs ~ 0.3 at
+# width 2, for 9000 O5 events).  Keep true values and prior support at or
+# below this width.  See
+# notes/2026-08-09-low-mass-bump-width-identifiability.md.
+BUMP_MSIGMA_LOW_MAX = 2.5
+
+
+def warn_if_bump_too_broad(msigma_low, context):
+    """Warn when ``msigma_low`` (a true value, or a prior's upper support)
+    exceeds ``BUMP_MSIGMA_LOW_MAX``, above which the CO-IMF index `a` stops
+    being identifiable.  Returns True when the warning fired."""
+    try:
+        val = float(msigma_low)
+    except (TypeError, ValueError):
+        return False
+    if val <= BUMP_MSIGMA_LOW_MAX:
+        return False
+    print(
+        f"WARNING [{context}]: msigma_low reaches {val:g} Msun, above the "
+        f"{BUMP_MSIGMA_LOW_MAX:g} Msun identifiability limit.  The low-mass "
+        "Gaussian bump is designed for narrow features; at this width it "
+        "spans the 6-20 Msun window that provides the only leverage on the "
+        "CO-IMF index `a`, making `a` prior-dominated (do not report it as "
+        "measured).  See "
+        "notes/2026-08-09-low-mass-bump-width-identifiability.md."
+    )
+    return True
+
 def sample_parameters_from_dict(prior, grid_params=None):
     """
     grid_params: optional dict of {param_name: jnp.array of grid values}

@@ -23,6 +23,10 @@ This file keeps agent-facing guidance brief. Project overview, science backgroun
     `gwtc5_cosmo.prior`; do not also set `Om` in that prior)
 - Prefer sampling `Omh2 = Om*h^2` over `Om` whenever matter density is free:
   it is much less degenerate with `h`.
+- The low-mass Gaussian bump is for narrow features only: keep `msigma_low`
+  (true values and prior support) ≤ ~2.5 Msun (`utils.BUMP_MSIGMA_LOW_MAX`),
+  else the CO-IMF index `a` becomes prior-dominated. See
+  `notes/2026-08-09-low-mass-bump-width-identifiability.md`.
 
 ## Data Format
 
