@@ -56,16 +56,39 @@ misspecified and the excess is absorbed by `a`, biasing it.  We accept this
 because the bump is *defined* as a narrow-feature component; a broad "bump"
 is a second continuum and makes `a` meaningless instead of merely biased.
 
+## Confirmation runs (resolved 2026-08-09)
+
+Both width-matched runs (identical prior `gwtc5_massonly.prior`, nobs = 9000,
+n_pe = 4000, 2×1800 draws, cosmology and `mpisndot` pinned, tree depth 7,
+diagonal mass; only the true `msigma_low` differs) finished and confirm the
+prediction:
+
+| | `endO5_broadbump` (true width 4) | `endO5_narrowbump` (true width 2) |
+|---|---|---|
+| `a` (truth −0.9426) | −0.07 ± 0.55, prior-pulled | **−1.03 ± 0.37, truth inside 1σ** |
+| `msigma_low` | 3.44 ± 0.49 | 1.95 ± 0.07 |
+| `mp_low` (truth 9.121) | 9.76 ± 0.45 | 9.27 ± 0.06 |
+| wall time | 38 min (~1.6 it/s) | 38 min (~1.6 it/s) |
+
+The broad-bump run reproduces the evo3 `a` failure with cosmology pinned, so
+the failure is the mass model, not the free cosmology; the narrow-bump run
+recovers `a` at close to the predicted σ ≈ 0.3.  Guard diagnostics are
+comparable (`mc_var_loglike` 3.5 vs 4.0, `neff_sel` well above the hinge in
+both), so the difference is attributable to the bump width.
+
+*Unrelated caveat:* the narrow-bump chains did not converge in the
+`mpisn`/`dmbhmax` split (ESS 4–5, r̂ 1.35–1.52; both chains agree on
+`mbhmax` ≈ 37.1 and disagree only on the split), a known flat direction that
+mixed fine in the broad-bump run.  It does not touch the `a` block
+(r̂ = 1.003) but means that run's PISN-peak numbers should not be quoted.
+
 ## Status of the prior files
 
 `runs/priors/gwtc5_*.prior` still carry
-`msigma_low = TruncatedNormal(4.0, 2.0, low=0.5, high=8.0)`.  They are
-deliberately **not yet capped**: the two in-flight confirmation runs
-(`runs/endO5_broadbump`, Slurm 6791077; `runs/endO5_narrowbump`, Slurm
-6791202) read `gwtc5_massonly.prior`, and editing it under a restartable job
-would alter the very experiment that tests the σ(a)-vs-width prediction.
-Once those runs land (expected: `a` prior-dominated at true width 4,
-recovered with σ ≈ 0.3 at width 2), change the prior line to e.g.
+`msigma_low = TruncatedNormal(4.0, 2.0, low=0.5, high=8.0)`.  With the
+confirmation in hand the cap can be applied; note the in-flight evo4 run
+(Slurm 6790523) still reads `gwtc5_fullcosmo_evo.prior`, so either wait for
+it or leave that one file untouched.  Change the prior line to e.g.
 
 ```text
 msigma_low = TruncatedNormal(1.5, 1.0, low=0.5, high=2.5)

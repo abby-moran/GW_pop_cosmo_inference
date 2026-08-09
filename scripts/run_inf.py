@@ -18,7 +18,7 @@ sys.path.append('../src/')
 import intensity_models_fast as intensity_models
 import numpy as np
 import pandas as pd
-from utils import get_priors_from_file, warn_if_bump_too_broad
+from utils import get_priors_from_file, warn_if_bump_too_broad, warn_log_flow_deprecated
 import arviz as az
 import configparser
 import argparse
@@ -72,6 +72,12 @@ def load_true_vals(filename):
     else:
         tv['log_flow']=np.log(1e-5)
     tv['log_fpl'] = jnp.log(tv['fpl'])
+
+    # Peak-height parametrization of the bump amplitude (log_fpeak priors).
+    # init_to_value and recentering_baselines look up sites by name and ignore
+    # extra keys, so deriving both amplitude coordinates is always safe.
+    if 'msigma_low' in tv:
+        tv['log_fpeak'] = tv['log_flow'] - jnp.log(tv['msigma_low'])
 
     # Default prior samples Omh2 = Om*h^2; pop_configs still store Om.
     if 'Omh2' not in tv and 'Om' in tv and 'h' in tv:
@@ -139,6 +145,10 @@ if __name__ == "__main__":
         if _msl_high is None:
             _msl_high = getattr(getattr(_msl, "support", None), "upper_bound", None)
         warn_if_bump_too_broad(_msl_high, context=f"prior upper bound, {prior_file_name}")
+
+    # Sampling log_flow is deprecated in favor of log_fpeak.
+    if "log_flow" in prior and "log_fpeak" not in prior:
+        warn_log_flow_deprecated(context=prior_file_name)
     
     try:
         with h5py.File(pe_file, "r") as f:

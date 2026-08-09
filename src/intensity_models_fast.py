@@ -1167,9 +1167,23 @@ def get_deterministic_parameters(sample, use_low_bump=True):
         elif 'flow' in sample:
             out['flow'] = sample['flow']
         elif 'log_flow' in sample:
+            # Prefer log_fpeak; print once (utils holds the flag).
+            from utils import warn_log_flow_deprecated
+            warn_log_flow_deprecated()
             out['flow'] = numpyro.deterministic('flow', jnp.exp(sample['log_flow']))
+        elif 'log_fpeak' in sample:
+            # Peak-height parametrization: log_fpeak = log_flow - log(msigma_low).
+            # The data constrain the bump's peak density (~ flow/msigma_low), not
+            # its integrated weight, so sampling log_fpeak removes the built-in
+            # amplitude-width correlation (rho ~ +0.9 -> ~ +0.5).  log_flow is
+            # recorded as a deterministic for comparison with older chains.  See
+            # notes/2026-08-09-log-fpeak-parametrization.md.
+            log_flow = numpyro.deterministic(
+                'log_flow', sample['log_fpeak'] + jnp.log(sample['msigma_low'])
+            )
+            out['flow'] = numpyro.deterministic('flow', jnp.exp(log_flow))
         else:
-            raise KeyError("Need one of logit_flow, flow, or log_flow")
+            raise KeyError("Need one of logit_flow, flow, log_flow, or log_fpeak")
 
     if 'logit_fpl' in sample:
         out['fpl'] = numpyro.deterministic('fpl', jax.nn.sigmoid(sample['logit_fpl']))

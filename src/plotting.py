@@ -305,6 +305,8 @@ def load_true_vals(filename):
     tv['dmbhmax'] = tv['mbhmax'] - tv['mpisn']
     if 'flow' in tv:
         tv['log_flow'] = float(np.log(tv['flow']))
+        if 'msigma_low' in tv:
+            tv['log_fpeak'] = float(tv['log_flow'] - np.log(tv['msigma_low']))
     tv['log_fpl'] = float(np.log(tv['fpl']))
     if 'Omh2' not in tv and 'Om' in tv and 'h' in tv:
         tv['Omh2'] = tv['Om'] * tv['h'] ** 2

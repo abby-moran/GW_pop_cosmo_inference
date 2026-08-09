@@ -439,6 +439,28 @@ def warn_if_bump_too_broad(msigma_low, context):
     )
     return True
 
+
+_LOG_FLOW_DEPRECATION_WARNED = False
+
+
+def warn_log_flow_deprecated(context=None):
+    """Print once: sampling ``log_flow`` is deprecated in favor of ``log_fpeak``.
+
+    Returns True the first time the warning fires, False thereafter.
+    """
+    global _LOG_FLOW_DEPRECATION_WARNED
+    if _LOG_FLOW_DEPRECATION_WARNED:
+        return False
+    _LOG_FLOW_DEPRECATION_WARNED = True
+    where = f" [{context}]" if context else ""
+    print(
+        f"WARNING{where}: prior samples log_flow (integrated bump weight).  "
+        "Prefer log_fpeak = log_flow - log(msigma_low) (peak-height "
+        "parametrization); see notes/2026-08-09-log-fpeak-parametrization.md "
+        "and runs/priors/gwtc5_massonly_fpeak.prior."
+    )
+    return True
+
 def sample_parameters_from_dict(prior, grid_params=None):
     """
     grid_params: optional dict of {param_name: jnp.array of grid values}
