@@ -42,6 +42,24 @@ python run_inference_evolution.py
 
 This reads `pe_samples.h5` and `selection_samples.h5` from the working directory and writes an ArviZ netCDF output such as `test_cluster.nc`. Mock data lives in `src/data/`.
 
+### Diagnosing A Finished Run
+
+```bash
+cd scripts/
+uv run python diagnose_run.py --run <run_dir_name>
+```
+
+`diagnose_run.py` reads a run's saved `.nc` and reports sampler convergence
+(r-hat, ESS, divergences, tree-depth saturation, BFMI, per-chain `lp`),
+Monte-Carlo adequacy in both directions (`mc_var_loglike` against the
+`mc_variance_budget`, `neff_sel` against the model's `4*nobs` hinge), and
+identifiability problems (prior-dominated marginals, parameters pinned to
+prior walls, degeneracy directions, the low-mass-bump vs CO-IMF-slope
+pathology). It ends with a prioritized list of config keys to change, emits
+the same findings as JSON with `--json`, and exits non-zero only on
+FAIL-level findings. See `notes/2026-08-09-run-diagnostics.md` for the
+thresholds and their provenance.
+
 ### Notebooks
 
 - `reproduce/Run_Inference.ipynb` contains the end-to-end inference workflow.
