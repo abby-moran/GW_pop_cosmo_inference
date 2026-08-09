@@ -244,6 +244,326 @@ def _gather_lerp2d(table, im0, fm, iz0, fz, nm, nz, R=None):
 
 
 # ---------------------------------------------------------------------------
+# Scatter-free VJPs for parameter-dependent table lookups.
+#
+# The replica trick above only *mitigates* the backward scatter; at
+# production scale (36M PE points + 1.7M selection) the twelve scatter-adds
+# per gradient (m1/m2 mass-table bilinears and the fused dL-table lerp, for
+# both the PE and selection sets) still cost 20.4 of 36.4 ms on an A6000.
+#
+# But d(potential)/d(table) never needs to be materialized: every one of
+# these tables is built from a handful of scalar parameters theta (the mass
+# table from ~11 population parameters, the dL table from the cosmology and
+# rate-evolution parameters).  With tangent tables U_k = dT/dtheta_k --
+# computed once per likelihood call by jax.linearize, i.e. k extra table
+# builds of ~250k entries each, amortized over ~38M lookups -- the chain
+# rule through the table values collapses to
+#
+#     theta_bar_k = sum_points  g * lerp(U_k, x)
+#
+# which is a gather plus a reduction, with no atomics at all.  The lookup
+# position's cotangent (the dense chain through log1p(z), the mass axis,
+# ...) is returned as usual; only the table-value path is rerouted, so the
+# gradient is mathematically identical to ordinary reverse mode (up to
+# float summation order).
+#
+# The fractional indices are passed as single floats (cell + frac) and
+# decomposed inside, which matches _LogAxis.cell_and_frac bit-for-bit; the
+# z axis's linear-in-z weights are formed outside and recombined as
+# iz0 + fz, exact in float32 for nz <= 2^19.
+# ---------------------------------------------------------------------------
+def _linearize_table(build, params):
+    """(T, U, theta) for ``T = build(*params)``.
+
+    ``params`` may mix traced scalars and compile-time constants.  ``theta``
+    is the stacked vector of the traced ones and ``U = dT/dtheta`` has shape
+    ``T.shape + (k,)``.  With no traced parameters, returns (T, None, None)
+    (the table is a constant and plain lookups have no backward scatter).
+    """
+    traced_idx = [i for i, p in enumerate(params) if isinstance(p, jax.core.Tracer)]
+    if not traced_idx:
+        return build(*params), None, None
+    dtype = jnp.result_type(*([params[i] for i in traced_idx] + [jnp.float32]))
+    theta = jnp.stack([jnp.asarray(params[i], dtype) for i in traced_idx])
+
+    def f(th):
+        full = list(params)
+        for j, i in enumerate(traced_idx):
+            full[i] = th[j]
+        return build(*full)
+
+    T, jvp = jax.linearize(f, theta)
+    # Channel-first layout (k, *T.shape): each tangent channel is then a
+    # contiguous table, which is what the Pallas backward kernels gather from
+    # (the 2-D mass tangents need no transpose at all).
+    U = jax.vmap(jvp)(jnp.eye(len(traced_idx), dtype=dtype))
+    return T, U, theta
+
+
+@jax.custom_vjp
+def _sf_lookup1d(theta, T, U, t):
+    """Multi-channel linear interpolation ``T[t]`` with the table-value
+    gradient routed through ``theta`` (see the section comment).
+
+    T: (n, C); U: (k, n, C); t: fractional index, any shape, already clipped
+    to [0, n-1].  Returns (t.shape..., C).
+    """
+    del theta, U
+    n = T.shape[0]
+    i0 = jnp.floor(t).astype(jnp.int32)
+    i1 = jnp.minimum(i0 + 1, n - 1)
+    a = T[i0]
+    return a + (t - i0)[..., None] * (T[i1] - a)
+
+
+def _sf_lookup1d_fwd(theta, T, U, t):
+    return _sf_lookup1d(theta, T, U, t), (theta, T, U, t)
+
+
+# The theta_bar accumulation is the performance-critical piece of the
+# scatter-free backward.  Pure-XLA formulations either materialize the
+# per-point tangent rows -- (npoints, k) floats per lookup, +12 GiB peak and
+# a net slowdown at production scale -- or re-stream the point data k times
+# (one reduction per parameter).  On GPU a small Pallas kernel does it the
+# right way: each program loads a block of points once, keeps the k partial
+# sums in registers, and gathers tangent-table rows that stay hot in L2
+# (the tables are ~1 MB per channel).  Measured on clustered
+# production-like indices (36M points, k=11): 4.6 ms vs 21 ms for the
+# replicated scatter it replaces.  On CPU (tests, tiny data) a chunked
+# lax.scan fallback keeps the intermediates small.
+# Points per Pallas program.  1024 measured fastest on an A6000 (8.5 ms for
+# the two 36M-point mass-lookup reductions vs 8.9 at 2048 and 10.6 at 4096);
+# a fused two-lookup kernel was tried and loses at every block size
+# (register pressure), so the m1/m2 lookups stay separate calls.
+_SF_BLOCK = 1024
+_SF_CHUNK = 1 << 21
+
+
+def _use_pallas():
+    try:
+        return jax.default_backend() == "gpu"
+    except Exception:
+        return False
+
+
+def _sf_theta_kernel_2d(tm_ref, tz_ref, g_ref, U_ref, o_ref, *, npts, K, NZ, NM):
+    # theta_bar for one bilinear lookup: each program streams a block of
+    # points once, holds the K partial sums in registers, and gathers
+    # tangent-table rows that stay hot in L2.
+    from jax.experimental import pallas as pl
+    NT = NZ * NM
+    pid = pl.program_id(0)
+    offs = pid * _SF_BLOCK + jnp.arange(_SF_BLOCK, dtype=jnp.int32)
+    mask = offs < npts
+    tm_v = pl.load(tm_ref, (offs,), mask=mask, other=0.0)
+    tz_v = pl.load(tz_ref, (offs,), mask=mask, other=0.0)
+    g_v = pl.load(g_ref, (offs,), mask=mask, other=0.0)
+    im0 = jnp.floor(tm_v).astype(jnp.int32)
+    im1 = jnp.minimum(im0 + 1, NM - 1)
+    iz0 = jnp.floor(tz_v).astype(jnp.int32)
+    iz1 = jnp.minimum(iz0 + 1, NZ - 1)
+    fm = tm_v - im0
+    fz = tz_v - iz0
+    b00 = iz0 * NM + im0
+    b10 = iz0 * NM + im1
+    b01 = iz1 * NM + im0
+    b11 = iz1 * NM + im1
+    w00 = (1 - fm) * (1 - fz) * g_v
+    w10 = fm * (1 - fz) * g_v
+    w01 = (1 - fm) * fz * g_v
+    w11 = fm * fz * g_v
+    for k in range(K):
+        base = k * NT
+        s = (jnp.sum(w00 * pl.load(U_ref, (base + b00,)))
+             + jnp.sum(w10 * pl.load(U_ref, (base + b10,)))
+             + jnp.sum(w01 * pl.load(U_ref, (base + b01,)))
+             + jnp.sum(w11 * pl.load(U_ref, (base + b11,))))
+        pl.store(o_ref, (pid, k), s)
+
+
+def _sf_theta_kernel_1d(t_ref, g_ref, U_ref, o_ref, *, npts, K, C, N):
+    # g_ref holds the cotangent in its natural (npts, C) row-major layout;
+    # element (p, c) sits at p*C + c, so no transpose copy is needed.
+    from jax.experimental import pallas as pl
+    pid = pl.program_id(0)
+    offs = pid * _SF_BLOCK + jnp.arange(_SF_BLOCK, dtype=jnp.int32)
+    mask = offs < npts
+    t_v = pl.load(t_ref, (offs,), mask=mask, other=0.0)
+    i0 = jnp.floor(t_v).astype(jnp.int32)
+    i1 = jnp.minimum(i0 + 1, N - 1)
+    frac = t_v - i0
+    gs = [pl.load(g_ref, (offs * C + c,), mask=mask, other=0.0) for c in range(C)]
+    for k in range(K):
+        s = 0.0
+        for c in range(C):
+            base = (c * K + k) * N
+            u0 = pl.load(U_ref, (base + i0,))
+            u1 = pl.load(U_ref, (base + i1,))
+            s += jnp.sum(gs[c] * (u0 + frac * (u1 - u0)))
+        pl.store(o_ref, (pid, k), s)
+
+
+def _pallas_theta_bar_2d(tm, tz, g, U):
+    """theta_bar for a 2-D lookup: U (k, nz, nm), point arrays any shape."""
+    from jax.experimental import pallas as pl
+    k, nz, nm = U.shape
+    tm_f, tz_f, g_f = tm.reshape(-1), tz.reshape(-1), g.reshape(-1)
+    npts = tz_f.shape[0]
+    nprog = (npts + _SF_BLOCK - 1) // _SF_BLOCK
+    out = pl.pallas_call(
+        partial(_sf_theta_kernel_2d, npts=npts, K=k, NZ=nz, NM=nm),
+        grid=(nprog,),
+        in_specs=[pl.BlockSpec(memory_space=pl.ANY)] * 4,
+        out_specs=pl.BlockSpec(memory_space=pl.ANY),
+        out_shape=jax.ShapeDtypeStruct((nprog, k), jnp.float32),
+    )(tm_f, tz_f, g_f, U.reshape(-1))
+    return jnp.sum(out, axis=0)
+
+
+def _pallas_theta_bar_1d(t, g, U):
+    """theta_bar for the multi-channel 1-D lookup: U (k, n, C), g (..., C)."""
+    from jax.experimental import pallas as pl
+    k, n, C = U.shape
+    Uf = jnp.transpose(U, (2, 0, 1)).reshape(-1)        # (C, k, n) flat; tiny
+    t_f = t.reshape(-1)
+    npts = t_f.shape[0]
+    g_f = g.reshape(-1)                                 # (npts, C) row-major flat
+    nprog = (npts + _SF_BLOCK - 1) // _SF_BLOCK
+    out = pl.pallas_call(
+        partial(_sf_theta_kernel_1d, npts=npts, K=k, C=C, N=n),
+        grid=(nprog,),
+        in_specs=[pl.BlockSpec(memory_space=pl.ANY)] * 3,
+        out_specs=pl.BlockSpec(memory_space=pl.ANY),
+        out_shape=jax.ShapeDtypeStruct((nprog, k), jnp.float32),
+    )(t_f, g_f, Uf)
+    return jnp.sum(out, axis=0)
+
+
+def _chunked_sum(arrays, k, partial_fn):
+    """CPU fallback: sum_chunks partial_fn(*chunk_slices) -> (k,), scanning
+    over the flattened leading axis of ``arrays`` in _SF_CHUNK-sized chunks.
+    The arrays are zero-padded; ``partial_fn`` must map zero inputs to zero
+    contributions (true here: the cotangent is among the inputs)."""
+    flat = [a.reshape((-1,) + a.shape[a.ndim - extra:]) if extra else a.reshape(-1)
+            for a, extra in arrays]
+    npts = flat[0].shape[0]
+    if npts <= _SF_CHUNK:
+        return partial_fn(*flat)
+    npad = (-npts) % _SF_CHUNK
+    nchunk = (npts + npad) // _SF_CHUNK
+    xs = []
+    for a in flat:
+        pad = [(0, npad)] + [(0, 0)] * (a.ndim - 1)
+        xs.append(jnp.pad(a, pad).reshape((nchunk, _SF_CHUNK) + a.shape[1:]))
+
+    def body(carry, chunk):
+        return carry + partial_fn(*chunk), None
+
+    total, _ = lax.scan(body, jnp.zeros((k,), flat[0].dtype), tuple(xs))
+    return total
+
+
+def _sf_lookup1d_bwd(res, g):
+    theta, T, U, t = res
+    n = T.shape[0]
+    i0 = jnp.floor(t).astype(jnp.int32)
+    i1 = jnp.minimum(i0 + 1, n - 1)
+    t_bar = jnp.sum(g * (T[i1] - T[i0]), axis=-1)
+
+    k = U.shape[0]
+
+    if _use_pallas():
+        theta_bar = _pallas_theta_bar_1d(t, g, U)
+    else:
+        def partial_fn(g_c, t_c):
+            j0 = jnp.floor(t_c).astype(jnp.int32)
+            j1 = jnp.minimum(j0 + 1, n - 1)
+            v = U[:, j0] + (t_c - j0)[None, :, None] * (U[:, j1] - U[:, j0])
+            return jnp.einsum('pc,kpc->k', g_c, v)
+
+        theta_bar = _chunked_sum([(g, 1), (t, 0)], k, partial_fn)
+    return (theta_bar.astype(theta.dtype), jnp.zeros_like(T), jnp.zeros_like(U),
+            t_bar)
+
+
+_sf_lookup1d.defvjp(_sf_lookup1d_fwd, _sf_lookup1d_bwd)
+
+
+def _bilinear2d(T, tm, tz):
+    nz, nm = T.shape
+    im0 = jnp.floor(tm).astype(jnp.int32)
+    im1 = jnp.minimum(im0 + 1, nm - 1)
+    iz0 = jnp.floor(tz).astype(jnp.int32)
+    iz1 = jnp.minimum(iz0 + 1, nz - 1)
+    fm = tm - im0
+    fz = tz - iz0
+    flat = T.reshape(-1)
+    b0 = iz0 * nm
+    b1 = iz1 * nm
+    g00 = flat[b0 + im0]
+    g10 = flat[b0 + im1]
+    g01 = flat[b1 + im0]
+    g11 = flat[b1 + im1]
+    lo = g00 + fm * (g10 - g00)
+    hi = g01 + fm * (g11 - g01)
+    val = lo + fz * (hi - lo)
+    dm = (1.0 - fz) * (g10 - g00) + fz * (g11 - g01)
+    dz = hi - lo
+    return val, dm, dz
+
+
+@jax.custom_vjp
+def _sf_lookup2d(theta, T, U, tm, tz):
+    """Bilinear interpolation ``T[tz, tm]`` (single channel) with the
+    table-value gradient routed through ``theta``.
+
+    T: (nz, nm); U: (k, nz, nm); tm, tz: fractional indices, clipped.
+    """
+    del theta, U
+    val, _, _ = _bilinear2d(T, tm, tz)
+    return val
+
+
+def _sf_lookup2d_fwd(theta, T, U, tm, tz):
+    return _sf_lookup2d(theta, T, U, tm, tz), (theta, T, U, tm, tz)
+
+
+def _sf_lookup2d_bwd(res, g):
+    theta, T, U, tm, tz = res
+    nz, nm = T.shape
+    _, dm, dz = _bilinear2d(T, tm, tz)
+    tm_bar = g * dm
+    tz_bar = g * dz
+
+    k = U.shape[0]
+
+    if _use_pallas():
+        theta_bar = _pallas_theta_bar_2d(tm, tz, g, U)
+    else:
+        Uf = U.reshape(k, -1)
+
+        def partial_fn(g_c, tm_c, tz_c):
+            jz0 = jnp.floor(tz_c).astype(jnp.int32)
+            jz1 = jnp.minimum(jz0 + 1, nz - 1)
+            fz = (tz_c - jz0)[None, :]
+            c0 = jz0 * nm
+            c1 = jz1 * nm
+            jm0 = jnp.floor(tm_c).astype(jnp.int32)
+            jm1 = jnp.minimum(jm0 + 1, nm - 1)
+            fm = (tm_c - jm0)[None, :]
+            vlo = Uf[:, c0 + jm0] + fm * (Uf[:, c0 + jm1] - Uf[:, c0 + jm0])
+            vhi = Uf[:, c1 + jm0] + fm * (Uf[:, c1 + jm1] - Uf[:, c1 + jm0])
+            return (vlo + fz * (vhi - vlo)) @ g_c            # (k,)
+
+        theta_bar = _chunked_sum([(g, 0), (tm, 0), (tz, 0)], k, partial_fn)
+    return (theta_bar.astype(theta.dtype), jnp.zeros_like(T), jnp.zeros_like(U),
+            tm_bar, tz_bar)
+
+
+_sf_lookup2d.defvjp(_sf_lookup2d_fwd, _sf_lookup2d_bwd)
+
+
+# ---------------------------------------------------------------------------
 # Shape functions.  These are deliberately NOT @jax.jit-decorated: under an
 # outer jit each decorator becomes a pjit call boundary that XLA has to inline
 # and which can block fusion with the surrounding elementwise ops.
@@ -929,7 +1249,8 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                     store_per_event=False, neff_criterion=None,
                     neff_penalty="mc_variance", mc_variance_budget=5.0,
                     tabulate_mass_function=None, n_mass_table=8192,
-                    tabulate_selection=None, smooth_tail_edge=True,
+                    tabulate_selection=None, scatter_free_tables=None,
+                    smooth_tail_edge=True,
                     loglike_ref=None, log_mu_sel_ref=None,
                     log_pdraw_sel_scale=0.0):
     """
@@ -1031,6 +1352,22 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         Setting this to False while tabulation is on emits a RuntimeWarning
         at trace time; it exists only so diagnostics and benchmarks can
         reproduce the broken configuration deliberately.
+
+    scatter_free_tables: route the gradient of the tabulated lookups through
+        per-parameter tangent tables (custom VJP) instead of scattering
+        d(potential)/d(table) back into the table.  The values and the
+        gradient are mathematically identical (up to float summation order);
+        what changes is that the backward pass becomes Pallas
+        gather-and-reduce kernels instead of tens of millions of atomic
+        adds.  Measured at production scale (9000x4000 PE + 1.7M selection,
+        mpisndot and cosmology free, A6000): gradient 37.5 -> 30.3 ms per
+        leapfrog step and peak memory 9.4 -> 8.9 GiB (the scatter kernels
+        go from 20.4 ms to 0.4 ms; ~10 ms of tangent-gather kernels and
+        table-build work come back).  Costs one jax.linearize of each table
+        build (~k extra ~250k-entry table builds per likelihood call,
+        k ~ 11).  Only affects the tabulated path; on CPU a chunked-scan
+        fallback is used.  Default (None): enabled.  Set False to restore
+        the replicated-scatter backward (A/B benchmarking).
 
     smooth_tail_edge: drop the hard zero of the power-law tail below
         m = mbhmax (see LogDNDM.smooth_tail_edge).  This makes the population
@@ -1140,25 +1477,68 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     if tabulate_mass_function:
         m_axis = _LogAxis(_mass_table_lo, _mass_table_hi, int(n_mass_table))
         n_tab = m_axis.n
+        if scatter_free_tables is None:
+            scatter_free_tables = True
 
         # -inf table entries (below mbh_min, above zmax) are floored so a lerp
         # between two dead nodes cannot form inf - inf = NaN.
-        if ld._z_dependent:
-            # 2-D table (n_z, n_mass): the mass function's z dependence is
-            # entirely through mpisn(z), tabulated on the PISN grid's own z
-            # nodes so the PISN component is exact there (no nested
-            # interpolation error on top of the direct path's own z interp).
-            f_tab = jnp.maximum(
-                ld(m_axis.grid[None, :], ld.z_array[:, None]), _LOG_ZERO_FLOOR
-            )
-        else:
-            f_tab = jnp.maximum(ld(m_axis.grid, 0.0), _LOG_ZERO_FLOOR)
-        log1p_tab = cosmo._log1p_z_table
-        Jg_tab = jnp.maximum(
-            cosmo._J_table + 2 * jnp.log(cosmo.dH)
-            + log_dN.log_dndv.from_log1p(log1p_tab),
-            _LOG_ZERO_FLOOR,
+        #
+        # 2-D table (n_z, n_mass) when the mass function is z dependent: its
+        # z dependence is entirely through mpisn(z), tabulated on the PISN
+        # grid's own z nodes so the PISN component is exact there (no nested
+        # interpolation error on top of the direct path's own z interp).
+        def _build_mass_table(a_, b_, c_, mpisn_, mpisndot_, mbhmax_, sigma_,
+                              fpl_, mp_low_, msigma_low_, flow_, mbh_min_,
+                              delta_m_, zmax_, mco_min_, mco_floor_):
+            ld_ = LogDNDM(a_, b_, c_, mpisn_, mpisndot_, mbhmax_, sigma_, fpl_,
+                          mp_low=mp_low_, msigma_low=msigma_low_, flow=flow_,
+                          mco_min=mco_min_, mco_floor=mco_floor_,
+                          mbh_min=mbh_min_, delta_m=delta_m_, zmax=zmax_,
+                          mref=ld.mref, zref=ld.zref, n_z=ld.n_z,
+                          use_low_bump=ld.use_low_bump,
+                          smooth_tail_edge=ld.smooth_tail_edge)
+            if ld_._z_dependent:
+                out = ld_(m_axis.grid[None, :], ld_.z_array[:, None])
+            else:
+                out = ld_(m_axis.grid, 0.0)
+            return jnp.maximum(out, _LOG_ZERO_FLOOR)
+
+        _mass_params = (
+            sample['a'], sample['b'], sample['c'], sample['mpisn'],
+            sample['mpisndot'], sample['mbhmax'], sample['sigma'],
+            sample['fpl'], sample.get('mp_low', 1.0),
+            sample.get('msigma_low', 1.0), sample.get('flow', 0.0),
+            sample['mbh_min'], sample['delta_m'], sample['zmax'],
+            sample.get('mco_min', 4.0), sample.get('mco_floor', 6.0),
         )
+
+        # Fused dL table, channels [log1p(z), J + log dN/dV].  Dimensionless:
+        # h enters only through the index u = log(dL/dH) and the scalar
+        # +2 log dH added after the lookup, so it stays out of the table's
+        # parameter vector.
+        def _build_dl_table(Om_, w_, lam_, kappa_, zp_, zmax_):
+            cos_ = FlatwCDMCosmology(1.0, Om_, w_, zmax=zmax_,
+                                     ninterp=cosmo.ninterp, ndl=cosmo.ndl,
+                                     zmin_table=cosmo.zmin_table)
+            dndv_ = LogDNDV(lam_, kappa_, zp_, zref=log_dN.log_dndv.zref,
+                            zmax=zmax_)
+            log1p_t = cos_._log1p_z_table
+            Jg_t = jnp.maximum(cos_._J_table + dndv_.from_log1p(log1p_t),
+                               _LOG_ZERO_FLOOR)
+            return jnp.stack([log1p_t, Jg_t], axis=-1)
+
+        _dl_params = (sample['Om'], sample['w'], sample['lam'],
+                      sample['kappa'], sample['zp'], sample['zmax'])
+
+        if scatter_free_tables:
+            f_tab, f_U, f_theta = _linearize_table(_build_mass_table, _mass_params)
+            dl_tab, dl_U, dl_theta = _linearize_table(_build_dl_table, _dl_params)
+        else:
+            f_tab = _build_mass_table(*_mass_params)
+            dl_tab = _build_dl_table(*_dl_params)
+            f_U = f_theta = dl_U = dl_theta = None
+
+        _two_log_dH = 2 * jnp.log(cosmo.dH)
         log_pair_ref = jnp.log(log_dN.mref * (1 + log_dN.qref))
 
         def _log_weights(log_m1s_det_, log_qs_, log1p_qs_, log_dls_, log_pdraw_):
@@ -1166,8 +1546,13 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                 (log_dls_ - jnp.log(cosmo.dH) - cosmo._u_lo) * cosmo._inv_du,
                 0.0, cosmo._n_dl - 1.0,
             )
-            log1p_zs_ = _lerp1d(log1p_tab, t, cosmo._n_dl)
-            Jg = _lerp1d(Jg_tab, t, cosmo._n_dl)
+            if dl_theta is not None:
+                both = _sf_lookup1d(dl_theta, dl_tab, dl_U, t)
+                log1p_zs_ = both[..., 0]
+                Jg = both[..., 1] + _two_log_dH
+            else:
+                log1p_zs_ = _lerp1d(dl_tab[:, 0], t, cosmo._n_dl)
+                Jg = _lerp1d(dl_tab[:, 1], t, cosmo._n_dl) + _two_log_dH
             log_m1s_ = log_m1s_det_ - log1p_zs_
             if ld._z_dependent:
                 # One z cell shared by the m1 and m2 lookups, computed with
@@ -1175,14 +1560,31 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                 # uses (see _Log1pAxis.cell_and_frac for why that matters).
                 zs_ = jnp.expm1(log1p_zs_)
                 iz0, fz = ld.z_axis.cell_and_frac(zs_, log1p_zs_)
-                im1, fm1 = m_axis.cell_and_frac(log_m1s_)
-                im2, fm2 = m_axis.cell_and_frac(log_m1s_ + log_qs_)
-                f1 = _gather_lerp2d(f_tab, im1, fm1, iz0, fz, n_tab, ld._n_z)
-                f2 = _gather_lerp2d(f_tab, im2, fm2, iz0, fz, n_tab, ld._n_z)
+                tm1 = m_axis.frac_index(log_m1s_)
+                tm2 = m_axis.frac_index(log_m1s_ + log_qs_)
+                if f_theta is not None:
+                    tz = iz0.astype(tm1.dtype) + fz
+                    fsum = (_sf_lookup2d(f_theta, f_tab, f_U, tm1, tz)
+                            + _sf_lookup2d(f_theta, f_tab, f_U, tm2, tz))
+                else:
+                    im1 = jnp.floor(tm1).astype(jnp.int32)
+                    im2 = jnp.floor(tm2).astype(jnp.int32)
+                    fsum = (_gather_lerp2d(f_tab, im1, tm1 - im1, iz0, fz,
+                                           n_tab, ld._n_z)
+                            + _gather_lerp2d(f_tab, im2, tm2 - im2, iz0, fz,
+                                             n_tab, ld._n_z))
             else:
-                f1 = _lerp1d(f_tab, m_axis.frac_index(log_m1s_), n_tab)
-                f2 = _lerp1d(f_tab, m_axis.frac_index(log_m1s_ + log_qs_), n_tab)
-            return (f1 + f2
+                tm1 = m_axis.frac_index(log_m1s_)
+                tm2 = m_axis.frac_index(log_m1s_ + log_qs_)
+                if f_theta is not None:
+                    fsum = (_sf_lookup1d(f_theta, f_tab[:, None],
+                                         f_U[:, :, None], tm1)[..., 0]
+                            + _sf_lookup1d(f_theta, f_tab[:, None],
+                                           f_U[:, :, None], tm2)[..., 0])
+                else:
+                    fsum = (_lerp1d(f_tab, tm1, n_tab)
+                            + _lerp1d(f_tab, tm2, n_tab))
+            return (fsum
                     + log_dN.beta * (log_m1s_ + log1p_qs_ - log_pair_ref)
                     + log_m1s_ + Jg - log_dN.log_norm - log_pdraw_)
 

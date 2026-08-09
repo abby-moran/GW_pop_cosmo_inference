@@ -45,3 +45,4 @@ This file keeps agent-facing guidance brief. Project overview, science backgroun
   bias the sampler will climb. See
   `notes/2026-08-08-tabulated-selection-consistency.md`.
 - `intensity_models_fast.pop_cosmo_model` accepts float32 recentering baselines (`loglike_ref`, `log_mu_sel_ref`, `log_pdraw_sel_scale`, from `recentering_baselines()`); they shift the potential by a constant only, and `R` / recorded `log_mu_sel` stay in the physical convention. See `notes/2026-08-07-float32-recentering.md`.
+- Tabulated lookups use a scatter-free custom VJP (tangent tables + Pallas kernels, GPU only; `scatter_free_tables` kwarg, default on). Values are bit-identical, gradients identical up to float32 summation order. See `notes/2026-08-09-scatter-free-vjp.md`.

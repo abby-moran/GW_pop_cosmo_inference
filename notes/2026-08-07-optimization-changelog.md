@@ -175,3 +175,19 @@ prior walls (`runs/endO5_evo`, `runs/endO5_fullcosmo_evo`).  Fixed by
 `tabulate_selection` (default: follow `tabulate_mass_function`).  Full
 account, measurements and regression guard:
 `2026-08-08-tabulated-selection-consistency.md`.
+
+## Addendum (2026-08-09): scatter-free table-lookup gradients
+
+The backward pass of every tabulated lookup was a replicated scatter-add;
+at production scale those were 20.4 of 36.4 ms of gradient device time (and
+the replica mitigation was saturated -- more replicas made it slower).  The
+table-value gradient is now routed through per-parameter tangent tables
+(`jax.linearize` of the table build once per likelihood call) contracted in
+custom Pallas gather-and-reduce kernels.  Values bit-identical, gradients
+identical up to float32 summation order (test 9 of
+`test_fast_equivalence.py`).  Gradient step, A6000, synthetic production
+scale: 37.5 -> 30.3 ms with mpisndot free, 20.1 -> 12.8 ms with mpisndot
+pinned to 0; peak memory down ~0.5 / 1.8 GiB.  Knob:
+`scatter_free_tables` (default on), `bench_model.py --no_sfvjp` for A/B.
+New dependency: `absl-py` (pallas import).  Full account:
+`2026-08-09-scatter-free-vjp.md`.

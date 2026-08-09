@@ -25,6 +25,9 @@ dependencies = [
     "matplotlib",
     "seaborn",
     "corner",
+    # jax.experimental.pallas (the scatter-free table-lookup VJP kernels in
+    # src/intensity_models_fast.py) imports absl.logging at module load.
+    "absl-py",
     # I/O and utilities
     "h5py",
     "tqdm",

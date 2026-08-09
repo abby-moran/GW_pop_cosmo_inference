@@ -568,6 +568,67 @@ def test_tabulated_selection_consistency(nobs=400, nsamp=300, nsel=40000):
                     "split from the default -- the regression guard has gone blind")
 
 
+def test_scatter_free_vjp(nobs=400, nsamp=300, nsel=40000):
+    """The scatter-free (tangent-table custom-VJP) backward must reproduce the
+    ordinary reverse-mode gradient of the tabulated path.
+
+    The two compute the same chain rule by different routes -- ordinary AD
+    scatters d(potential)/d(table) into the table and contracts it with
+    dT/dtheta, the custom VJP contracts per-point tangent-table lookups
+    directly -- so they agree up to float32 summation order.  Checked for
+    both table layouts (1-D log-m when mpisndot is pinned to 0, 2-D
+    z x log-m when it is sampled) at the truth and at an edge-heavy point.
+    The potential itself must be bit-identical: the forward pass is the same
+    arithmetic either way."""
+    print(f"\n=== 9. scatter-free VJP == replicated-scatter gradient (nobs={nobs}) ===")
+    from numpyro.infer.util import initialize_model
+    from numpyro.infer import init_to_value
+
+    data = make_synthetic_data(nobs, nsamp, nsel, seed=11)
+    edge = dict(TRUTH, sigma=0.06, mpisn=44.0, dmbhmax=0.8, c=6.5, h=0.9,
+                mpisndot=2.5)
+
+    for mpisndot_free in (False, True):
+        prior = build_prior(not mpisndot_free, "/tmp/equiv_prior6.prior")
+        model_args = (data["m1s_det"], data["qs"], data["dls"], data["log_pdraw"],
+                      data["m1s_det_sel"], data["qs_sel"], data["dls_sel"],
+                      data["pdraw_sel"], data["Ndraw"], prior)
+        for label, point in (("truth", TRUTH), ("edge", edge)):
+            vals = {k: jnp.asarray(v) for k, v in point.items()
+                    if k in prior and not isinstance(prior[k], float)}
+            out = {}
+            for sf in (True, False):
+                mi = initialize_model(
+                    jax.random.PRNGKey(0), fast.pop_cosmo_model,
+                    model_args=model_args,
+                    model_kwargs=dict(use_low_bump=True, scatter_free_tables=sf),
+                    dynamic_args=False, init_strategy=init_to_value(values=vals),
+                )
+                z0 = mi.param_info.z
+                v = float(jax.jit(mi.potential_fn)(z0))
+                g = jax.jit(jax.grad(mi.potential_fn))(z0)
+                out[sf] = (v, {k: float(x) for k, x in g.items()})
+            v1, g1 = out[True]
+            v0, g0 = out[False]
+            tag = f"zdep={mpisndot_free} {label}"
+            if v1 != v0:
+                FAIL.append(f"scatter-free VJP ({tag}): potential differs "
+                            f"({v1!r} vs {v0!r})")
+            gv1 = np.array([g1[k] for k in sorted(g1)])
+            gv0 = np.array([g0[k] for k in sorted(g0)])
+            # Normalize by the gradient's overall scale, not per-component:
+            # a component passing through zero has no meaningful relative
+            # error of its own.
+            scale = max(np.abs(gv0).max(), 1e-10)
+            worst = np.abs(gv1 - gv0).max() / scale
+            ok = worst < 5e-4
+            if not ok:
+                FAIL.append(f"scatter-free VJP ({tag}): gradients differ, "
+                            f"worst {worst:.2e} of gradient scale")
+            print(f"  [{'OK ' if ok else 'FAIL'}] {tag:22s} dV={v1 - v0:+.1e}  "
+                  f"worst |dg|/scale = {worst:.2e}")
+
+
 def test_nan_gradient_robustness():
     print("\n=== 5. gradient safety when an event has zero total weight ===")
     nobs, nsamp = 64, 32
@@ -614,6 +675,7 @@ if __name__ == "__main__":
     test_tabulated_path()
     test_tabulated_path_zdep()
     test_tabulated_selection_consistency()
+    test_scatter_free_vjp()
     test_nan_gradient_robustness()
 
     print("\n" + "=" * 70)

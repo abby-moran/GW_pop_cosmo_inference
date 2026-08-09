@@ -262,6 +262,10 @@ def main():
     p.add_argument("--no_tab", action="store_true",
                    help="force tabulate_mass_function=False (A/B the direct "
                         "per-sample evaluation against the tabulated default)")
+    p.add_argument("--no_sfvjp", action="store_true",
+                   help="scatter_free_tables=False: restore the replicated-"
+                        "scatter backward for the table lookups (A/B the "
+                        "Pallas scatter-free VJP against it)")
     p.add_argument("--mcmc", type=int, default=0,
                    help="if >0, also run this many warmup+sample steps of real NUTS")
     p.add_argument("--out", default=None)
@@ -300,6 +304,8 @@ def main():
         model_kwargs["tabulate_mass_function"] = False
     if args.split:
         model_kwargs["tabulate_selection"] = False
+    if args.no_sfvjp:
+        model_kwargs["scatter_free_tables"] = False
 
     truth = {k: jnp.asarray(v) for k, v in TRUTH.items() if k in prior
              and not isinstance(prior[k], float)}

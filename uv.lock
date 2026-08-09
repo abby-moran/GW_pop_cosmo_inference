@@ -620,6 +620,7 @@ name = "gw-pop-cosmo-inference"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "absl-py" },
     { name = "arviz" },
     { name = "astropy" },
     { name = "bilby" },
@@ -651,6 +652,7 @@ jimgw = [
 
 [package.metadata]
 requires-dist = [
+    { name = "absl-py" },
     { name = "arviz" },
     { name = "astropy" },
     { name = "bilby" },
