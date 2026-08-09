@@ -88,6 +88,17 @@ pe_file = os.path.join(run_dir, cfg["run"]["output_file_PE"])
 sel_file = os.path.join(run_dir, cfg["run"]["output_sel_file"])
 ndevice=nchain
 use_low_bump=run.getboolean("use_low_bump", fallback=True)
+# Sampler geometry knobs.  Defaults reproduce every run up to 2026-08-08.
+# max_tree_depth=7 saturates in 99% of iterations in all runs measured so far;
+# that is tolerable when the posterior is well conditioned (endO5_evo2 reached
+# min ESS 118) and fatal when it is not (endO5_fullcosmo_evo2, with both
+# cosmology and mpisndot free, reached min ESS 2.8 and r-hat 1.9).  dense_mass
+# lets NUTS learn the h / Omh2 / mpisn / mpisndot covariance instead of paying
+# for it in trajectory length; it costs nothing per leapfrog step at 19
+# parameters.
+max_tree_depth=run.getint("max_tree_depth", fallback=7)
+dense_mass=run.getboolean("dense_mass", fallback=False)
+target_accept_prob=run.getfloat("target_accept_prob", fallback=0.8)
 
 truth_params = {}
 truth_file_name = cfg["run"].get("pop_config_file")
@@ -191,7 +202,11 @@ if __name__ == "__main__":
               f"dropped potential offset = {baselines['offset']:.6e} "
               f"(add to the centered 'loglike' factor for absolute values)")
 
-    kernel = NUTS(intensity_models.pop_cosmo_model, init_strategy=init_strategy, max_tree_depth=7)#, target_accept_prob=0.95)
+    print(f"NUTS: max_tree_depth={max_tree_depth} dense_mass={dense_mass} "
+          f"target_accept_prob={target_accept_prob}")
+    kernel = NUTS(intensity_models.pop_cosmo_model, init_strategy=init_strategy,
+                  max_tree_depth=max_tree_depth, dense_mass=dense_mass,
+                  target_accept_prob=target_accept_prob)
     mcmc = MCMC(kernel, num_warmup=nmcmc, num_samples=nmcmc, num_chains=nchain,
                 chain_method="parallel", progress_bar=True)
     # NUTS only collects ('z', 'diverging') by default, so a finished run used to
