@@ -94,8 +94,27 @@ backward passes (~11 ms), which are plain bandwidth-bound streams over the
 (e.g. saving the forward's exp(w - max) for the backward).
 
 At depth-10 trees (the `fullcosmo_evo3` sampler settings) the 2-D-table saving
-is ~2 hours per 1000 leapfrog-saturated samples on the A6000; H100 numbers to
-be re-measured when the cluster is free.
+is ~2 hours per 1000 leapfrog-saturated samples on the A6000.
+
+### Full-scale H100 validation (`endO5_fullcosmo_evo3` vs `evo4`)
+
+Apples-to-apples NUTS runs on 2×H100 (same prior, `endO5_val2` data, 9000
+events, `n_pe=4000`, `max_tree_depth=10`, `dense_mass=True`, 2×1800 draws):
+
+| run | code path | Slurm wall | s/it (chain finishes) |
+|---|---|---|---|
+| `endO5_fullcosmo_evo3` (job 6786762) | replicated-scatter VJP | 16.97 h | ~16.5–17.0 |
+| `endO5_fullcosmo_evo4` (job 6790523) | scatter-free VJP (`local/opt-pass-3`) | 15.72 h | ~15.6–15.7 |
+
+Wall speedup ~**8%** (~1.25 h).  That is smaller than the A6000 grad-only
+bench (1.24×) because leapfrog time also includes dense-mass ops, host
+overhead, etc.; the launch script's ~13–14 h projection was optimistic.
+
+Mixing / geometry unchanged: both runs still saturate depth 10 in 100% of
+iterations with unusable min bulk ESS (evo3 ~15, evo4 ~5 — chain noise, not
+a VJP regression).  Expected: the potential is bit-identical and gradients
+agree to ~2×10⁻⁵, so the posterior surface is the same.  Scatter-free VJP
+is a real wall-time cut with correct gradients; it does not fix conditioning.
 
 ## Correctness
 

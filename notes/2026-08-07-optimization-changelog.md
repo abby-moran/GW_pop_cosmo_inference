@@ -189,5 +189,6 @@ identical up to float32 summation order (test 9 of
 scale: 37.5 -> 30.3 ms with mpisndot free, 20.1 -> 12.8 ms with mpisndot
 pinned to 0; peak memory down ~0.5 / 1.8 GiB.  Knob:
 `scatter_free_tables` (default on), `bench_model.py --no_sfvjp` for A/B.
-New dependency: `absl-py` (pallas import).  Full account:
-`2026-08-09-scatter-free-vjp.md`.
+New dependency: `absl-py` (pallas import).  Full-scale H100 check:
+`endO5_fullcosmo_evo4` vs `evo3` saved ~8% wall (~15.7 vs 17.0 h) with no
+mixing change — see `2026-08-09-scatter-free-vjp.md`.
