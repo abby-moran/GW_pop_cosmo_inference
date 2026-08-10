@@ -75,6 +75,24 @@ weak; the campaign has paid for both.
   the required `nsel` -- the 17,624-rows-against-a-36,000-hinge case from
   `notes/2026-08-09-low-mass-bump-width-identifiability.md` that got a run
   cancelled before it started.
+- **Narrow-feature selection tilt.**  The hinge only bounds the *global*
+  normalization error of `log_mu_sel`.  For a sharp mass feature (`sigma`,
+  `msigma_low`, `dmbhmax`) the R-marginalized likelihood is a ~99.5%
+  cancellation between the PE numerator and the selection term, so a few
+  nats of *parameter-dependent* selection MC noise can fake or erase the
+  measurement even when the hinge has headroom.  For each free narrow-
+  feature parameter the script rebuilds selection weights at the
+  posterior 16% and 84% (other params at truth, else posterior median),
+  bootstraps `sd(Δ log_mu_sel)`, and forms `noise = nobs * sd`.  That is
+  compared to the posterior `lp` std (the log-likelihood variation the
+  sampler actually explored):
+  `noise/lp_std >= 1.0` FAIL, `>= 0.5` WARN; absolute floors
+  `noise >= 5` FAIL, `>= 2` WARN (same scale as `mc_variance_budget`).
+  Calibrated on `endO5_fullcosmo_evo7`: hinge 2.0x OK, but `sigma` noise
+  ~3 nats wiped the truth preference and left a prior-dominated
+  marginal with truth at quantile 0.001.  Requires the run's selection
+  HDF5 on disk; otherwise degrades to *"insufficient information"* and
+  names that the hinge alone missed the evo7 failure.
 
 `nobs` comes from `evt_end - evt_start`; without a config the `4*nobs` check
 is skipped explicitly.
@@ -153,6 +171,8 @@ matched in all seven cases.
 | `endO5_fullcosmo_evo3` | depth 10 + dense, ESS 14.6, r-hat 1.12, still 100% capped | FAIL; *"conditioning problem, not a trajectory-length problem"*, top recommendation is reparameterization |
 | `endO5_evo` | broken by the split-density bug: 14 div, r-hat 1.83, walls everywhere | FAIL on prior boundaries (6 params pinned) naming the tabulated-selection note; correctly declines to blame `max_tree_depth` (only 25.8% at cap) |
 | `endO5_val2` | predates `extra_fields` | runs clean; depth / energy / `lp` / acceptance all reported as insufficient information |
+| `endO5_fullcosmo_evo7` | selection-tilt noise on `sigma` (~3 nats); truth at q=0.001; hinge 2.0x OK | FAIL on narrow-feature selection tilt (`sigma` noise/lp_std 0.91, `dmbhmax` 2.7); recommends growing nsel / not quoting the worst offender |
+| `endO5_fullcosmo_evo6` | same prior/sampler, val2 selection; `sigma` recovers | `sigma` tilt OK (noise 1.1 nats, ratio 0.38) -- the evo7 failure mode is absent; `msigma_low`/`dmbhmax` still FAIL because the broad-bump posterior spans a noisy selection range (already caught by the bump-identifiability check) |
 
 Two runs come out WARN rather than OK because they were fit against the
 `msigma_low = 4` truth, so `a` should not be reported from them; that is the
@@ -166,7 +186,16 @@ all OK/NOTE.  `endO5_fullcosmo` (not in the table) lands FAIL at min bulk ESS
 
 - **`nsel` is not in the `.nc`.**  The "selection set too small" case can only
   be inferred from `neff_sel < 4*nobs` plus `neff_sel <= nsel`; the script
-  states the required `nsel` rather than asserting the actual one.
+  states the required `nsel` rather than asserting the actual one.  The
+  narrow-feature tilt check needs the selection HDF5 itself; without it the
+  report falls back to the hinge and explicitly warns that the hinge alone
+  missed `endO5_fullcosmo_evo7`.
+- **Selection-tilt noise is measured across the posterior's own 16-84%
+  range.**  A wrong-but-tight mode (narrow posterior sitting far from truth)
+  understates the noise; a prior-dominated wanderer overstates it.  Both
+  failure modes still surface elsewhere (truth recovery, prior-dominated
+  ratio), and the evo7 case -- a broad, prior-pulled `sigma` -- is exactly
+  what the check is built to catch.
 - **"Step size fell while ESS stayed low" is not evaluable from one file** --
   there is no baseline within a single run.  The equivalent decision is
   encoded from the config instead (depth already raised and/or `dense_mass`

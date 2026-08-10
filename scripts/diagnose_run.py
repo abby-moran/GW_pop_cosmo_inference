@@ -52,6 +52,24 @@ Checks and thresholds (all sourced, not invented)
                     guard permanently active: the 17,624-rows-vs-36,000-hinge
                     case from notes/2026-08-09-low-mass-bump-width-
                     identifiability.md is unusable by construction.
+   sel-tilt noise   for narrow mass-feature parameters (sigma, msigma_low,
+                    dmbhmax): bootstrap nobs*sd(Delta log_mu_sel) across the
+                    parameter's posterior 16-84% range, with other params held
+                    at truth (else posterior median).  The Farr hinge only
+                    controls the global normalization error; a sharp feature's
+                    identity is a ~99.5% cancellation between the PE numerator
+                    and the selection term, so a few nats of parameter-
+                    dependent selection MC noise can fake or erase the
+                    measurement (endO5_fullcosmo_evo7: hinge 2.0x OK, but
+                    nobs*sd ~ 3 nats on sigma wiped the truth preference).
+                    Compare that noise to the posterior lp std (the log-
+                    likelihood variation the sampler actually saw):
+                    noise/lp_std >=1.0 FAIL | >=0.5 WARN | noise>=2 nats NOTE.
+                    Absolute floors (same scale as mc_variance_budget):
+                    noise>=5 FAIL | >=2 WARN.
+                    Requires the run's selection HDF5 + a pop_config (or a
+                    complete posterior) so it can rebuild selection weights;
+                    otherwise degrades to "insufficient information".
 
 3. Sampler geometry -> max_tree_depth / dense_mass / target_accept_prob / nmcmc
    Recommendations are conditioned on the joint evidence (saturation fraction,
@@ -115,6 +133,20 @@ SEVERITY_ORDER = {"OK": 0, "NOTE": 1, "WARN": 2, "FAIL": 3}
 MC_VARIANCE_BUDGET = 5.0        # intensity_models_fast.pop_cosmo_model default
 NEFF_SEL_MULTIPLE = 4           # the model's 4*nobs selection hinge
 BUMP_RATIO_MAX = 0.3            # msigma_low/mp_low, mass-model-audit.md sec 9.4
+
+# Narrow mass-feature parameters whose identity is a PE/selection cancellation.
+# The Farr neff_sel hinge does not protect these; see the sel-tilt check.
+NARROW_FEATURE_PARAMS = ("sigma", "msigma_low", "dmbhmax")
+SEL_TILT_NBOOT = 400
+SEL_TILT_SEED = 7
+# Absolute noise floors (nats on the R-marginalized loglike).  Same scale as
+# mc_variance_budget: sqrt(5)~2.2 is the PE-side MC sd the guard tolerates.
+SEL_TILT_NOISE_FAIL = 5.0
+SEL_TILT_NOISE_WARN = 2.0
+# Noise relative to the posterior's lp std (the loglike variation the sampler
+# actually explored).  >=1 means selection MC alone can reshape the posterior.
+SEL_TILT_RATIO_FAIL = 1.0
+SEL_TILT_RATIO_WARN = 0.5
 
 # Deterministic sites that are diagnostics, not model parameters.
 DIAGNOSTIC_SITES = {
@@ -253,6 +285,7 @@ def read_ini(path):
     out = dict(
         prior=run.get("prior"),
         pop_config_file=run.get("pop_config_file"),
+        output_sel_file=run.get("output_sel_file"),
         nmcmc=_int("nmcmc"), nchain=_int("nchain"),
         n_pe=_int("n_pe"),
         evt_start=_int("evt_start", 0), evt_end=_int("evt_end"),
@@ -260,6 +293,7 @@ def read_ini(path):
         max_tree_depth_explicit=run.get("max_tree_depth") is not None,
         dense_mass=run.getboolean("dense_mass", fallback=False),
         target_accept_prob=run.getfloat("target_accept_prob", fallback=0.8),
+        use_low_bump=run.getboolean("use_low_bump", fallback=True),
     )
     if out["pop_config_file"] and str(out["pop_config_file"]).lower() == "none":
         out["pop_config_file"] = None
@@ -720,6 +754,304 @@ def section_monte_carlo(rep, idata, nobs, ini):
         d.append("Comfortable margin on the Farr-2019 criterion.")
     rep.add("monte-carlo", sev, "selection-integral n_eff", d,
             dict(neff_sel_min=lo, neff_sel_median=med, hinge=hinge, ratio=ratio))
+
+
+# ---------------------------------------------------------------- selection tilt
+
+def _posterior_median_dict(post):
+    """Median of every scalar posterior variable, as plain Python floats.
+
+    Grid-valued deterministics (hz, mdNdmdVdt_..., shape (chain, draw, n_grid))
+    are skipped; only sites whose trailing shape is () or (1,) are kept.
+    """
+    out = {}
+    for name in post.data_vars:
+        v = np.asarray(post[name].values)
+        # Expect at least (chain, draw); anything with extra size > 1 is a grid.
+        if v.ndim > 2 and int(np.prod(v.shape[2:])) > 1:
+            continue
+        flat = v.ravel()
+        if flat.size == 0:
+            continue
+        out[name] = float(np.median(flat))
+    return out
+
+
+def _canonical_pop_sample(base, post_med):
+    """Build the canonical dict expected by build_population_model / FlatwCDM.
+
+    Prefer ``base`` (truths) for every key it has; fill gaps from posterior
+    medians; derive the usual transformed names.
+    """
+    s = dict(base or {})
+    for k, v in (post_med or {}).items():
+        s.setdefault(k, v)
+
+    # Pivot reparam: mpisn_ref at zpivot -> mpisn at z=0.
+    if "mpisn" not in s and "mpisn_ref" in s:
+        zp = float(s.get("zpivot", 0.75))
+        mdot = float(s.get("mpisndot", 0.0))
+        s["mpisn"] = float(s["mpisn_ref"]) - mdot * zp / (1.0 + zp)
+    if "mbhmax" not in s and "mpisn" in s and "dmbhmax" in s:
+        s["mbhmax"] = float(s["mpisn"]) + float(s["dmbhmax"])
+    if "kappa" not in s and "lam" in s and "dkappa" in s:
+        s["kappa"] = float(s["lam"]) + float(s["dkappa"])
+    if "fpl" not in s and "log_fpl" in s:
+        s["fpl"] = float(np.exp(s["log_fpl"]))
+    if "flow" not in s:
+        if "log_flow" in s:
+            s["flow"] = float(np.exp(s["log_flow"]))
+        elif "log_fpeak" in s and "msigma_low" in s:
+            s["flow"] = float(np.exp(s["log_fpeak"]) * s["msigma_low"])
+    if "Om" not in s and "Omh2" in s and "h" in s:
+        s["Om"] = float(s["Omh2"]) / float(s["h"]) ** 2
+    return s
+
+
+def _sel_log_wts(sel, sample, use_low_bump=True):
+    """Per-row selection log-weights matching pop_cosmo_model's selection path."""
+    import jax.numpy as jnp
+    import intensity_models_fast as im
+
+    required = ("a", "b", "c", "mpisn", "mpisndot", "mbhmax", "sigma", "fpl",
+                "beta", "lam", "kappa", "zp", "zmax", "mbh_min", "delta_m",
+                "h", "Om", "w")
+    missing = [k for k in required if k not in sample]
+    if missing:
+        raise KeyError("incomplete population sample, missing %s" % missing)
+
+    pop = {k: sample[k] for k in (
+        "a", "b", "c", "mpisn", "mpisndot", "mbhmax", "sigma", "fpl", "beta",
+        "lam", "kappa", "zp", "zmax", "mbh_min", "delta_m")}
+    pop["mp_low"] = sample.get("mp_low", 1.0)
+    pop["msigma_low"] = sample.get("msigma_low", 1.0)
+    pop["flow"] = sample.get("flow", 0.0)
+    pop["mco_min"] = sample.get("mco_min", 4.0)
+    pop["mco_floor"] = sample.get("mco_floor", 6.0)
+
+    cosmo = im.FlatwCDMCosmology(sample["h"], sample["Om"], sample["w"],
+                                 zmax=sample["zmax"])
+    log_dN = im.build_population_model(pop, use_low_bump=use_low_bump, n_z=30,
+                                       smooth_tail_edge=True)
+    m1d = jnp.asarray(sel["m1d"].values)
+    q = jnp.asarray(sel["q"].values)
+    dl = jnp.asarray(sel["dl"].values)
+    log1p_z, J = cosmo.z_and_log_jacobian(jnp.log(dl))
+    opz = jnp.exp(log1p_z)
+    m1 = m1d / opz
+    lw = (log_dN.call_from_logs(m1, jnp.log(m1), jnp.log(q), opz - 1.0, log1p_z)
+          - jnp.log(jnp.asarray(sel["pdraw_sel"].values)) + J)
+    return np.asarray(lw, dtype=np.float64)
+
+
+def _bootstrap_delta_log_mu(lw_lo, lw_hi, nboot=SEL_TILT_NBOOT, seed=SEL_TILT_SEED):
+    """Delta log_mu_sel = logsumexp(lw_hi) - logsumexp(lw_lo), plus bootstrap sd."""
+    m = max(float(np.max(lw_lo)), float(np.max(lw_hi)))
+    w_lo = np.exp(lw_lo - m)
+    w_hi = np.exp(lw_hi - m)
+    delta = float(np.log(w_hi.sum()) - np.log(w_lo.sum()))
+    n = w_lo.size
+    rng = np.random.default_rng(seed)
+    boots = np.empty(nboot)
+    for i in range(nboot):
+        idx = rng.integers(0, n, n)
+        boots[i] = np.log(w_hi[idx].sum()) - np.log(w_lo[idx].sum())
+    return delta, float(boots.std(ddof=1))
+
+
+def resolve_sel_file(run_dir, ini):
+    """Locate the selection HDF5 used by the run, if it is still on disk."""
+    name = (ini or {}).get("output_sel_file")
+    if not name or not run_dir:
+        return None
+    cand = os.path.join(run_dir, name)
+    return cand if os.path.exists(cand) else None
+
+
+def _sel_tilt_severity(noise, ratio):
+    if noise >= SEL_TILT_NOISE_FAIL or (
+            ratio is not None and ratio >= SEL_TILT_RATIO_FAIL):
+        return "FAIL"
+    if noise >= SEL_TILT_NOISE_WARN or (
+            ratio is not None and ratio >= SEL_TILT_RATIO_WARN):
+        return "WARN"
+    if noise >= 1.0:
+        return "NOTE"
+    return "OK"
+
+
+def section_selection_tilt(rep, idata, free, truths, nobs, sel_file, ini):
+    """Bootstrap selection-tilt MC noise for narrow mass-feature parameters.
+
+    The Farr neff_sel >= 4*nobs hinge only bounds the *global* normalization
+    error of log_mu_sel.  For a sharp feature the R-marginalized likelihood is
+    a near-cancellation between the PE numerator and the selection term, so a
+    few nats of *parameter-dependent* selection noise can move the posterior
+    even when the hinge has comfortable headroom.  Calibrated on
+    endO5_fullcosmo_evo7 (sigma truth below the posterior; hinge 2.0x OK).
+    """
+    targets = [p for p in NARROW_FEATURE_PARAMS if p in free]
+    if not targets:
+        rep.add("monte-carlo", "OK", "narrow-feature selection tilt",
+                "no free narrow-feature parameters (%s); check skipped"
+                % ", ".join(NARROW_FEATURE_PARAMS))
+        return
+    if nobs is None:
+        rep.add("monte-carlo", "NOTE", "narrow-feature selection tilt",
+                "insufficient information: nobs unknown (no config), so "
+                "nobs*sd(Delta log_mu_sel) cannot be formed")
+        return
+    if not sel_file:
+        rep.add("monte-carlo", "NOTE", "narrow-feature selection tilt",
+                ["insufficient information: selection HDF5 not found",
+                 "Need the run's output_sel_file next to the .nc (or a matching "
+                 "run_configs/*.ini that names it).  Without it the Farr "
+                 "neff_sel hinge is the only selection check, and that hinge "
+                 "missed the sigma failure on endO5_fullcosmo_evo7."])
+        return
+
+    try:
+        import pandas as pd
+        sel_all = pd.read_hdf(sel_file, key="true_parameters")
+    except Exception as exc:
+        rep.add("monte-carlo", "NOTE", "narrow-feature selection tilt",
+                "insufficient information: could not read %s (%s)"
+                % (sel_file, exc))
+        return
+
+    # Match run_inf.py: analyse the first half of the selection set.
+    n_half = int(np.round(len(sel_all) / 2.0))
+    sel = sel_all.iloc[:n_half]
+    use_low_bump = (ini or {}).get("use_low_bump", True)
+
+    post = idata.posterior
+    post_med = _posterior_median_dict(post)
+    base = _canonical_pop_sample(truths, post_med)
+    try:
+        # Probe once so a missing key fails with a clean NOTE, not mid-loop.
+        _ = _sel_log_wts(sel.iloc[:2], base, use_low_bump=use_low_bump)
+    except Exception as exc:
+        rep.add("monte-carlo", "NOTE", "narrow-feature selection tilt",
+                "insufficient information: could not rebuild selection "
+                "weights from truths/posterior (%s)" % exc)
+        return
+
+    lp = None
+    if hasattr(idata, "sample_stats") and "lp" in idata.sample_stats:
+        lp = np.asarray(idata.sample_stats["lp"].values).ravel()
+    lp_std = float(np.std(lp)) if lp is not None and lp.size else None
+
+    rows = []
+    worst_sev = "OK"
+    for name in targets:
+        vals = np.asarray(post[name].values).ravel()
+        lo, hi = float(np.percentile(vals, 16)), float(np.percentile(vals, 84))
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            continue
+        sample_lo = dict(base); sample_lo[name] = lo
+        sample_hi = dict(base); sample_hi[name] = hi
+        # Keep the hard edge consistent with whichever of mpisn / dmbhmax moved.
+        for s in (sample_lo, sample_hi):
+            if "mpisn" in s and "dmbhmax" in s:
+                s["mbhmax"] = float(s["mpisn"]) + float(s["dmbhmax"])
+        try:
+            lw_lo = _sel_log_wts(sel, sample_lo, use_low_bump=use_low_bump)
+            lw_hi = _sel_log_wts(sel, sample_hi, use_low_bump=use_low_bump)
+            delta, sd = _bootstrap_delta_log_mu(lw_lo, lw_hi)
+        except Exception as exc:
+            rep.add("monte-carlo", "NOTE", "narrow-feature selection tilt",
+                    "failed evaluating %s tilt (%s); remaining params skipped"
+                    % (name, exc))
+            return
+        noise = nobs * sd
+        tilt = nobs * abs(delta)          # |selection contribution| to loglike
+        ratio = (noise / lp_std) if (lp_std and lp_std > 0) else None
+        rows.append(dict(name=name, lo=lo, hi=hi, delta=delta, sd=sd,
+                         noise=noise, tilt=tilt, ratio=ratio))
+
+    if not rows:
+        rep.add("monte-carlo", "NOTE", "narrow-feature selection tilt",
+                "no usable posterior range for %s" % ", ".join(targets))
+        return
+
+    d = ["selection half-set: %d rows from %s (same half as run_inf.py)"
+         % (n_half, os.path.basename(sel_file)),
+         "for each free narrow-feature param, bootstrap nobs*sd(Delta "
+         "log_mu_sel) across the posterior 16-84%% range with other params "
+         "at %s; compare that noise to the posterior lp std "
+         "(log-likelihood variation the sampler saw)"
+         % ("truth" if truths else "posterior median")]
+    if lp_std is not None:
+        d.append("posterior lp std = %.2f nats" % lp_std)
+    d.append("per-parameter results (noise = nobs*bootstrap_sd, "
+             "tilt = |nobs*Delta log_mu_sel|):")
+
+    worst_row = None
+    for r in rows:
+        ratio_s = ("%.2f" % r["ratio"]) if r["ratio"] is not None else "n/a"
+        d.append("  %s in [%.4g, %.4g]: noise %.2f nats, tilt %.2f nats, "
+                 "noise/lp_std %s"
+                 % (r["name"], r["lo"], r["hi"], r["noise"], r["tilt"], ratio_s))
+        sev = _sel_tilt_severity(r["noise"], r["ratio"])
+        if (SEVERITY_ORDER[sev] > SEVERITY_ORDER[worst_sev] or
+                (sev == worst_sev and
+                 (worst_row is None or r["noise"] > worst_row["noise"]))):
+            worst_sev = sev
+            worst_row = r
+
+    flagged = [r for r in rows
+               if _sel_tilt_severity(r["noise"], r["ratio"]) in ("FAIL", "WARN")]
+
+    if worst_sev == "FAIL":
+        d.append("Selection MC noise across the posterior range is as large as "
+                 "(or larger than) the log-likelihood variation the sampler "
+                 "explored.  The Farr neff_sel hinge can still look fine: it "
+                 "bounds only the global normalization, not a sharp-feature "
+                 "tilt.  Precedent: endO5_fullcosmo_evo7 recovered a "
+                 "prior-dominated sigma with truth at quantile 0.001 while "
+                 "neff_sel sat at 2.0x the hinge.")
+        rep.rec(1, "selection samples (nsel) / injection pool", "increase",
+                "narrow-feature selection tilt noise %.2f nats on %s "
+                "(noise/lp_std %s); grow the selection set or draw it from "
+                "the proposal pool without truth-rejection so the PE/selection "
+                "cancellation is not noise-dominated"
+                % (worst_row["noise"], worst_row["name"],
+                   ("%.2f" % worst_row["ratio"]) if worst_row["ratio"] is not None
+                   else "n/a"))
+    elif worst_sev == "WARN":
+        d.append("Selection MC noise is a substantial fraction of the "
+                 "log-likelihood variation.  Narrow-feature medians "
+                 "(%s) may be shifted; quote with caution or grow nsel."
+                 % ", ".join(r["name"] for r in flagged))
+        rep.rec(2, "selection samples (nsel) / injection pool", "increase",
+                "narrow-feature selection tilt noise up to %.2f nats"
+                % max(r["noise"] for r in rows))
+    elif worst_sev == "NOTE":
+        d.append("Detectable selection-tilt noise, but below the level that "
+                 "reshaped endO5_fullcosmo_evo7.  Worth watching if a "
+                 "narrow-feature truth sits in the posterior tail.")
+    else:
+        d.append("Selection-tilt MC noise is small compared with the "
+                 "log-likelihood variation; the Farr hinge is not hiding a "
+                 "sharp-feature failure of the evo7 kind.")
+
+    # Name every WARN/FAIL param, not only the worst -- on evo7 sigma is the
+    # scientifically interesting failure even when dmbhmax has larger noise.
+    for r in flagged:
+        rep.rec(2, r["name"], "do not quote",
+                "selection-tilt MC noise %.2f nats (noise/lp_std %s) can move "
+                "this narrow-feature marginal; treat as prior- or noise-"
+                "dominated until nsel is raised"
+                % (r["noise"],
+                   ("%.2f" % r["ratio"]) if r["ratio"] is not None else "n/a"))
+
+    rep.metrics["sel_tilt"] = rows
+    if lp_std is not None:
+        rep.metrics["lp_std"] = lp_std
+    rep.add("monte-carlo", worst_sev, "narrow-feature selection tilt", d,
+            dict(n_half=n_half, lp_std=lp_std,
+                 worst_noise=max(r["noise"] for r in rows),
+                 params={r["name"]: r for r in rows}))
 
 
 def section_geometry(rep, idata, ini, min_ess, corr_info):
@@ -1312,6 +1644,8 @@ def main():
 
     summ, min_ess, max_rhat = section_convergence(rep, idata, free, ini)
     section_monte_carlo(rep, idata, nobs, ini)
+    sel_file = resolve_sel_file(run_dir, ini)
+    section_selection_tilt(rep, idata, free, truths, nobs, sel_file, ini)
     corr_info = section_identifiability(rep, idata, free, prior, pinfo)
     section_geometry(rep, idata, ini, min_ess, corr_info)
     section_truths(rep, post, free, truths, min_ess)
