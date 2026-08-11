@@ -43,7 +43,7 @@ dependencies = [
 [project.optional-dependencies]
 # jimgw: GW inference framework. Conflicts with ripplegw on JAX version in some
 # configurations; its usage in the code is currently commented out.
-jimgw = ["jimgw"]
+jimgw = []
 
 [tool.hatch.build.targets.wheel]
 # src/ modules are not installed as a package; scripts add src/ to sys.path directly.

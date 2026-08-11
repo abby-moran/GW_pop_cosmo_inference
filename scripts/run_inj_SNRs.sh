@@ -12,4 +12,4 @@ unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python gen_inj.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/mock_TC5_noevo.ini
+srun python gen_inj.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/mock_O5_nb_ne.ini

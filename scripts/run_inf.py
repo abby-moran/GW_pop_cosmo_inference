@@ -38,7 +38,7 @@ run_name = cfg["run"]["run_dir"]
 run_dir = os.path.join(base_runs_dir, f"{run_name}")
 
 outfile = os.path.join(run_dir, cfg["run"]["mcmc_out"])
-prior_dir="../runs/priors"
+prior_dir="../scripts/priors"
 prior = os.path.join(prior_dir, cfg["run"]["prior"])
 
 nmcmc = run.getint("nmcmc")

@@ -90,15 +90,26 @@ def get_mock_obs(df, out_file, cosmo, rho_fun, detection_threshold=8,
     """
     if detection_rng is None:
         detection_rng = np.random.default_rng()
-    
+
     noise_rng = np.random.default_rng()
+
+    #Add a little test to make sure cosmology and ndet are the same from injections to observations
+    points_test = np.column_stack([df['m1d'].to_numpy(), df['q'].to_numpy()])[:30]
+    test_rho0 = (np.exp(rho_fun(points_test)) * df['Theta'].to_numpy()[:30] * np.sqrt(ndet))* (1 / df['dL'].to_numpy()[:30])
+    compare_points = df['SNR'].to_numpy()[:30]
+
+    if not np.allclose(compare_points, test_rho0, rtol=1e-4):
+        print('injections:', compare_points)
+        print('observations:', test_rho0)
+        raise RuntimeError("SNR calculations use either wrong cosmo, SNR interpolator, or ndet")
+
 
     if jitter_SNR:
         a_rho = (0.0 - df['SNR']) / np.sqrt(ndet)
         df['SNR_OBS'] = truncnorm.rvs(a_rho, np.inf, loc=df['SNR'], scale=np.sqrt(ndet), random_state=noise_rng)
     else:
         df['SNR_OBS'] = df['SNR']
-    
+
     snr_mask = df['SNR_OBS'] > detection_threshold
     inj_det = df[snr_mask].copy()
     inj_det['mc'] = inj_det['m1'] * (inj_det['q']**(3/5) / ((1 + inj_det['q'])**(1/5)))

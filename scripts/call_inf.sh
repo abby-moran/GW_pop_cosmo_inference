@@ -5,6 +5,7 @@
 #SBATCH --mem=64G
 #SBATCH --time=0-30
 #SBATCH --constraint=a100
+#SBATCH -J realTC5
 
 module load cuda/12 cudnn
 
@@ -13,4 +14,4 @@ unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/mock_O5_noevo3.ini
+srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/mock_O5_nb_ne.ini
