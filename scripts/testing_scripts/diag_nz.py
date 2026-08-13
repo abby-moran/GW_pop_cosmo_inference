@@ -12,7 +12,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 import intensity_models_fast as fast
-from test_fast_equivalence import make_synthetic_data, build_prior, TRUTH
+from scripts.testing_scripts.test_fast_equivalence import make_synthetic_data, build_prior, TRUTH
 from numpyro.infer.util import initialize_model
 from numpyro.infer import init_to_value
 

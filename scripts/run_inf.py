@@ -94,6 +94,7 @@ pe_file = os.path.join(run_dir, cfg["run"]["output_file_PE"])
 sel_file = os.path.join(run_dir, cfg["run"]["output_sel_file"])
 ndevice=nchain
 use_low_bump=run.getboolean("use_low_bump", fallback=True)
+smooth_tail_edge=run.getboolean("smooth_tail_edge", fallback=True)
 # Sampler geometry knobs.  Defaults reproduce every run up to 2026-08-08.
 # max_tree_depth=7 saturates in 99% of iterations in all runs measured so far;
 # that is tolerable when the posterior is well conditioned (endO5_evo2 reached
@@ -242,7 +243,8 @@ if __name__ == "__main__":
     # are scalars per sample (a few kB per chain), and arviz maps them into
     # sample_stats as lp, energy, acceptance_rate, n_steps, tree_depth and
     # step_size.  See notes/2026-08-07-float32-accuracy-audit.md.
-    mcmc.run(jax.random.PRNGKey(random_seed), *model_args, use_low_bump=use_low_bump,
+    mcmc.run(jax.random.PRNGKey(random_seed), *model_args, use_low_bump=use_low_bump, smooth_tail_edge=smooth_tail_edge,
+             # tabulate_mass_function=False,
         **recenter_kwargs,
         extra_fields=("potential_energy", "energy", "num_steps", "accept_prob",
                       "adapt_state.step_size"))

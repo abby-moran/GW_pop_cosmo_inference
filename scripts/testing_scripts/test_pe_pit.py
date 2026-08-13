@@ -34,7 +34,7 @@ import jax
 import jax.numpy as jnp
 
 import intensity_models_fast as fast
-from test_gen_vs_inf import truth_sample
+from scripts.testing_scripts.test_gen_vs_inf import truth_sample
 
 
 def main():

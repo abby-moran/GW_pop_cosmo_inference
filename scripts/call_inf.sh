@@ -3,9 +3,9 @@
 #SBATCH --gpus=2
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
-#SBATCH --time=0-30
+#SBATCH --time=0-10
 #SBATCH --constraint=a100
-#SBATCH -J realTC5
+#SBATCH -J high_res_nb
 
 module load cuda/12 cudnn
 
