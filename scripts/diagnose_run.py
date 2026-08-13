@@ -1576,7 +1576,7 @@ def main():
     p.add_argument("--prior", default=None, help="prior file (else inferred)")
     p.add_argument("--pop_config", default=None, help="truth file (else inferred)")
     p.add_argument("--runs_dir", default="../runs")
-    p.add_argument("--priors_dir", default="../runs/priors")
+    p.add_argument("--priors_dir", default="/priors")
     p.add_argument("--pop_configs_dir", default="pop_configs")
     p.add_argument("--run_configs_dir", default="run_configs")
     p.add_argument("--json", action="store_true", help="emit findings as JSON")
