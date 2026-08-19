@@ -294,6 +294,7 @@ def read_ini(path):
         dense_mass=run.getboolean("dense_mass", fallback=False),
         target_accept_prob=run.getfloat("target_accept_prob", fallback=0.8),
         use_low_bump=run.getboolean("use_low_bump", fallback=True),
+        sel_fraction=run.getfloat("sel_fraction", fallback=0.5),
     )
     if out["pop_config_file"] and str(out["pop_config_file"]).lower() == "none":
         out["pop_config_file"] = None
@@ -919,9 +920,14 @@ def section_selection_tilt(rep, idata, free, truths, nobs, sel_file, ini):
                 % (sel_file, exc))
         return
 
-    # Match run_inf.py: analyse the first half of the selection set.
-    n_half = int(np.round(len(sel_all) / 2.0))
-    sel = sel_all.iloc[:n_half]
+    # Match run_inf.py: analyse the same prefix of the selection set.
+    # Default 0.5 is the historical half-sel convention; configs may set
+    # sel_fraction=1.0 to use the full HDF5.
+    sel_fraction = float((ini or {}).get("sel_fraction", 0.5) or 0.5)
+    if not (0.0 < sel_fraction <= 1.0):
+        sel_fraction = 0.5
+    n_use = max(1, int(np.round(len(sel_all) * sel_fraction)))
+    sel = sel_all.iloc[:n_use]
     use_low_bump = (ini or {}).get("use_low_bump", True)
 
     post = idata.posterior
@@ -974,8 +980,8 @@ def section_selection_tilt(rep, idata, free, truths, nobs, sel_file, ini):
                 "no usable posterior range for %s" % ", ".join(targets))
         return
 
-    d = ["selection half-set: %d rows from %s (same half as run_inf.py)"
-         % (n_half, os.path.basename(sel_file)),
+    d = ["selection set: %d/%d rows from %s (sel_fraction=%.2f, same as run_inf.py)"
+         % (n_use, len(sel_all), os.path.basename(sel_file), sel_fraction),
          "for each free narrow-feature param, bootstrap nobs*sd(Delta "
          "log_mu_sel) across the posterior 16-84%% range with other params "
          "at %s; compare that noise to the posterior lp std "
@@ -1049,7 +1055,7 @@ def section_selection_tilt(rep, idata, free, truths, nobs, sel_file, ini):
     if lp_std is not None:
         rep.metrics["lp_std"] = lp_std
     rep.add("monte-carlo", worst_sev, "narrow-feature selection tilt", d,
-            dict(n_half=n_half, lp_std=lp_std,
+            dict(n_sel_use=n_use, sel_fraction=sel_fraction, lp_std=lp_std,
                  worst_noise=max(r["noise"] for r in rows),
                  params={r["name"]: r for r in rows}))
 
