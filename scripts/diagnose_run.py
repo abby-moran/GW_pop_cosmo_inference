@@ -1,4 +1,5 @@
-"""Health check for a finished inference run, from its saved .nc alone.
+"""Health check for a finished inference run, from its saved .nc
+(and, for a couple of checks, the run's PE / selection HDF5).
 
 Reads the posterior + sample_stats an ``scripts/run_inf.py`` run wrote and turns
 them into a severity-tagged report and a prioritized list of config changes.
@@ -9,6 +10,7 @@ Usage (run from ``scripts/``)::
     uv run python diagnose_run.py --nc ../runs/endO5_evo/O5_evo.nc \
                                   --prior ../runs/priors/gwtc5_evo.prior
     uv run python diagnose_run.py --run endO5_evo2 --json
+    uv run python diagnose_run.py --run endO5_evo2 --test-float32
 
 ``--run`` resolves the single ``.nc`` in ``../runs/<name>/`` the same way
 ``plot_corner.py`` does.  ``--prior`` / ``--pop_config`` are optional; when
@@ -70,6 +72,27 @@ Checks and thresholds (all sourced, not invented)
                     Requires the run's selection HDF5 + a pop_config (or a
                     complete posterior) so it can rebuild selection weights;
                     otherwise degrades to "insufficient information".
+   float32 safety   evaluate the numpyro potential (and its gradient) at the
+                    truth (else posterior median) in float32 and float64, on
+                    the run's own PE + selection data.  The truth is near the
+                    worst case: float32 error tracks |loglike|, and NUTS lives
+                    at high likelihood (notes/2026-08-07-float32-accuracy-
+                    audit.md).  Two traps make a naive comparison lie:
+                    (1) each precision's init_to_value z0 differs by ~1e-7,
+                    and |dPE/dz|~1e5 fabricates ~1e-2 nats -- the real
+                    effect's size -- so the float64 leg is forced onto the
+                    float32 z0; (2) inputs are rounded to float32 first, so
+                    the measurement is arithmetic precision not input
+                    precision.  JAX x64 must be set before import, so the two
+                    legs are subprocesses.  A constant potential offset is
+                    absorbed into the target; a wrong gradient misdirects
+                    trajectories.  Thresholds vs the ~0.2 nat leapfrog energy
+                    scale at 80% accept (same note):
+                    |dPE|>=0.2 or 1-cos(grad)>=1e-6 FAIL |
+                    |dPE|>=0.1 or 1-cos>=1e-8 WARN.
+                    Production-scale measured |dPE| is ~0.02 nats (OK).
+                    Needs PE HDF5 + selection HDF5 + prior; else "insufficient
+                    information".  Off by default; pass --test-float32.
 
 3. Sampler geometry -> max_tree_depth / dense_mass / target_accept_prob / nmcmc
    Recommendations are conditioned on the joint evidence (saturation fraction,
@@ -114,7 +137,9 @@ import argparse
 import configparser
 import glob
 import json
+import subprocess
 import sys
+import tempfile
 import warnings
 
 sys.path.append("../src")
@@ -147,6 +172,16 @@ SEL_TILT_NOISE_WARN = 2.0
 # actually explored).  >=1 means selection MC alone can reshape the posterior.
 SEL_TILT_RATIO_FAIL = 1.0
 SEL_TILT_RATIO_WARN = 0.5
+
+# Float32-vs-float64 potential at one parameter point.  NUTS dual-averaging
+# targets 80% accept, i.e. a typical |Delta H| of a few tenths of a nat;
+# numpyro only flags a divergence above max_delta_energy = 1000.
+# Source: notes/2026-08-07-float32-accuracy-audit.md.
+HMC_ENERGY_SCALE = 0.2
+F32_DPE_FAIL = 0.2          # 1x the leapfrog energy scale
+F32_DPE_WARN = 0.1          # 0.5x
+F32_GRAD_COS_FAIL = 1e-6    # ~1 mrad; audit measured 4e-11 at nobs=9000
+F32_GRAD_COS_WARN = 1e-8
 
 # Deterministic sites that are diagnostics, not model parameters.
 DIAGNOSTIC_SITES = {
@@ -286,6 +321,7 @@ def read_ini(path):
         prior=run.get("prior"),
         pop_config_file=run.get("pop_config_file"),
         output_sel_file=run.get("output_sel_file"),
+        output_file_PE=run.get("output_file_PE"),
         nmcmc=_int("nmcmc"), nchain=_int("nchain"),
         n_pe=_int("n_pe"),
         evt_start=_int("evt_start", 0), evt_end=_int("evt_end"),
@@ -294,6 +330,7 @@ def read_ini(path):
         dense_mass=run.getboolean("dense_mass", fallback=False),
         target_accept_prob=run.getfloat("target_accept_prob", fallback=0.8),
         use_low_bump=run.getboolean("use_low_bump", fallback=True),
+        smooth_tail_edge=run.getboolean("smooth_tail_edge", fallback=True),
         sel_fraction=run.getfloat("sel_fraction", fallback=0.5),
     )
     if out["pop_config_file"] and str(out["pop_config_file"]).lower() == "none":
@@ -401,6 +438,11 @@ def section_inventory(rep, nc_path, idata, ini_path, ini, prior_path, pop_path, 
     else:
         lines.append("no recentering_offset attr: this run predates the float32 "
                      "recentering, or used the unoptimized module.")
+    pe_name = (ini or {}).get("output_file_PE")
+    if pe_name:
+        pe_path = os.path.join(os.path.dirname(nc_path), pe_name)
+        lines.append("PE hdf5     : %s%s" % (
+            pe_name, "" if os.path.exists(pe_path) else " (NOT FOUND)"))
     rep.add("inventory", "OK", "run inventory", lines)
 
 
@@ -869,6 +911,15 @@ def resolve_sel_file(run_dir, ini):
     return cand if os.path.exists(cand) else None
 
 
+def resolve_pe_file(run_dir, ini):
+    """Locate the PE HDF5 used by the run, if it is still on disk."""
+    name = (ini or {}).get("output_file_PE")
+    if not name or not run_dir:
+        return None
+    cand = os.path.join(run_dir, name)
+    return cand if os.path.exists(cand) else None
+
+
 def _sel_tilt_severity(noise, ratio):
     if noise >= SEL_TILT_NOISE_FAIL or (
             ratio is not None and ratio >= SEL_TILT_RATIO_FAIL):
@@ -1058,6 +1109,414 @@ def section_selection_tilt(rep, idata, free, truths, nobs, sel_file, ini):
             dict(n_sel_use=n_use, sel_fraction=sel_fraction, lp_std=lp_std,
                  worst_noise=max(r["noise"] for r in rows),
                  params={r["name"]: r for r in rows}))
+
+
+# ---------------------------------------------------------------- float32 vs float64
+
+def _plain_floats(d):
+    """JSON-safe {name: float} from a mixed dict of numpy / python scalars."""
+    if not d:
+        return {}
+    out = {}
+    for k, v in d.items():
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(fv):
+            out[k] = fv
+    return out
+
+
+def _round_to_f32(data):
+    """Round every input array to float32 and store it back as float64.
+
+    Both precision legs then see numerically identical inputs, so the
+    comparison isolates arithmetic precision rather than input precision.
+    Same helper as scripts/testing_scripts/test_float32_accuracy.py.
+    """
+    out = {}
+    for k, v in data.items():
+        if isinstance(v, np.ndarray):
+            out[k] = np.asarray(np.asarray(v, np.float32), np.float64)
+        else:
+            out[k] = float(np.float32(v))
+    return out
+
+
+def _load_pe_sel_arrays(pe_file, sel_file, evt_start, evt_end, sel_fraction):
+    """Load the same PE + selection arrays run_inf.py feeds the model."""
+    import h5py
+    import pandas as pd
+
+    evt_start = 0 if evt_start is None else int(evt_start)
+    try:
+        with h5py.File(pe_file, "r") as f:
+            m1s = np.asarray(f["m1"][evt_start:evt_end])
+            qs = np.asarray(f["q"][evt_start:evt_end])
+            dls = np.asarray(f["dl"][evt_start:evt_end])
+            pdraws = np.asarray(f["pdraw"][evt_start:evt_end])
+    except (KeyError, OSError):
+        pe = pd.read_hdf(pe_file, key="samples").iloc[evt_start:evt_end]
+        m1s = np.asarray(pe["m1"].to_list())
+        qs = np.asarray(pe["q"].to_list())
+        dls = np.asarray(pe["dl"].to_list())
+        pdraws = np.asarray(pe["pdraw"].to_list())
+    pdraws = np.nan_to_num(pdraws, neginf=-1e30, posinf=1e30)
+
+    sel_all = pd.read_hdf(sel_file, key="true_parameters")
+    sel_fraction = float(sel_fraction if sel_fraction else 0.5)
+    if not (0.0 < sel_fraction <= 1.0):
+        sel_fraction = 0.5
+    n_use = max(1, int(np.round(len(sel_all) * sel_fraction)))
+    sel = sel_all.iloc[:n_use]
+    ndraw = float(sel["ndraw"].iloc[0]) * sel_fraction
+    return dict(
+        m1s_det=m1s, qs=qs, dls=dls, log_pdraw=pdraws,
+        m1s_det_sel=np.asarray(sel["m1d"].values),
+        qs_sel=np.asarray(sel["q"].values),
+        dls_sel=np.asarray(sel["dl"].values),
+        pdraw_sel=np.asarray(sel["pdraw_sel"].values),
+        Ndraw=ndraw,
+    ), sel_fraction, n_use
+
+
+def _eval_point_from_spec(spec, prior, im):
+    """Constrained parameter dict for init_to_value, in the prior's coordinates."""
+    truths = spec.get("truths") or {}
+    post_med = spec.get("posterior_median") or {}
+    source = "truth" if truths else "posterior median"
+    sample = _canonical_pop_sample(truths, post_med)
+    if "log_fpeak" not in sample and "msigma_low" in sample:
+        if "log_flow" in sample:
+            sample["log_fpeak"] = float(sample["log_flow"]) - float(
+                np.log(sample["msigma_low"]))
+        elif "flow" in sample:
+            sample["log_fpeak"] = (float(np.log(sample["flow"]))
+                                   - float(np.log(sample["msigma_low"])))
+    sample = im.map_truths_to_prior_coords(sample, prior)
+    point = {}
+    for k, v in sample.items():
+        if k not in prior or isinstance(prior[k], float):
+            continue
+        try:
+            point[k] = float(v)
+        except (TypeError, ValueError):
+            continue
+    if not point:
+        raise KeyError("no sampled-site values for init_to_value (source=%s)"
+                       % source)
+    return point, source
+
+
+def _factor_values(im, model_args, model_kwargs, point):
+    """Per-factor log contributions ('loglike', 'selfactor', guards, ...)."""
+    import jax.numpy as jnp
+    import numpyro.handlers as handlers
+
+    truth_j = {k: jnp.asarray(v) for k, v in point.items()}
+    with handlers.seed(rng_seed=0), handlers.substitute(data=truth_j):
+        tr = handlers.trace(im.pop_cosmo_model).get_trace(
+            *model_args, **model_kwargs)
+    out = {}
+    for name, site in tr.items():
+        fn = site.get("fn")
+        if fn is not None and type(fn).__name__ == "Unit":
+            out[name] = float(np.asarray(fn.log_factor))
+        elif site["type"] == "deterministic" and np.asarray(site["value"]).size == 1:
+            out[name] = float(np.asarray(site["value"]))
+    return out
+
+
+def run_float32_leg(spec_path):
+    """One precision leg, invoked as a subprocess so JAX_ENABLE_X64 is set
+    before jax is imported.  Writes potential / gradient / factors to spec['out'].
+    """
+    with open(spec_path) as f:
+        spec = json.load(f)
+
+    import jax
+    import jax.numpy as jnp
+    import intensity_models_fast as im
+    from numpyro.infer.util import initialize_model
+    from numpyro.infer import init_to_value
+    from utils import get_priors_from_file
+
+    x64 = bool(jax.config.jax_enable_x64)
+    print("  float32-leg: x64=%s  jax %s on %s" % (
+        x64, jax.__version__, jax.devices()), file=sys.stderr, flush=True)
+
+    prior = get_priors_from_file(spec["prior_path"])
+    data, sel_fraction, n_sel_use = _load_pe_sel_arrays(
+        spec["pe_file"], spec["sel_file"],
+        spec.get("evt_start"), spec.get("evt_end"),
+        spec.get("sel_fraction", 0.5))
+    data = _round_to_f32(data)
+    point, source = _eval_point_from_spec(spec, prior, im)
+
+    model_args = (
+        data["m1s_det"], data["qs"], data["dls"], data["log_pdraw"],
+        data["m1s_det_sel"], data["qs_sel"], data["dls_sel"], data["pdraw_sel"],
+        data["Ndraw"], prior,
+    )
+    model_kwargs = dict(
+        use_low_bump=bool(spec.get("use_low_bump", True)),
+        smooth_tail_edge=bool(spec.get("smooth_tail_edge", True)),
+    )
+
+    baselines = spec.get("baselines")
+    if spec.get("recenter") and baselines is None:
+        baselines = im.recentering_baselines(
+            model_args, point, use_low_bump=model_kwargs["use_low_bump"],
+            smooth_tail_edge=model_kwargs["smooth_tail_edge"])
+        baselines = dict(
+            loglike_ref=np.asarray(baselines["loglike_ref"]).tolist(),
+            log_mu_sel_ref=float(baselines["log_mu_sel_ref"]),
+            log_pdraw_sel_scale=float(baselines["log_pdraw_sel_scale"]),
+            offset=float(baselines["offset"]),
+        )
+    if baselines is not None:
+        model_kwargs.update(
+            loglike_ref=np.asarray(baselines["loglike_ref"], np.float64),
+            log_mu_sel_ref=float(baselines["log_mu_sel_ref"]),
+            log_pdraw_sel_scale=float(baselines["log_pdraw_sel_scale"]),
+        )
+
+    truth_j = {k: jnp.asarray(v) for k, v in point.items()}
+    mi = initialize_model(
+        jax.random.PRNGKey(0), im.pop_cosmo_model,
+        model_args=model_args, model_kwargs=model_kwargs, dynamic_args=False,
+        init_strategy=init_to_value(values=truth_j),
+    )
+    z0 = mi.param_info.z
+    z0_override = spec.get("z0")
+    if z0_override is not None:
+        # Same unconstrained point as the other precision leg.  Without this
+        # the two z0s sit ~1e-7 apart and |dPE/dz|~1e5 fabricates ~1e-2 nats.
+        z0 = {k: jnp.asarray(np.asarray(z0_override[k], np.float64),
+                             dtype=z0[k].dtype)
+              for k in z0 if k in z0_override}
+
+    factors = _factor_values(im, model_args, model_kwargs, point)
+    vg = jax.jit(jax.value_and_grad(mi.potential_fn))
+    try:
+        v, g = vg(z0)
+        grad = {k: float(x) for k, x in g.items()}
+    except Exception as exc:
+        print("  value_and_grad failed (%s); falling back to value only"
+              % exc, file=sys.stderr, flush=True)
+        v = jax.jit(mi.potential_fn)(z0)
+        grad = None
+    v = float(v)
+    print("  potential = %.10e" % v, file=sys.stderr, flush=True)
+
+    result = dict(
+        x64=x64, potential=v, grad=grad, factors=factors,
+        z0={k: float(x) for k, x in z0.items()},
+        baselines=baselines,
+        point_source=source, point=point,
+        nobs=int(np.asarray(data["m1s_det"]).shape[0]),
+        nsamp=int(np.asarray(data["m1s_det"]).shape[1])
+        if np.asarray(data["m1s_det"]).ndim > 1 else 1,
+        nsel=int(np.asarray(data["m1s_det_sel"]).shape[0]),
+        n_sel_use=n_sel_use, sel_fraction=sel_fraction,
+        recentered=bool(baselines),
+    )
+    with open(spec["out"], "w") as f:
+        json.dump(result, f)
+    return 0
+
+
+def _run_float32_leg_subprocess(spec, scratch, x64):
+    spec = dict(spec)
+    tag = "f64" if x64 else "f32"
+    spec["out"] = os.path.join(scratch, tag + ".json")
+    spec_path = os.path.join(scratch, "spec_%s.json" % tag)
+    with open(spec_path, "w") as f:
+        json.dump(spec, f)
+    env = dict(os.environ)
+    env["JAX_ENABLE_X64"] = "1" if x64 else "0"
+    env["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+    env.setdefault("JAX_PLATFORMS", "cpu")
+    cmd = [sys.executable, os.path.abspath(__file__), "--float32-leg", spec_path]
+    proc = subprocess.run(
+        cmd, cwd=os.path.dirname(os.path.abspath(__file__)),
+        env=env, capture_output=True, text=True)
+    if proc.returncode != 0:
+        tail = ((proc.stderr or "") + "\n" + (proc.stdout or ""))[-3000:]
+        raise RuntimeError("float%s leg failed (exit %d):\n%s"
+                           % ("64" if x64 else "32", proc.returncode, tail))
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+    with open(spec["out"]) as f:
+        return json.load(f)
+
+
+def _f32_severity(abs_dv, one_minus_cos):
+    if abs_dv >= F32_DPE_FAIL or (
+            one_minus_cos is not None and one_minus_cos >= F32_GRAD_COS_FAIL):
+        return "FAIL"
+    if abs_dv >= F32_DPE_WARN or (
+            one_minus_cos is not None and one_minus_cos >= F32_GRAD_COS_WARN):
+        return "WARN"
+    return "OK"
+
+
+def section_float32(rep, idata, truths, prior_path, pe_file, sel_file, ini, nobs):
+    """float32 vs float64 potential (and gradient) at the truth point.
+
+    This is the run-specific version of scripts/testing_scripts/test_float32_accuracy.py.
+    A single evaluation is a bound, not a lucky one: the audit found the truth
+    is near the worst case because float32 error tracks |loglike|.
+    """
+    if not prior_path:
+        rep.add("monte-carlo", "NOTE", "float32 safety",
+                "insufficient information: no prior file, so the model cannot "
+                "be rebuilt")
+        return
+    if not pe_file:
+        rep.add("monte-carlo", "NOTE", "float32 safety",
+                ["insufficient information: PE HDF5 not found",
+                 "Need the run's output_file_PE next to the .nc (or a matching "
+                 "run_configs/*.ini that names it)."])
+        return
+    if not sel_file:
+        rep.add("monte-carlo", "NOTE", "float32 safety",
+                "insufficient information: selection HDF5 not found")
+        return
+
+    post_med = _posterior_median_dict(idata.posterior)
+    if not truths and not post_med:
+        rep.add("monte-carlo", "NOTE", "float32 safety",
+                "insufficient information: no pop_config truths and no "
+                "posterior medians to evaluate at")
+        return
+
+    recenter = "recentering_offset" in idata.posterior.attrs
+    spec = dict(
+        pe_file=os.path.abspath(pe_file),
+        sel_file=os.path.abspath(sel_file),
+        prior_path=os.path.abspath(prior_path),
+        truths=_plain_floats(truths),
+        posterior_median=_plain_floats(post_med),
+        evt_start=(ini or {}).get("evt_start", 0),
+        evt_end=(ini or {}).get("evt_end"),
+        sel_fraction=(ini or {}).get("sel_fraction", 0.5),
+        use_low_bump=(ini or {}).get("use_low_bump", True),
+        smooth_tail_edge=(ini or {}).get("smooth_tail_edge", True),
+        recenter=recenter,
+    )
+    print("float32 safety: compiling the model at %s in float32 then float64 "
+          "(CPU; can take a few minutes at production scale) ..."
+          % ("truth" if truths else "posterior median"),
+          file=sys.stderr, flush=True)
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="diag_f32_") as scratch:
+            r32 = _run_float32_leg_subprocess(spec, scratch, x64=False)
+            spec64 = dict(spec, z0=r32["z0"], baselines=r32.get("baselines"))
+            r64 = _run_float32_leg_subprocess(spec64, scratch, x64=True)
+    except Exception as exc:
+        rep.add("monte-carlo", "NOTE", "float32 safety",
+                "insufficient information: could not evaluate the potential "
+                "(%s)" % exc)
+        return
+
+    if r32.get("x64") or not r64.get("x64"):
+        rep.add("monte-carlo", "NOTE", "float32 safety",
+                "insufficient information: JAX x64 did not toggle between "
+                "legs (float32 x64=%s, float64 x64=%s); comparison is not "
+                "a precision test" % (r32.get("x64"), r64.get("x64")))
+        return
+
+    v32, v64 = float(r32["potential"]), float(r64["potential"])
+    dv = v32 - v64
+    abs_dv = abs(dv)
+    if not np.isfinite(v32) or not np.isfinite(v64):
+        rep.add("monte-carlo", "FAIL", "float32 safety",
+                "potential is non-finite (float32=%s, float64=%s); the "
+                "evaluation point is outside support or the model dumped NaNs"
+                % (v32, v64))
+        return
+    g32, g64 = r32.get("grad"), r64.get("grad")
+    one_minus_cos = None
+    worst_rel = None
+    if g32 and g64:
+        keys = sorted(set(g32) & set(g64))
+        coss_num = n2 = n4 = 0.0
+        rels = []
+        for k in keys:
+            a, b = float(g32[k]), float(g64[k])
+            rels.append(abs(a - b) / max(abs(b), 1e-30))
+            coss_num += a * b
+            n2 += a * a
+            n4 += b * b
+        if rels:
+            worst_rel = float(max(rels))
+        denom = (n2 * n4) ** 0.5
+        if denom > 0:
+            one_minus_cos = float(1.0 - coss_num / denom)
+
+    sev = _f32_severity(abs_dv, one_minus_cos)
+    nobs_used = r32.get("nobs") or nobs
+    ratio_hmc = abs_dv / HMC_ENERGY_SCALE
+
+    d = ["evaluated at %s; recentering %s (matches this run); "
+         "nobs=%s nsamp=%s nsel=%s"
+         % (r32.get("point_source", "?"),
+            "on" if r32.get("recentered") else "off",
+            r32.get("nobs"), r32.get("nsamp"), r32.get("nsel")),
+         "same unconstrained z0 (from the float32 leg) and float32-rounded "
+         "inputs on both legs, so this is arithmetic precision not a "
+         "1e-7-in-z0 artifact",
+         "potential float64 = %.6e, float32 = %.6e" % (v64, v32),
+         "|dPE| = %.4e nats = %.3fx the ~%.2f nat HMC energy scale"
+         % (abs_dv, ratio_hmc, HMC_ENERGY_SCALE)]
+
+    f32_fac, f64_fac = r32.get("factors") or {}, r64.get("factors") or {}
+    for name in ("loglike", "selfactor"):
+        if name in f32_fac and name in f64_fac:
+            d.append("  %s: f64=%+.6e  d=%+.3e"
+                     % (name, f64_fac[name], f32_fac[name] - f64_fac[name]))
+    if one_minus_cos is not None:
+        d.append("gradient 1-cos = %.3e, worst-component rel = %s"
+                 % (one_minus_cos,
+                    ("%.2e" % worst_rel) if worst_rel is not None else "n/a"))
+    else:
+        d.append("gradient not available (value_and_grad failed; potential "
+                 "comparison only)")
+
+    if sev == "FAIL":
+        d.append("Float32 roundoff of the potential is comparable to (or "
+                 "larger than) the leapfrog integrator's own energy error, "
+                 "so it can move the Metropolis accept/reject.  Precedent "
+                 "scale: nobs=9000 measured |dPE|~0.02 nats (0.1x) and was "
+                 "safe; this run is past that margin.  See "
+                 "notes/2026-08-07-float32-accuracy-audit.md.")
+        rep.rec(1, "float32 arithmetic", "verify with float64",
+                "|dPE|=%.3e nats (%.2fx HMC energy scale) at nobs=%s; "
+                "a float64 verification leg is needed before quoting "
+                "this catalogue" % (abs_dv, ratio_hmc, nobs_used))
+    elif sev == "WARN":
+        d.append("Float32 error is a substantial fraction of the HMC energy "
+                 "scale.  Fine for quoting if divergences are zero, but there "
+                 "is little headroom for a larger catalogue.")
+        rep.rec(2, "float32 arithmetic", "watch at next catalogue size",
+                "|dPE|=%.3e nats (%.2fx HMC energy scale)" % (abs_dv, ratio_hmc))
+    else:
+        d.append("Float32 error is well below the leapfrog energy scale "
+                 "(production-scale audit: ~0.02 nats / 0.1x at nobs=9000).  "
+                 "The truth point is near the worst case, so this is a bound "
+                 "over the posterior, not a lucky evaluation.")
+
+    metrics = dict(dpe=dv, abs_dpe=abs_dv, ratio_hmc=ratio_hmc,
+                   one_minus_cos=one_minus_cos, worst_grad_rel=worst_rel,
+                   nobs=r32.get("nobs"), nsamp=r32.get("nsamp"),
+                   nsel=r32.get("nsel"), recentered=r32.get("recentered"),
+                   point_source=r32.get("point_source"),
+                   potential_f32=v32, potential_f64=v64)
+    rep.metrics["float32"] = metrics
+    rep.add("monte-carlo", sev, "float32 safety", d, metrics)
 
 
 def section_geometry(rep, idata, ini, min_ess, corr_info):
@@ -1587,7 +2046,15 @@ def main():
     p.add_argument("--run_configs_dir", default="run_configs")
     p.add_argument("--json", action="store_true", help="emit findings as JSON")
     p.add_argument("--no_color", action="store_true")
+    p.add_argument("--test-float32", action="store_true",
+                   help="run the float32-vs-float64 potential check (needs "
+                        "the run's PE and selection HDF5; compiles the model "
+                        "twice and can take a few minutes)")
+    p.add_argument("--float32-leg", default=None, help=argparse.SUPPRESS)
     args = p.parse_args()
+
+    if args.float32_leg:
+        return run_float32_leg(args.float32_leg)
 
     nc_path, run_dir, run_name = resolve_nc(args)
 
@@ -1652,6 +2119,9 @@ def main():
     section_monte_carlo(rep, idata, nobs, ini)
     sel_file = resolve_sel_file(run_dir, ini)
     section_selection_tilt(rep, idata, free, truths, nobs, sel_file, ini)
+    if args.test_float32:
+        pe_file = resolve_pe_file(run_dir, ini)
+        section_float32(rep, idata, truths, prior_path, pe_file, sel_file, ini, nobs)
     corr_info = section_identifiability(rep, idata, free, prior, pinfo)
     section_geometry(rep, idata, ini, min_ess, corr_info)
     section_truths(rep, post, free, truths, min_ess)

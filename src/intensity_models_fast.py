@@ -394,7 +394,7 @@ def _sf_theta_kernel_1d(t_ref, g_ref, U_ref, o_ref, *, npts, K, C, N):
     frac = t_v - i0
     gs = [pl.load(g_ref, (offs * C + c,), mask=mask, other=0.0) for c in range(C)]
     for k in range(K):
-        s = 0.0
+        s = jnp.zeros((), dtype=gs[0].dtype)
         for c in range(C):
             base = (c * K + k) * N
             u0 = pl.load(U_ref, (base + i0,))
@@ -415,7 +415,7 @@ def _pallas_theta_bar_2d(tm, tz, g, U):
         grid=(nprog,),
         in_specs=[pl.BlockSpec(memory_space=pl.ANY)] * 4,
         out_specs=pl.BlockSpec(memory_space=pl.ANY),
-        out_shape=jax.ShapeDtypeStruct((nprog, k), jnp.float32),
+        out_shape=jax.ShapeDtypeStruct((nprog, k), g.dtype),
     )(tm_f, tz_f, g_f, U.reshape(-1))
     return jnp.sum(out, axis=0)
 
@@ -434,7 +434,7 @@ def _pallas_theta_bar_1d(t, g, U):
         grid=(nprog,),
         in_specs=[pl.BlockSpec(memory_space=pl.ANY)] * 3,
         out_specs=pl.BlockSpec(memory_space=pl.ANY),
-        out_shape=jax.ShapeDtypeStruct((nprog, k), jnp.float32),
+        out_shape=jax.ShapeDtypeStruct((nprog, k), g.dtype),
     )(t_f, g_f, Uf)
     return jnp.sum(out, axis=0)
 
