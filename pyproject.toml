@@ -38,6 +38,7 @@ dependencies = [
     "mig>=0.0.6",
     "tables>=3.11.1",
     "latex>=0.7.0",
+    "jaxlib>=0.6.0",
 ]
 
 [project.optional-dependencies]

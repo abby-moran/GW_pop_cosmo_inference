@@ -1,0 +1,20 @@
+#!/usr/bin/bash
+#SBATCH -p gpu
+#SBATCH --gpus=2
+#SBATCH --ntasks=1
+#SBATCH --mem=64G
+#SBATCH --time=0-10
+#SBATCH --constraint=a100
+#SBATCH -J evo7_run_inf
+#SBATCH --exclude=workergpu067
+#SBATCH -o /mnt/home/amoran/GW_pop_cosmo_inference/scripts/logs/evo7_03_run_inf_%j.log
+
+set -euo pipefail
+
+module load cuda/12 cudnn
+source /mnt/home/amoran/GW_pop_cosmo_inference/.venv/bin/activate
+unset LD_LIBRARY_PATH
+
+cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
+
+srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/mock_O5_fullcosmo_evo7.ini

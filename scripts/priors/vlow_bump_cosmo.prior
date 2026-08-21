@@ -17,6 +17,6 @@ mbh_min = 3
 delta_m = 1.6
 log_fpl = Uniform(np.log(1e-2), np.log(2))
 zpivot = 0.75
-mp_low = TruncatedNormal(9.0, 2.0, low=5.0, high=15.0)
-msigma_low = TruncatedNormal(1.5, 1.0, low=0.5, high=2.5)
-log_fpeak = Uniform(np.log(1e-3), np.log(4))
+mp_low =9.078
+flow=0.000001
+zpivot = 0.75
