@@ -3,9 +3,9 @@
 #SBATCH --gpus=1
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
-#SBATCH --time=0-02
+#SBATCH --time=0-06
 #SBATCH -J evo7_reweight
-#SBATCH -o /mnt/home/amoran/GW_pop_cosmo_inference/scripts/logs/evo7_02_reweight_%j.log
+#SBATCH -o /mnt/home/amoran/GW_pop_cosmo_inference/scripts/logs/O5_fullcosmo_reweight_%j.log
 
 set -euo pipefail
 
@@ -15,4 +15,4 @@ unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python reweight_res.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/mock_O5_fullcosmo_evo7.ini
+srun python reweight_res.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/mock_O5_ne.ini

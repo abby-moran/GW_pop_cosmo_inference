@@ -1,13 +1,13 @@
 #!/usr/bin/bash
 #SBATCH -p gpu
-#SBATCH --gpus=h100_pcie:2
+#SBATCH --gpus=4
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
 #SBATCH --time=1-00
-#SBATCH -J evo7_run_inf_alt
+#SBATCH --constraint=h100
+#SBATCH -J nb_nocosmo
 #SBATCH --exclude=workergpu067
-#SBATCH -o /mnt/home/amoran/GW_pop_cosmo_inference/scripts/logs/evo7_03_run_inf_%j.log
+#SBATCH -o /mnt/home/amoran/GW_pop_cosmo_inference/scripts/logs/nb_nocosmo_run_inf%j.log
 
 set -euo pipefail
 
@@ -17,4 +17,4 @@ unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/mock_O5_fullcosmo_evo7_alt.ini
+srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/mock_O5_vlb_ne.ini

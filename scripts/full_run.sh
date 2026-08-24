@@ -15,9 +15,6 @@ echo "submitted reweight:    ${jid2}  (after ${jid1})"
  
 jid3=$(sbatch --parsable --dependency=afterok:${jid2} "${SCRIPT_DIR}/03_run_inf.sh")
 echo "submitted run_inf:     ${jid3}  (after ${jid2})"
-
-jid3=$(sbatch --parsable --dependency=afterok:${jid2} "${SCRIPT_DIR}/03a_run_inf_alt.sh")
-echo "submitted run_inf_alt:     ${jid3}  (after ${jid2})"
  
 echo ""
 echo "Chain submitted. Track with:"
