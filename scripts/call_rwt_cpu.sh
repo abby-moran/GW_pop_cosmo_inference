@@ -9,4 +9,4 @@ unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python reweight_res.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/mock_O5_ne.ini
+srun python reweight_res.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/asharp_ne.ini

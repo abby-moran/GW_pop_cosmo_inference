@@ -3,7 +3,7 @@
 #SBATCH --gpus=4
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
-#SBATCH --time=1-00
+#SBATCH --time=2-00
 #SBATCH --constraint=h100
 #SBATCH -J nb_nocosmo
 #SBATCH --exclude=workergpu067

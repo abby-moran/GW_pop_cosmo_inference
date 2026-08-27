@@ -134,9 +134,10 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
         ddl_dz = (Planck18.comoving_distance(zs[mask]).to(u.Gpc).value + 
                   (1 + zs[mask]) * Planck18.hubble_distance.to(u.Gpc).value / Planck18.efunc(zs[mask]))
 
-        prior = dvcdz * m1_det * ddl_dz
+        prior =dvcdz * m1_det * ddl_dz# /(1+zs[mask]) #  dvcdz * m1_det * ddl_dz
         #prior = dvcdz*m1_det
     else:
+        print(filename)
         prior = dLs**2 * m1_det
     
     return m1_det, qs, dLs, prior

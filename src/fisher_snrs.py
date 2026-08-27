@@ -28,10 +28,11 @@ from scipy.interpolate import interp1d
 sensitivity_path = f"{os.path.dirname(__file__)}/sensitivity_files"
 #jimGW_detectors = jimgw.single_event.detector.detector_preset
 
-ASD_FILES = {"CE": f"{sensitivity_path}/LIGO-P1600143-v18-CE-ASD.txt",
-            "aplus_PSD": f"{sensitivity_path}/aplus_PSD.txt",
+ASD_FILES = {"CE": f"{sensitivity_path}/CE_40km_ASD.txt",
+            "aplus_PSD": f"{sensitivity_path}/aplus_PSD.txt", #called a PSD, but really an ASD
             "aligo": f"{sensitivity_path}/aligo_O4high.txt",
-            'o3_PSD': f"{sensitivity_path}/H1_o3_PSD.txt"}
+            'o3_PSD': f"{sensitivity_path}/H1_o3_PSD.txt",
+            'Asharp':f"{sensitivity_path}/Asharp_strain.txt"}
 
 
 #SENSITIVITIES = {'aligo': lalsim.SimNoisePSDaLIGODesignSensitivityP1200087,
@@ -100,7 +101,7 @@ def compute_snrs_batch(df, detectors=['H1'], sensitivity='aligo', fmin=20.0, fma
     if sensitivity == 'o3_PSD':
         psd = sens
     else:
-        psd = sens**2  # assuming ASD if not labeled PSD
+        psd = sens**2  # they're all ASDs except o3, despite names
     psd_interp = interp1d(freqs_psd, psd, bounds_error=False, fill_value="extrapolate")
 
 

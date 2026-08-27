@@ -28,12 +28,8 @@ import h5py
 import jax.scipy.special as jss
 jax.config.update("jax_enable_x64", True)
 
-SENSITIVITIES = {'aligo': lalsim.SimNoisePSDaLIGODesignSensitivityP1200087,
-                'aplus': lalsim.SimNoisePSDaLIGOAPlusDesignSensitivityT1800042,
-                'CE': lalsim.SimNoisePSDCosmicExplorerP1600143}
-
 population_parameters = dict()
-config_file='pop_configs/mock_GWTC5_evo.txt'
+config_file='pop_configs/mock_O5_ne_nb.txt'
 #outfile = 'new_mock_inj_cut.h5'#'mock_injections_o3_zp1.h5'
 
 population_parameters = dict()
@@ -46,7 +42,7 @@ with open(config_file) as param_file:
         except ValueError:
             pass
 snr_threshold = 1
-sensitivity='aplus_PSD'
+sensitivity='CE'
 detectors = population_parameters.pop('detectors', 'H1').split(',')
 custom_cosmo = intensity_models.FlatwCDMCosmology(population_parameters['h'], population_parameters['Om'], population_parameters['w'], population_parameters['zmax'])
 population_parameters['cosmo'] = custom_cosmo
@@ -182,4 +178,4 @@ if __name__ == "__main__":
         'dm1sz_dm1ddl': jnp.ones(Ngrid),
     }
     SNRgrid=build_snr_grid(df_grid, m1_grid, q_grid, detectors, sensitivity)
-    np.savez("snr_grid_aplus.npz", m1_grid=m1_grid, q_grid=q_grid, snr_grid=SNRgrid, dL_fid=1.0) # dL in Gpc
+    np.savez("snr_grid_CE.npz", m1_grid=m1_grid, q_grid=q_grid, snr_grid=SNRgrid, dL_fid=1.0) # dL in Gpc

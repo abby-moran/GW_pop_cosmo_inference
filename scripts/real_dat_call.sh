@@ -1,7 +1,4 @@
 #!/usr/bin/bash
-#SBATCH -p gpu
-#SBATCH --gpus=1
-#SBATCH --ntasks=1
 #SBATCH --mem=16G
 #SBATCH --time=0-20
 

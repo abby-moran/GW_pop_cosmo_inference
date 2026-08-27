@@ -15,8 +15,10 @@ mpisndot = 0
 zmax = 3.0
 mbh_min = 3
 delta_m = 1.6
-mp_low = TruncatedNormal(9.0, 2.0, low=5.0, high=15.0)
+mp_low = TruncatedNormal(9.0, 5.0, low=3.0, high=20.0)
 msigma_low = TruncatedNormal(3.0, 2.0, low=0.5, high=5.0)
 log_fpeak = Uniform(np.log(1e-3), np.log(4))
 log_fpl = Uniform(np.log(1e-2), np.log(2))
 zpivot = 0.75
+mco_floor=4
+mco_min=2
