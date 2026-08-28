@@ -1,10 +1,9 @@
-"""Probe whether using the full selection set would clear narrow-feature tilt.
+"""Probe narrow-feature selection-tilt MC noise on a selection HDF5.
 
 Reuses the diagnose_run selection-tilt machinery (same weights, bootstrap,
-thresholds) but evaluates it at several selection fractions of the HDF5 that
-run_inf currently halves.  Stage-0 of the nsel-growth plan: if fraction=1.0
-already brings every free narrow-feature param below FAIL, growing the pool
-may be unnecessary for this run.
+thresholds).  By default uses the full file (matching run_inf).  Optional
+``--fractions`` sweeps prefixes of the HDF5 to estimate how nsel changes
+the tilt, without regenerating a pool.
 
 Usage (from ``scripts/``)::
 
@@ -15,7 +14,7 @@ Usage (from ``scripts/``)::
         --pop_config pop_configs/mock_O5_narrowbump.txt \\
         --fractions 0.5,1.0
 
-Exit 0 if full-sel (largest fraction, default includes 1.0) has worst severity
+Exit 0 if the largest fraction (default 1.0) has worst severity
 OK/NOTE/WARN; exit 1 if it still FAILs; exit 2 on usage errors.
 """
 from __future__ import annotations
@@ -90,9 +89,9 @@ def main():
     p.add_argument("--priors_dir", default="../runs/priors")
     p.add_argument("--pop_configs_dir", default="pop_configs")
     p.add_argument("--run_configs_dir", default="run_configs")
-    p.add_argument("--fractions", default="0.5,1.0",
+    p.add_argument("--fractions", default="1.0",
                    help="comma-separated fractions of the sel HDF5 to use "
-                        "(0.5 = run_inf default; 1.0 = Stage 0 full sel)")
+                        "(default 1.0 = full file, matching run_inf)")
     p.add_argument("--nboot", type=int, default=dr.SEL_TILT_NBOOT)
     p.add_argument("--seed", type=int, default=dr.SEL_TILT_SEED)
     p.add_argument("--json", action="store_true")
@@ -220,9 +219,9 @@ def main():
             half_rows = {r["name"]: r for r in rows}
 
         worst = _worst(rows)
-        tag = "  <- run_inf default" if abs(frac - 0.5) < 1e-9 else ""
+        tag = ""
         if abs(frac - 1.0) < 1e-9:
-            tag = "  <- Stage 0 full sel"
+            tag = "  <- full sel"
         print("-" * 72)
         print("fraction=%.2f  nsel=%d  worst=%s%s"
               % (frac, n_use, worst, tag))

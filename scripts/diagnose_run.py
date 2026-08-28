@@ -331,7 +331,6 @@ def read_ini(path):
         target_accept_prob=run.getfloat("target_accept_prob", fallback=0.8),
         use_low_bump=run.getboolean("use_low_bump", fallback=True),
         smooth_tail_edge=run.getboolean("smooth_tail_edge", fallback=True),
-        sel_fraction=run.getfloat("sel_fraction", fallback=0.5),
     )
     if out["pop_config_file"] and str(out["pop_config_file"]).lower() == "none":
         out["pop_config_file"] = None
@@ -971,14 +970,8 @@ def section_selection_tilt(rep, idata, free, truths, nobs, sel_file, ini):
                 % (sel_file, exc))
         return
 
-    # Match run_inf.py: analyse the same prefix of the selection set.
-    # Default 0.5 is the historical half-sel convention; configs may set
-    # sel_fraction=1.0 to use the full HDF5.
-    sel_fraction = float((ini or {}).get("sel_fraction", 0.5) or 0.5)
-    if not (0.0 < sel_fraction <= 1.0):
-        sel_fraction = 0.5
-    n_use = max(1, int(np.round(len(sel_all) * sel_fraction)))
-    sel = sel_all.iloc[:n_use]
+    sel = sel_all
+    n_use = len(sel)
     use_low_bump = (ini or {}).get("use_low_bump", True)
 
     post = idata.posterior
@@ -1031,8 +1024,8 @@ def section_selection_tilt(rep, idata, free, truths, nobs, sel_file, ini):
                 "no usable posterior range for %s" % ", ".join(targets))
         return
 
-    d = ["selection set: %d/%d rows from %s (sel_fraction=%.2f, same as run_inf.py)"
-         % (n_use, len(sel_all), os.path.basename(sel_file), sel_fraction),
+    d = ["selection set: %d rows from %s"
+         % (n_use, os.path.basename(sel_file)),
          "for each free narrow-feature param, bootstrap nobs*sd(Delta "
          "log_mu_sel) across the posterior 16-84%% range with other params "
          "at %s; compare that noise to the posterior lp std "
@@ -1106,7 +1099,7 @@ def section_selection_tilt(rep, idata, free, truths, nobs, sel_file, ini):
     if lp_std is not None:
         rep.metrics["lp_std"] = lp_std
     rep.add("monte-carlo", worst_sev, "narrow-feature selection tilt", d,
-            dict(n_sel_use=n_use, sel_fraction=sel_fraction, lp_std=lp_std,
+            dict(n_sel_use=n_use, lp_std=lp_std,
                  worst_noise=max(r["noise"] for r in rows),
                  params={r["name"]: r for r in rows}))
 
@@ -1144,7 +1137,7 @@ def _round_to_f32(data):
     return out
 
 
-def _load_pe_sel_arrays(pe_file, sel_file, evt_start, evt_end, sel_fraction):
+def _load_pe_sel_arrays(pe_file, sel_file, evt_start, evt_end):
     """Load the same PE + selection arrays run_inf.py feeds the model."""
     import h5py
     import pandas as pd
@@ -1164,13 +1157,8 @@ def _load_pe_sel_arrays(pe_file, sel_file, evt_start, evt_end, sel_fraction):
         pdraws = np.asarray(pe["pdraw"].to_list())
     pdraws = np.nan_to_num(pdraws, neginf=-1e30, posinf=1e30)
 
-    sel_all = pd.read_hdf(sel_file, key="true_parameters")
-    sel_fraction = float(sel_fraction if sel_fraction else 0.5)
-    if not (0.0 < sel_fraction <= 1.0):
-        sel_fraction = 0.5
-    n_use = max(1, int(np.round(len(sel_all) * sel_fraction)))
-    sel = sel_all.iloc[:n_use]
-    ndraw = float(sel["ndraw"].iloc[0]) * sel_fraction
+    sel = pd.read_hdf(sel_file, key="true_parameters")
+    ndraw = float(sel["ndraw"].iloc[0])
     return dict(
         m1s_det=m1s, qs=qs, dls=dls, log_pdraw=pdraws,
         m1s_det_sel=np.asarray(sel["m1d"].values),
@@ -1178,7 +1166,7 @@ def _load_pe_sel_arrays(pe_file, sel_file, evt_start, evt_end, sel_fraction):
         dls_sel=np.asarray(sel["dl"].values),
         pdraw_sel=np.asarray(sel["pdraw_sel"].values),
         Ndraw=ndraw,
-    ), sel_fraction, n_use
+    )
 
 
 def _eval_point_from_spec(spec, prior, im):
@@ -1247,10 +1235,9 @@ def run_float32_leg(spec_path):
         x64, jax.__version__, jax.devices()), file=sys.stderr, flush=True)
 
     prior = get_priors_from_file(spec["prior_path"])
-    data, sel_fraction, n_sel_use = _load_pe_sel_arrays(
+    data = _load_pe_sel_arrays(
         spec["pe_file"], spec["sel_file"],
-        spec.get("evt_start"), spec.get("evt_end"),
-        spec.get("sel_fraction", 0.5))
+        spec.get("evt_start"), spec.get("evt_end"))
     data = _round_to_f32(data)
     point, source = _eval_point_from_spec(spec, prior, im)
 
@@ -1319,7 +1306,6 @@ def run_float32_leg(spec_path):
         nsamp=int(np.asarray(data["m1s_det"]).shape[1])
         if np.asarray(data["m1s_det"]).ndim > 1 else 1,
         nsel=int(np.asarray(data["m1s_det_sel"]).shape[0]),
-        n_sel_use=n_sel_use, sel_fraction=sel_fraction,
         recentered=bool(baselines),
     )
     with open(spec["out"], "w") as f:
@@ -1401,7 +1387,6 @@ def section_float32(rep, idata, truths, prior_path, pe_file, sel_file, ini, nobs
         posterior_median=_plain_floats(post_med),
         evt_start=(ini or {}).get("evt_start", 0),
         evt_end=(ini or {}).get("evt_end"),
-        sel_fraction=(ini or {}).get("sel_fraction", 0.5),
         use_low_bump=(ini or {}).get("use_low_bump", True),
         smooth_tail_edge=(ini or {}).get("smooth_tail_edge", True),
         recenter=recenter,
