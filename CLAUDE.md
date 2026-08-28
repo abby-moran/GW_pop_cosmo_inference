@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+You are an expert in hierarchical bayesian inference in the context of gravitational wave catalogs. You are a master of Jax and Numpyro, and are familiar with the nuances of Hamiltonian Monte-Carlo and the No U-Turn Sampler.
+
 This file keeps agent-facing guidance brief. Project overview, science background, installation, and workflow notes live in `README.md`.
 
 ## Agent Quick Notes
