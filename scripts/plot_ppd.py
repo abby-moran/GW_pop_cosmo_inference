@@ -2,9 +2,18 @@
 
 Three panels: rate density vs m1 (log-log), vs q, and vs z ("R(z)"), each
 with the pointwise posterior median and a 90%-credible band (5th-95th
-percentile), plus the true population in red (anchored to the posterior
-median R -- pop configs carry no rate parameter, so the truth curve's
-overall level inherits the fit and only its shape is exact).
+percentile), plus the true population in red.
+
+Truth-curve normalization: pop configs carry no rate parameter, so the
+truth shape is anchored at its self-consistent rate on this run's data,
+R_true = nobs / mu_sel(truth).  run_inf recenters at truth and stores the
+physical log_mu_sel(truth) as the posterior attr `log_pdraw_sel_scale`;
+nobs is recovered exactly from the recorded R/R_unit/log_mu_sel draws.
+Do NOT anchor at the posterior-median R: R is the density at the single
+reference point (m1=30, q=1, z~0), so any local shape misfit there (e.g.
+an overestimated sigma widening the PISN peak across m=30) transfers to
+the truth curve as a spurious global offset.  When the attr is absent
+(no truth recentering) the script falls back to median R with a warning.
 
 Two modes:
 
@@ -65,6 +74,33 @@ def load_truths(path):
                 k, v = line.split("=", 1)
                 tv[k.strip()] = float(v.strip())
     return tv
+
+
+def truth_anchor_R(post):
+    """Self-consistent rate for the truth shape: R_true = nobs / mu_sel(truth).
+
+    The physical log_mu_sel at the truth point is the posterior attr
+    `log_pdraw_sel_scale` (run_inf.py recenters at truth and stores it).
+    nobs is recovered exactly from the model's R definition,
+    R = (nobs + sqrt(nobs) R_unit) / mu_sel, using the recorded draws.
+    Returns (R_anchor, label); falls back to the posterior-median R when
+    the attr is missing (run not recentered at truth)."""
+    R_med = float(np.median(np.asarray(post["R"].values)))
+    log_mu_sel_true = post.attrs.get("log_pdraw_sel_scale")
+    if log_mu_sel_true is None or "R_unit" not in post or "log_mu_sel" not in post:
+        print("warning: no truth-recentering attr in posterior; anchoring the "
+              "truth curve at the posterior-median R (level not meaningful)")
+        return R_med, "median R"
+    take = 32  # any handful of draws gives the same nobs up to float32 noise
+    x = (np.asarray(post["R"].values).reshape(-1)[:take].astype(np.float64)
+         * np.exp(np.asarray(post["log_mu_sel"].values).reshape(-1)[:take].astype(np.float64)))
+    u = np.asarray(post["R_unit"].values).reshape(-1)[:take].astype(np.float64)
+    sqrt_n = 0.5 * (-u + np.sqrt(u * u + 4 * x))   # positive root of n + sqrt(n) u = x
+    nobs = round(float(np.median(sqrt_n ** 2)))
+    R_true = nobs / np.exp(float(log_mu_sel_true))
+    print(f"truth anchor: R_true = nobs/mu_sel(truth) = {R_true:.3g} "
+          f"(nobs={nobs}, median posterior R = {R_med:.3g})")
+    return R_true, "R_true"
 
 
 def quantile_band(arr, level=0.90):
@@ -186,7 +222,7 @@ def main():
     out = args.out or os.path.join(run_dir, args.nc[:-3] + suffix)
 
     post = az.from_netcdf(nc_path).posterior
-    R_med = float(np.median(np.asarray(post["R"].values)))
+    R_anchor, _ = truth_anchor_R(post)
     if args.hard_tail_edge:
         smooth_tail_edge = False
     else:
@@ -236,7 +272,7 @@ def main():
         tm, tq, tz = (np.asarray(a) for a in one(
             {**{k: truths.get(k, PARAM_DEFAULTS[k]) for k in PARAM_DEFAULTS},
              **{k: truths[k] for k in BUMP_KEYS if k in truths},
-             "R": R_med},
+             "R": R_anchor},
             truths.get("flow", 0.0) > 0, smooth_tail_edge))
         xz = zg
         ylab_m = r"$m_1\,\mathrm{d}N/\mathrm{d}m_1\,\mathrm{d}V\,\mathrm{d}t$" + f"  ($z={zref:g}$)"
@@ -255,16 +291,16 @@ def main():
 
         # truth slices: same fixed-reference quantities as the deterministics
         mg_t, qg_t = np.asarray(coords["m_grid"]), np.asarray(coords["q_grid"])
-        tm = mg_t * R_med * np.asarray(np.exp(ld_true(mg_t, qref, zref)))
-        tq = mref * R_med * np.asarray(np.exp(ld_true(mref, qg_t, zref)))
-        tz = mref * R_med * np.asarray(np.exp(ld_true(mref, qref, xz)))
+        tm = mg_t * R_anchor * np.asarray(np.exp(ld_true(mg_t, qref, zref)))
+        tq = mref * R_anchor * np.asarray(np.exp(ld_true(mref, qg_t, zref)))
+        tz = mref * R_anchor * np.asarray(np.exp(ld_true(mref, qref, xz)))
         ylab_m = r"$m_1\,\mathrm{d}N/\mathrm{d}m_1\,\mathrm{d}q\,\mathrm{d}V\,\mathrm{d}t$" + f"  ($q=1$, $z={zref:g}$)"
         ylab_q = r"$m_\mathrm{ref}\,\mathrm{d}N/\mathrm{d}m_1\,\mathrm{d}q\,\mathrm{d}V\,\mathrm{d}t$" + f"  ($m_1={mref:g}$, $z={zref:g}$)"
         ylab_z = r"$m_\mathrm{ref}\,\mathrm{d}N/\mathrm{d}m_1\,\mathrm{d}q\,\mathrm{d}V\,\mathrm{d}t$" + f"  ($m_1={mref:g}$, $q=1$)"
 
     xm = np.asarray(coords["m_grid"])
     xq = np.asarray(coords["q_grid"])
-    print(f"{nc_path}: {m_ppd.shape[0]} draws, R median = {R_med:.3g} Gpc^-3 yr^-1")
+    print(f"{nc_path}: {m_ppd.shape[0]} draws, truth anchor R = {R_anchor:.3g} Gpc^-3 yr^-1")
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
     panels = [
