@@ -14,10 +14,12 @@ Usage (run from ``scripts/``)::
 
 ``--run`` resolves the single ``.nc`` in ``../runs/<name>/`` the same way
 ``plot_corner.py`` does.  ``--prior`` / ``--pop_config`` are optional; when
-omitted they are read from an ``.ini`` found in the run directory, or from the
-``scripts/run_configs/*.ini`` whose ``[run] run_dir`` matches.  Every check that
-needs a file we could not find degrades to an explicit "insufficient
-information" note rather than a guess.
+omitted they come from the ``run_config_*`` / ``*_file_contents`` attrs that
+``run_inf.py`` embeds in the ``.nc`` posterior, or -- for older ``.nc``'s --
+from an ``.ini`` (an explicit ``--config`` path, else one found in the run
+directory, else the ``scripts/run_configs/*.ini`` whose ``[run] run_dir``
+matches).  Every check that needs a file we could not find degrades to an
+explicit "insufficient information" note rather than a guess.
 
 EXIT CODE: 0 if the worst finding is OK/NOTE/WARN, 1 if any finding is FAIL,
 2 on a usage error (no such run, ambiguous .nc).
@@ -134,6 +136,7 @@ import os
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 import argparse
+import atexit
 import configparser
 import glob
 import json
@@ -306,7 +309,24 @@ def read_ini(path):
     cfg.read(path)
     if not cfg.has_section("run"):
         return {}
-    run = cfg["run"]
+    return parse_run_section(cfg["run"])
+
+
+def ini_from_attrs(attrs):
+    """Rebuild the run config from the run_config_* posterior attrs that
+    run_inf.py embeds in the .nc (raw ini strings, one per [run] key).
+    Returns the same dict as read_ini, or None when the .nc predates the
+    embedding."""
+    items = {k[len("run_config_"):]: str(v) for k, v in attrs.items()
+             if k.startswith("run_config_") and k != "run_config_file"}
+    if not items:
+        return None
+    cfg = configparser.ConfigParser(interpolation=None)
+    cfg.read_dict({"run": items})
+    return parse_run_section(cfg["run"])
+
+
+def parse_run_section(run):
 
     def _int(k, d=None):
         v = run.get(k)
@@ -337,19 +357,18 @@ def read_ini(path):
     return out
 
 
-def load_truths(path):
+def truths_from_text(text):
     """Same derived-parameter mapping as plot_corner.load_truths /
     run_inf.load_true_vals."""
     tv = {}
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                try:
-                    tv[k.strip()] = float(v.strip())
-                except ValueError:
-                    continue
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            try:
+                tv[k.strip()] = float(v.strip())
+            except ValueError:
+                continue
     if "kappa" in tv and "lam" in tv:
         tv["dkappa"] = tv["kappa"] - tv["lam"]
     if "mbhmax" in tv and "mpisn" in tv:
@@ -360,6 +379,11 @@ def load_truths(path):
     if "Omh2" not in tv and "Om" in tv and "h" in tv:
         tv["Omh2"] = tv["Om"] * tv["h"] ** 2
     return tv
+
+
+def load_truths(path):
+    with open(path) as f:
+        return truths_from_text(f.read())
 
 
 # ---------------------------------------------------------------- prior info
@@ -2025,6 +2049,10 @@ def main():
     p.add_argument("--nc", default=None, help="explicit path to the .nc")
     p.add_argument("--prior", default=None, help="prior file (else inferred)")
     p.add_argument("--pop_config", default=None, help="truth file (else inferred)")
+    p.add_argument("--config", default=None,
+                   help="run .ini used as fallback metadata source when the "
+                        ".nc carries no embedded run_config_* attrs (wins "
+                        "over any auto-discovered .ini)")
     p.add_argument("--runs_dir", default="../runs")
     p.add_argument("--priors_dir", default="/priors")
     p.add_argument("--pop_configs_dir", default="pop_configs")
@@ -2043,33 +2071,76 @@ def main():
 
     nc_path, run_dir, run_name = resolve_nc(args)
 
-    ini_path = find_ini(run_dir, run_name, args.run_configs_dir)
-    ini = read_ini(ini_path) if ini_path else {}
+    idata = az.from_netcdf(nc_path)
+    post = idata.posterior
+    attrs = post.attrs
+
+    # Run config: the run_config_* attrs run_inf.py embeds in the .nc win;
+    # older .nc's fall back to an explicit --config, then the discovered .ini.
+    ini = ini_from_attrs(attrs)
+    embedded = ini is not None
+    if embedded:
+        ini_path = ("embedded posterior attrs (run_config_*, from %s)"
+                    % attrs.get("run_config_file", "?"))
+        print("run metadata: embedded posterior attrs", file=sys.stderr)
+    else:
+        ini_path = args.config or find_ini(run_dir, run_name,
+                                           args.run_configs_dir)
+        ini = read_ini(ini_path) if ini_path else {}
+        print("run metadata: no embedded attrs; using config-file fallback "
+              "(%s)" % (ini_path or "no .ini found"), file=sys.stderr)
 
     prior_path = args.prior
+    prior_disp = prior_path
+    if prior_path is None and embedded and "prior_file_contents" in attrs:
+        # get_priors_from_file wants a path, so spill the embedded text to a
+        # temp file (cleaned up on exit; the float32 subprocess legs read it).
+        fd, prior_path = tempfile.mkstemp(prefix="diag_prior_", suffix=".prior")
+        with os.fdopen(fd, "w") as f:
+            f.write(attrs["prior_file_contents"])
+        atexit.register(os.unlink, prior_path)
+        prior_disp = ("embedded prior_file_contents (%s)"
+                      % (ini.get("prior") or "?"))
     if prior_path is None and ini.get("prior"):
         cand = os.path.join(args.priors_dir, ini["prior"])
         if os.path.exists(cand):
             prior_path = cand
     if prior_path is not None and not os.path.exists(prior_path):
         prior_path = None
+    if not (prior_disp and prior_disp.startswith("embedded")):
+        prior_disp = prior_path
 
+    # Truths: an explicit --pop_config wins; then the pop config text embedded
+    # in the .nc (absent contents / pop_config_file 'none' = real-data run, no
+    # truth); then the pop_configs/ resolution of the fallback .ini's name.
     pop_path = args.pop_config
-    if pop_path is None and ini.get("pop_config_file"):
-        for cand in (os.path.join(args.pop_configs_dir, ini["pop_config_file"]),
-                     os.path.join(run_dir, ini["pop_config_file"])):
-            if os.path.exists(cand):
-                pop_path = cand
-                break
-    if pop_path is not None and not os.path.exists(pop_path):
-        pop_path = None
+    pop_disp = pop_path
+    truths = None
+    if pop_path:
+        truths = load_truths(pop_path)
+    elif embedded:
+        if "pop_config_file_contents" in attrs and ini.get("pop_config_file"):
+            truths = truths_from_text(attrs["pop_config_file_contents"])
+            pop_disp = ("embedded pop_config_file_contents (%s)"
+                        % ini["pop_config_file"])
+        else:
+            pop_disp = "none (embedded attrs say real-data run, no truth)"
+    else:
+        if ini.get("pop_config_file"):
+            for cand in (os.path.join(args.pop_configs_dir, ini["pop_config_file"]),
+                         os.path.join(run_dir, ini["pop_config_file"])):
+                if os.path.exists(cand):
+                    pop_path = cand
+                    break
+        if pop_path is not None and os.path.exists(pop_path):
+            truths = load_truths(pop_path)
+            pop_disp = pop_path
+        else:
+            pop_disp = None
 
     nobs = None
     if ini.get("evt_end") is not None:
         nobs = int(ini["evt_end"]) - int(ini.get("evt_start") or 0)
-
-    idata = az.from_netcdf(nc_path)
-    post = idata.posterior
 
     prior = None
     pinfo = None
@@ -2080,13 +2151,11 @@ def main():
             pinfo = prior_summary(prior)
         except Exception as exc:
             print("WARNING: could not parse prior %s (%s); prior-based checks "
-                  "will be skipped" % (prior_path, exc), file=sys.stderr)
+                  "will be skipped" % (prior_disp, exc), file=sys.stderr)
             prior, pinfo = None, None
 
-    truths = load_truths(pop_path) if pop_path else None
-
     rep = Report()
-    section_inventory(rep, nc_path, idata, ini_path, ini, prior_path, pop_path, nobs)
+    section_inventory(rep, nc_path, idata, ini_path, ini, prior_disp, pop_disp, nobs)
 
     free = free_parameters(post, prior)
     rep.metrics["free_parameters"] = free
@@ -2112,8 +2181,8 @@ def main():
     section_truths(rep, post, free, truths, min_ess)
 
     if args.json:
-        out = dict(run=run_name, nc=nc_path, config=ini_path, prior=prior_path,
-                   pop_config=pop_path, nobs=nobs,
+        out = dict(run=run_name, nc=nc_path, config=ini_path, prior=prior_disp,
+                   pop_config=pop_disp, nobs=nobs,
                    overall=rep.worst(),
                    findings=[f.as_dict() for f in rep.findings],
                    recommendations=rep.deduped_recs(),

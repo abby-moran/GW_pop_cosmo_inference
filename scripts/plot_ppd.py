@@ -2,10 +2,13 @@
 
 Three panels: rate density vs m1 (log-log), vs q, and vs z ("R(z)"), each
 with the pointwise posterior median and a 90%-credible band (5th-95th
-percentile), plus the true population in red.  The truth pop config is
-auto-resolved from the run .ini's `pop_config_file` (run_inf.py's own
-convention: 'none'/absent = real-data run, so no truth overlay);
-override with --pop_config or suppress with --no_truth.
+percentile), plus the true population in red.  Run metadata (the truth pop
+config and smooth_tail_edge) is read from the run_config_* / *_file_contents
+attrs run_inf.py embeds in the .nc posterior; older .nc's fall back to the
+run .ini (an explicit --config path, else the .ini in run_dir), whose
+`pop_config_file` follows run_inf.py's own convention ('none'/absent =
+real-data run, so no truth overlay).  Override with --pop_config or suppress
+with --no_truth.
 
 Truth-curve normalization: pop configs carry no rate parameter, so the
 truth shape is anchored at its self-consistent rate on this run's data,
@@ -66,17 +69,29 @@ PARAM_DEFAULTS = {
 BUMP_KEYS = ("mp_low", "msigma_low", "flow")
 
 
-def load_truths(path):
+def parse_truths(text):
     """Pop configs store the *physical* parameters (kappa, fpl, mbhmax, flow),
     which is what build_population_model wants -- no coordinate mapping."""
     tv = {}
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                k, v = line.split("=", 1)
-                tv[k.strip()] = float(v.strip())
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            k, v = line.split("=", 1)
+            tv[k.strip()] = float(v.strip())
     return tv
+
+
+def load_truths(path):
+    with open(path) as f:
+        return parse_truths(f.read())
+
+
+def ini_getboolean(value, fallback):
+    """configparser-style boolean for a raw ini string ('true', 'yes', ...)."""
+    if value is None:
+        return fallback
+    import configparser
+    return configparser.ConfigParser.BOOLEAN_STATES[str(value).strip().lower()]
 
 
 def truth_anchor_R(post):
@@ -130,11 +145,17 @@ def build_truth_model(tv, smooth_tail_edge):
                                   smooth_tail_edge=smooth_tail_edge)
 
 
-def read_run_ini(run_dir):
-    """Parse the .ini run_inf.py copies into run_dir.  Returns the [run]
-    section and its filename, or (None, None) when no parseable .ini is
-    found."""
+def read_run_ini(run_dir, config_path=None):
+    """Parse the .ini run_inf.py copies into run_dir (or, when given, an
+    explicit --config path, which wins).  Returns the [run] section and its
+    filename, or (None, None) when no parseable .ini is found."""
     import configparser
+    if config_path is not None:
+        cfg = configparser.ConfigParser()
+        cfg.read(config_path)
+        if "run" not in cfg:
+            sys.exit(f"--config {config_path} has no [run] section")
+        return cfg["run"], config_path
     for f in sorted(os.listdir(run_dir)):
         if not f.endswith(".ini"):
             continue
@@ -213,9 +234,15 @@ def main():
     p.add_argument("--run", required=True, help="run_dir under ../runs")
     p.add_argument("--nc", default=None, help="NetCDF name (default: the only .nc in run_dir)")
     p.add_argument("--pop_config", default=None,
-                   help="truth pop config path (default: auto-resolve the "
-                        "run .ini's pop_config_file; 'none'/absent there "
-                        "means a real-data run, so no truth overlay)")
+                   help="truth pop config path (default: the pop config "
+                        "embedded in the .nc's posterior attrs, else "
+                        "auto-resolve the run .ini's pop_config_file; "
+                        "'none'/absent there means a real-data run, so no "
+                        "truth overlay)")
+    p.add_argument("--config", default=None,
+                   help="run .ini used as fallback metadata source when the "
+                        ".nc carries no embedded run_config_* attrs (wins "
+                        "over any auto-discovered .ini in run_dir)")
     p.add_argument("--out", default=None)
     p.add_argument("--runs_dir", default="../runs")
     p.add_argument("--marginal", action="store_true",
@@ -231,8 +258,9 @@ def main():
                         "true population; --pop_config is then ignored)")
     p.add_argument("--hard_tail_edge", action="store_true",
                    help="force smooth_tail_edge=False for the truth/marginal "
-                        "models (default: auto-detect from the .ini copied "
-                        "into run_dir, falling back to run_inf's True)")
+                        "models (default: auto-detect from the .nc's embedded "
+                        "attrs, else the .ini copied into run_dir, falling "
+                        "back to run_inf's True)")
     p.add_argument("--seed", type=int, default=42, help="thinning RNG seed")
     args = p.parse_args()
 
@@ -249,12 +277,27 @@ def main():
     out = args.out or os.path.join(run_dir, args.nc[:-3] + suffix)
 
     post = az.from_netcdf(nc_path).posterior
-    run_ini, ini_name = read_run_ini(run_dir)
-    if run_ini is None:
-        print("note: no .ini found in run_dir")
+    attrs = post.attrs
+    # run_inf.py >= 1383bbc embeds the whole [run] section as run_config_*
+    # attrs (plus the verbatim prior / pop config text); prefer those, and
+    # only fall back to loose config files for older .nc's.
+    embedded = any(k.startswith("run_config_") for k in attrs)
+    if embedded:
+        print("run metadata: embedded posterior attrs (run_config_*, from "
+              f"{attrs.get('run_config_file', '?')})")
+        run_ini, ini_name = None, None
+    else:
+        print("run metadata: no embedded attrs; using config-file fallback")
+        run_ini, ini_name = read_run_ini(run_dir, args.config)
+        if run_ini is None:
+            print("note: no .ini found in run_dir")
 
     if args.hard_tail_edge:
         smooth_tail_edge = False
+    elif embedded:
+        smooth_tail_edge = ini_getboolean(
+            attrs.get("run_config_smooth_tail_edge"), True)
+        print(f"smooth_tail_edge={smooth_tail_edge} (from embedded attrs)")
     elif run_ini is None:
         smooth_tail_edge = True  # run_inf's fallback
         print("note: assuming smooth_tail_edge=True")
@@ -262,21 +305,36 @@ def main():
         smooth_tail_edge = run_ini.getboolean("smooth_tail_edge", fallback=True)
         print(f"smooth_tail_edge={smooth_tail_edge} (from {ini_name})")
 
-    pop_config = None if args.no_truth else (
-        args.pop_config or resolve_pop_config(run_ini, ini_name))
-    if pop_config is None and not args.no_truth:
+    # Truth source, in precedence order: --no_truth / --pop_config, then the
+    # embedded pop config text (run_config_pop_config_file = 'none' or a
+    # missing pop_config_file_contents means a real-data run with no truth),
+    # then the .ini-based resolution.
+    truths, truth_src = None, None
+    if not args.no_truth:
+        if args.pop_config:
+            truths, truth_src = load_truths(args.pop_config), args.pop_config
+        elif embedded:
+            name = attrs.get("run_config_pop_config_file", "none")
+            if ("pop_config_file_contents" in attrs
+                    and str(name).lower() != "none"):
+                truths = parse_truths(attrs["pop_config_file_contents"])
+                truth_src = f"embedded pop_config_file_contents ({name})"
+        else:
+            pop_config = resolve_pop_config(run_ini, ini_name)
+            if pop_config is not None:
+                truths, truth_src = load_truths(pop_config), pop_config
+    if truths is None and not args.no_truth:
         print("no truth pop config for this run; skipping the truth overlay")
-    R_anchor = truth_anchor_R(post)[0] if pop_config else None
+    R_anchor = truth_anchor_R(post)[0] if truths is not None else None
 
     from intensity_models_fast import coords, LogDNDMDQDV  # noqa: E402  (needs sys.path)
-    if pop_config is None:
-        truths, ld_true = None, None
+    if truths is None:
+        ld_true = None
         zref = float(LogDNDMDQDV.zref)
         mref = float(LogDNDMDQDV.mref)
         qref = float(LogDNDMDQDV.qref)
     else:
-        print(f"truth pop config: {pop_config}")
-        truths = load_truths(pop_config)
+        print(f"truth pop config: {truth_src}")
         ld_true = build_truth_model(truths, smooth_tail_edge)
         zref = float(ld_true.zref)
         mref = float(ld_true.mref)

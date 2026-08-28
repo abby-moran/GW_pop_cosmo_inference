@@ -5,9 +5,11 @@ red truth crosshairs, dashed 16/50/84% quantiles and median +/- titles.
 
 Parameters are drawn from ORDER below, skipping any that the run held fixed
 (zero posterior variance), so the same call works whether cosmology and/or
-mpisndot were sampled.  Truths come from a pop_config file, mapped into the
-derived parameterisation the model samples in (kappa -> dkappa, etc.), the
-same way run_inf.load_true_vals does.
+mpisndot were sampled.  Truths come from the pop config run_inf.py embeds in
+the .nc posterior attrs (or, for older .nc's, a pop_config file -- pass
+--pop_config, or --config with the run .ini), mapped into the derived
+parameterisation the model samples in (kappa -> dkappa, etc.), the same way
+run_inf.load_true_vals does.
 
 Usage:
     uv run python plot_corner.py --run endO5_fullcosmo_evo3
@@ -60,16 +62,15 @@ AMPLITUDE_ALIASES = [
 ]
 
 
-def load_truths(path):
+def parse_truths(text):
     """Same mapping as run_inf.load_true_vals: pop configs store the physical
     parameters, the model samples the derived ones."""
     tv = {}
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                k, v = line.split("=", 1)
-                tv[k.strip()] = float(v.strip())
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            k, v = line.split("=", 1)
+            tv[k.strip()] = float(v.strip())
     tv["dkappa"] = tv["kappa"] - tv["lam"]
     tv["dmbhmax"] = tv["mbhmax"] - tv["mpisn"]
     tv["log_fpl"] = np.log(tv["fpl"])
@@ -82,11 +83,56 @@ def load_truths(path):
     return tv
 
 
+def load_truths(path):
+    with open(path) as f:
+        return parse_truths(f.read())
+
+
+def resolve_truths(args, post):
+    """Truth values, by precedence: an explicit --pop_config; the pop config
+    text run_inf.py embeds in the posterior attrs (run_config_pop_config_file
+    = 'none' or missing contents = real-data run, no truths); the
+    pop_config_file named by an explicit --config .ini; else the historical
+    default pop config.  Returns (truths_dict, source_note)."""
+    import configparser
+    if args.pop_config:
+        return load_truths(args.pop_config), args.pop_config
+    attrs = post.attrs
+    if any(k.startswith("run_config_") for k in attrs):
+        name = attrs.get("run_config_pop_config_file", "none")
+        if "pop_config_file_contents" in attrs and str(name).lower() != "none":
+            return (parse_truths(attrs["pop_config_file_contents"]),
+                    f"embedded pop_config_file_contents ({name})")
+        return {}, "embedded attrs: real-data run, no truths"
+    if args.config:
+        cfg = configparser.ConfigParser()
+        cfg.read(args.config)
+        name = cfg["run"].get("pop_config_file") if "run" in cfg else None
+        if name is None or name.lower() == "none":
+            return {}, f"{args.config}: pop_config_file none/absent, no truths"
+        for d in ("pop_configs", os.path.join("pop_configs", "archive")):
+            path = os.path.join(d, name)
+            if os.path.exists(path):
+                return load_truths(path), path
+        sys.exit(f"pop_config_file = {name} (from {args.config}) not found "
+                 f"under pop_configs/")
+    return load_truths(DEFAULT_POP_CONFIG), DEFAULT_POP_CONFIG
+
+
+DEFAULT_POP_CONFIG = "pop_configs/mock_O5_noevo.txt"
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--run", required=True, help="run_dir under ../runs")
     p.add_argument("--nc", default=None, help="NetCDF name (default: the only .nc in run_dir)")
-    p.add_argument("--pop_config", default="pop_configs/mock_O5_noevo.txt")
+    p.add_argument("--pop_config", default=None,
+                   help="truth pop config path (default: the pop config "
+                        "embedded in the .nc's posterior attrs, else "
+                        f"{DEFAULT_POP_CONFIG})")
+    p.add_argument("--config", default=None,
+                   help="run .ini used as fallback metadata source when the "
+                        ".nc carries no embedded run_config_* attrs")
     p.add_argument("--out", default=None)
     p.add_argument("--runs_dir", default="../runs")
     args = p.parse_args()
@@ -101,7 +147,8 @@ def main():
     out = args.out or os.path.join(run_dir, args.nc[:-3] + "_corner.png")
 
     post = az.from_netcdf(nc_path).posterior
-    truths_all = load_truths(args.pop_config)
+    truths_all, truth_src = resolve_truths(args, post)
+    print(f"truths: {truth_src}")
 
     # Resolve alternative parametrizations of the bump amplitude before
     # selecting columns: whichever coordinate was sampled wins, its aliases are
