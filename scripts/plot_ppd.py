@@ -2,7 +2,10 @@
 
 Three panels: rate density vs m1 (log-log), vs q, and vs z ("R(z)"), each
 with the pointwise posterior median and a 90%-credible band (5th-95th
-percentile), plus the true population in red.
+percentile), plus the true population in red.  The truth pop config is
+auto-resolved from the run .ini's `pop_config_file` (run_inf.py's own
+convention: 'none'/absent = real-data run, so no truth overlay);
+override with --pop_config or suppress with --no_truth.
 
 Truth-curve normalization: pop configs carry no rate parameter, so the
 truth shape is anchored at its self-consistent rate on this run's data,
@@ -127,10 +130,10 @@ def build_truth_model(tv, smooth_tail_edge):
                                   smooth_tail_edge=smooth_tail_edge)
 
 
-def detect_smooth_tail_edge(run_dir):
-    """Read smooth_tail_edge from the run's own .ini (run_inf.py copies it
-    into run_dir and reads it the same way, fallback True).  Returns
-    (value, source_file) or (None, None) when no parseable .ini is found."""
+def read_run_ini(run_dir):
+    """Parse the .ini run_inf.py copies into run_dir.  Returns the [run]
+    section and its filename, or (None, None) when no parseable .ini is
+    found."""
     import configparser
     for f in sorted(os.listdir(run_dir)):
         if not f.endswith(".ini"):
@@ -139,10 +142,28 @@ def detect_smooth_tail_edge(run_dir):
         try:
             cfg.read(os.path.join(run_dir, f))
             if "run" in cfg:
-                return cfg["run"].getboolean("smooth_tail_edge", fallback=True), f
+                return cfg["run"], f
         except (configparser.Error, ValueError):
             continue
     return None, None
+
+
+def resolve_pop_config(run_ini, ini_name):
+    """Mirror run_inf.py's convention: `pop_config_file` in the run's .ini
+    names the truth config; absent or 'none' means a real-data run with no
+    truth.  Searches pop_configs/ and pop_configs/archive/."""
+    if run_ini is None:
+        return None
+    name = run_ini.get("pop_config_file")
+    if name is None or name.lower() == "none":
+        return None
+    for d in ("pop_configs", os.path.join("pop_configs", "archive")):
+        path = os.path.join(d, name)
+        if os.path.exists(path):
+            return path
+    print(f"warning: pop_config_file = {name} (from {ini_name}) not found "
+          f"under pop_configs/; skipping the truth overlay")
+    return None
 
 
 def marginal_grids(zmax_plot, coords):
@@ -191,7 +212,10 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--run", required=True, help="run_dir under ../runs")
     p.add_argument("--nc", default=None, help="NetCDF name (default: the only .nc in run_dir)")
-    p.add_argument("--pop_config", default="pop_configs/mock_O5_noevo.txt")
+    p.add_argument("--pop_config", default=None,
+                   help="truth pop config path (default: auto-resolve the "
+                        "run .ini's pop_config_file; 'none'/absent there "
+                        "means a real-data run, so no truth overlay)")
     p.add_argument("--out", default=None)
     p.add_argument("--runs_dir", default="../runs")
     p.add_argument("--marginal", action="store_true",
@@ -202,6 +226,9 @@ def main():
     p.add_argument("--zmax_plot", type=float, default=6.5,
                    help="upper edge of the R(z) panel (mock catalogs: zmax=6.5)")
     p.add_argument("--level", type=float, default=0.90, help="credible-band level")
+    p.add_argument("--no_truth", action="store_true",
+                   help="skip the truth overlay (real-catalog runs have no "
+                        "true population; --pop_config is then ignored)")
     p.add_argument("--hard_tail_edge", action="store_true",
                    help="force smooth_tail_edge=False for the truth/marginal "
                         "models (default: auto-detect from the .ini copied "
@@ -222,23 +249,38 @@ def main():
     out = args.out or os.path.join(run_dir, args.nc[:-3] + suffix)
 
     post = az.from_netcdf(nc_path).posterior
-    R_anchor, _ = truth_anchor_R(post)
+    run_ini, ini_name = read_run_ini(run_dir)
+    if run_ini is None:
+        print("note: no .ini found in run_dir")
+
     if args.hard_tail_edge:
         smooth_tail_edge = False
+    elif run_ini is None:
+        smooth_tail_edge = True  # run_inf's fallback
+        print("note: assuming smooth_tail_edge=True")
     else:
-        smooth_tail_edge, ini = detect_smooth_tail_edge(run_dir)
-        if smooth_tail_edge is None:
-            smooth_tail_edge = True  # run_inf's fallback
-            print("note: no .ini found in run_dir, assuming smooth_tail_edge=True")
-        else:
-            print(f"smooth_tail_edge={smooth_tail_edge} (from {ini})")
+        smooth_tail_edge = run_ini.getboolean("smooth_tail_edge", fallback=True)
+        print(f"smooth_tail_edge={smooth_tail_edge} (from {ini_name})")
 
-    from intensity_models_fast import coords  # noqa: E402  (needs sys.path)
-    truths = load_truths(args.pop_config)
-    ld_true = build_truth_model(truths, smooth_tail_edge)
-    zref = float(ld_true.zref)
-    mref = float(ld_true.mref)
-    qref = float(ld_true.qref)
+    pop_config = None if args.no_truth else (
+        args.pop_config or resolve_pop_config(run_ini, ini_name))
+    if pop_config is None and not args.no_truth:
+        print("no truth pop config for this run; skipping the truth overlay")
+    R_anchor = truth_anchor_R(post)[0] if pop_config else None
+
+    from intensity_models_fast import coords, LogDNDMDQDV  # noqa: E402  (needs sys.path)
+    if pop_config is None:
+        truths, ld_true = None, None
+        zref = float(LogDNDMDQDV.zref)
+        mref = float(LogDNDMDQDV.mref)
+        qref = float(LogDNDMDQDV.qref)
+    else:
+        print(f"truth pop config: {pop_config}")
+        truths = load_truths(pop_config)
+        ld_true = build_truth_model(truths, smooth_tail_edge)
+        zref = float(ld_true.zref)
+        mref = float(ld_true.mref)
+        qref = float(ld_true.qref)
 
     if args.marginal:
         import jax
@@ -268,12 +310,15 @@ def main():
               f"(use_low_bump={use_low_bump}, smooth_tail_edge={smooth_tail_edge}) ...")
         m_ppd, q_ppd, z_ppd = (np.asarray(a) for a in jax.lax.map(fn, stack))
 
-        # truth marginals through the identical code path
-        tm, tq, tz = (np.asarray(a) for a in one(
-            {**{k: truths.get(k, PARAM_DEFAULTS[k]) for k in PARAM_DEFAULTS},
-             **{k: truths[k] for k in BUMP_KEYS if k in truths},
-             "R": R_anchor},
-            truths.get("flow", 0.0) > 0, smooth_tail_edge))
+        if ld_true is None:
+            tm = tq = tz = None
+        else:
+            # truth marginals through the identical code path
+            tm, tq, tz = (np.asarray(a) for a in one(
+                {**{k: truths.get(k, PARAM_DEFAULTS[k]) for k in PARAM_DEFAULTS},
+                 **{k: truths[k] for k in BUMP_KEYS if k in truths},
+                 "R": R_anchor},
+                truths.get("flow", 0.0) > 0, smooth_tail_edge))
         xz = zg
         ylab_m = r"$m_1\,\mathrm{d}N/\mathrm{d}m_1\,\mathrm{d}V\,\mathrm{d}t$" + f"  ($z={zref:g}$)"
         ylab_q = r"$\mathrm{d}N/\mathrm{d}q\,\mathrm{d}V\,\mathrm{d}t$" + f"  ($z={zref:g}$)"
@@ -289,18 +334,23 @@ def main():
         z_ppd = z_ppd[:, zmask]
         xz = np.asarray(coords["z_grid"])[zmask]
 
-        # truth slices: same fixed-reference quantities as the deterministics
-        mg_t, qg_t = np.asarray(coords["m_grid"]), np.asarray(coords["q_grid"])
-        tm = mg_t * R_anchor * np.asarray(np.exp(ld_true(mg_t, qref, zref)))
-        tq = mref * R_anchor * np.asarray(np.exp(ld_true(mref, qg_t, zref)))
-        tz = mref * R_anchor * np.asarray(np.exp(ld_true(mref, qref, xz)))
+        if ld_true is None:
+            tm = tq = tz = None
+        else:
+            # truth slices: same fixed-reference quantities as the deterministics
+            mg_t, qg_t = np.asarray(coords["m_grid"]), np.asarray(coords["q_grid"])
+            tm = mg_t * R_anchor * np.asarray(np.exp(ld_true(mg_t, qref, zref)))
+            tq = mref * R_anchor * np.asarray(np.exp(ld_true(mref, qg_t, zref)))
+            tz = mref * R_anchor * np.asarray(np.exp(ld_true(mref, qref, xz)))
         ylab_m = r"$m_1\,\mathrm{d}N/\mathrm{d}m_1\,\mathrm{d}q\,\mathrm{d}V\,\mathrm{d}t$" + f"  ($q=1$, $z={zref:g}$)"
         ylab_q = r"$m_\mathrm{ref}\,\mathrm{d}N/\mathrm{d}m_1\,\mathrm{d}q\,\mathrm{d}V\,\mathrm{d}t$" + f"  ($m_1={mref:g}$, $z={zref:g}$)"
         ylab_z = r"$m_\mathrm{ref}\,\mathrm{d}N/\mathrm{d}m_1\,\mathrm{d}q\,\mathrm{d}V\,\mathrm{d}t$" + f"  ($m_1={mref:g}$, $q=1$)"
 
     xm = np.asarray(coords["m_grid"])
     xq = np.asarray(coords["q_grid"])
-    print(f"{nc_path}: {m_ppd.shape[0]} draws, truth anchor R = {R_anchor:.3g} Gpc^-3 yr^-1")
+    anchor_note = ("no truth overlay" if R_anchor is None
+                   else f"truth anchor R = {R_anchor:.3g} Gpc^-3 yr^-1")
+    print(f"{nc_path}: {m_ppd.shape[0]} draws, {anchor_note}")
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
     panels = [
@@ -314,7 +364,8 @@ def main():
         ax.fill_between(x, lo, hi, color="C0", alpha=0.25, lw=0,
                         label=f"{pct:.0f}% credible")
         ax.plot(x, med, color="C0", lw=1.5, label="median")
-        ax.plot(x, truth, color="red", ls="--", lw=1.2, label="truth")
+        if truth is not None:
+            ax.plot(x, truth, color="red", ls="--", lw=1.2, label="truth")
         ax.set_xscale(xscale)
         ax.set_yscale("log")
         # trim the decades of zero-density floor without hiding structure
