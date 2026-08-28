@@ -199,5 +199,17 @@ if __name__ == "__main__":
     if baselines is not None:
         samples.posterior.attrs["recentering_offset"] = baselines["offset"]
         samples.posterior.attrs["log_pdraw_sel_scale"] = baselines["log_pdraw_sel_scale"]
+    # store the full run config in the output so runs are self-documenting
+    # (raw ini strings; prefixed to avoid clashing with other attrs)
+    samples.posterior.attrs["run_config_file"] = str(args.config)
+    for key, value in cfg["run"].items():
+        samples.posterior.attrs[f"run_config_{key}"] = value
+    # also embed the full text of the prior / pop config so the .nc stays
+    # self-contained even if those files are later edited, moved, or lost
+    with open(prior_file_name) as f:
+        samples.posterior.attrs["prior_file_contents"] = f.read()
+    if truth_file_name is not None:
+        with open(truth_file_path) as f:
+            samples.posterior.attrs["pop_config_file_contents"] = f.read()
     az.to_netcdf(samples, outfile)
     print("Saved samples to " + outfile)
