@@ -148,10 +148,19 @@ if __name__ == "__main__":
     pdraws = jnp.nan_to_num(pdraws, neginf=-1e30, posinf=1e30)
     print("array shapes (we want nevents, nsamples):", m1s.shape, qs.shape, dls.shape, pdraws.shape)
     
-    sel_samples=pd.read_hdf(sel_file, key='true_parameters')#, start=0, stop=371545)
-    len_sel=len(sel_samples)
-    sel_samples=pd.read_hdf(sel_file, key='true_parameters')#, start=0, stop=int(np.round(len_sel/2)))
-    ndraw=sel_samples['ndraw'].iloc[0]#/2
+    # Fraction of the selection HDF5 to use (prefix of rows).  Default 1.0
+    # uses the full set.  Set sel_fraction=0.5 for the historical half-set
+    # convention (first half of sel rows, ndraw/2).
+    sel_fraction = run.getfloat("sel_fraction", fallback=1.0)
+    if not (0.0 < sel_fraction <= 1.0):
+        raise ValueError(f"sel_fraction must be in (0, 1], got {sel_fraction}")
+    sel_samples = pd.read_hdf(sel_file, key='true_parameters')
+    len_sel = len(sel_samples)
+    n_sel_use = max(1, int(np.round(len_sel * sel_fraction)))
+    sel_samples = sel_samples.iloc[:n_sel_use]
+    ndraw = sel_samples['ndraw'].iloc[0] * sel_fraction
+    print(f"selection set: using {n_sel_use}/{len_sel} rows "
+          f"(sel_fraction={sel_fraction}), ndraw={ndraw}")
 
     assert np.all(m1s > 0) 
     assert np.all(qs > 0) 
