@@ -96,8 +96,17 @@ if __name__ == "__main__":
 
         n = len(m1)
         if n < PE_samps:
-            continue
-        idx = np.random.choice(n, PE_samps, replace=False)
+            print(f"Warning: {file} has only {n} samples (< {PE_samps}); "
+              f"duplicating samples to reach required count (reduced n_eff).")
+            # repeat arrays enough times to cover PE_samps, then trim
+            reps = int(np.ceil(PE_samps / n))
+            m1 = np.tile(m1, reps)[:PE_samps]
+            q = np.tile(q, reps)[:PE_samps]
+            dl = np.tile(dl, reps)[:PE_samps]
+            pdraw = np.tile(pdraw, reps)[:PE_samps]
+            idx = np.arange(PE_samps)  # no need to subsample further
+        else:
+            idx = np.random.choice(n, PE_samps, replace=False)
 
         filename = os.path.basename(file)
         parts = re.split("_|-", filename)
@@ -138,8 +147,10 @@ if __name__ == "__main__":
                     'a2':a2, 'cos_tilt_1': cos_tilt1, 'cos_tilt_2': cos_tilt2, 
                     'pdraw_m1sqz': pdraw, 'ndraw': ndraw}) #m1 is source frame
 
-    df['dm1sz_dm1ddl'] = weighting.dm1sz_dm1ddl(df['z'])
+    df['dm1sz_dm1ddl'] = weighting.dm1sz_dm1ddl(df['z']) 
+    #df['dm1sz_dm1ddl'] = (1 + df['z'])**-1 / (df['dluminosity_distance_dredshift'].to_numpy()[detected][inds] / 1e3)
     df['pdraw_sel'] = df['pdraw_m1sqz']*df['dm1sz_dm1ddl']
+    # dm1_src, dq dz to dm1_det, dq ddL to 
     df['m1d']= df['m1']*(1+df['z'])
     df['dl'] = Planck18.luminosity_distance(df['z'].to_numpy()).to(u.Gpc).value
     df.to_hdf(output_sel_file, key='true_parameters')

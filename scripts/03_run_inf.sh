@@ -1,6 +1,6 @@
 #!/usr/bin/bash
 #SBATCH -p gpu
-#SBATCH --gpus=4
+#SBATCH --gpus=2
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
 #SBATCH --time=1-00
@@ -17,4 +17,4 @@ unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/mock_O5_ne.ini
+srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/asharp_ne.ini
