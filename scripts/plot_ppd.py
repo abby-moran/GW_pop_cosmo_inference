@@ -35,9 +35,14 @@ Two modes:
       dN/dq dV dt at z=zref        (integrated over m1)
       R(z) = dN/dV dt              (integrated over m1 and q)
 
+--lvk (marginal mode only) overlays the official LVK GWTC-5.0 Default BBH
+reference curves (popsummary rates_on_grids; median + --level band) on all
+three panels for a real-catalog comparison.
+
 Usage:
     uv run python plot_ppd.py --run endO5_fullcosmo_evo7-redo
     uv run python plot_ppd.py --run endO5_narrowbump_d10 --marginal --ndraw 300
+    uv run python plot_ppd.py --run realGWTC5_noevo_fullsel2 --no_truth --marginal --lvk
 """
 import argparse
 import os
@@ -67,6 +72,49 @@ PARAM_DEFAULTS = {
     "mco_min": 4.0, "mco_floor": 6.0,
 }
 BUMP_KEYS = ("mp_low", "msigma_low", "flow")
+
+# Official LVK GWTC-5.0 Default BBH popsummary release file (--lvk overlay).
+# The etc/ symlink lives at the repo root, so resolve relative to this script.
+LVK_GWTC5_DEFAULT_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "etc",
+    "gwtc5_populations_zenodo20292639", "popsummary_files",
+    "gwtc5_updated_default_mmax_mass_TwoPeakBrokenPowerLawSmoothed"
+    "MassDistribution_redshift_PowerLawRedshift_magnitude_iid_spin_"
+    "magnitude_gaussian_tilt_iid_spin_orientation_popsummary_result.h5")
+
+
+def load_lvk_reference(path, zref, level):
+    """Median + equal-tailed band of the LVK GWTC-5.0 Default BBH reference,
+    per panel: {'m1': (grid, med, lo, hi), 'q': ..., 'z': ...}.
+
+    Convention (verified against the release's make_fig_2.ipynb): the stored
+    mass_1 / mass_ratio 'rates' are the z=0 amplitudes of their
+    PowerLawRedshift model; the notebook multiplies them by (1+z_eval)**lamb
+    per hyperposterior sample to get dR/dm1, dR/dq at z_eval (=0.2 in their
+    Fig. 2).  We do the same at OUR reference redshift zref (~1e-3), so the
+    factor is ~1 and the curves are effectively the stored z=0 rates.
+    rates_on_grids/redshift is R(z) directly and needs no factor.
+    """
+    if not os.path.exists(path):
+        sys.exit(f"--lvk: reference file not found: {path}")
+    import h5py  # deferred: only needed for the overlay
+    with h5py.File(path, "r") as f:
+        names = [n.decode() if isinstance(n, bytes) else n
+                 for n in f.attrs["hyperparameters"]]
+        lamb = f["posterior/hyperparameter_samples"][:, names.index("lamb")]
+        m1_grid = f["posterior/rates_on_grids/mass_1/positions"][0]
+        Rm1 = f["posterior/rates_on_grids/mass_1/rates"][:]
+        q_grid = f["posterior/rates_on_grids/mass_ratio/positions"][0]
+        Rq = f["posterior/rates_on_grids/mass_ratio/rates"][:]
+        z_grid = f["posterior/rates_on_grids/redshift/positions"][0]
+        Rz = f["posterior/rates_on_grids/redshift/rates"][:]
+    zfac = (1 + zref) ** lamb[:, None]
+    print(f"--lvk: {Rm1.shape[0]} hyperposterior curves from {path} "
+          f"(z grid up to {z_grid.max():.3g}; (1+zref)^lamb ~ "
+          f"{float(np.median(zfac)):.4g})")
+    return {"m1": (m1_grid, *quantile_band(Rm1 * zfac, level)),
+            "q": (q_grid, *quantile_band(Rq * zfac, level)),
+            "z": (z_grid, *quantile_band(Rz, level))}
 
 
 def parse_truths(text):
@@ -262,7 +310,17 @@ def main():
                         "attrs, else the .ini copied into run_dir, falling "
                         "back to run_inf's True)")
     p.add_argument("--seed", type=int, default=42, help="thinning RNG seed")
+    p.add_argument("--lvk", action="store_true",
+                   help="overlay the official LVK GWTC-5.0 Default BBH "
+                        "reference (marginal mode only)")
+    p.add_argument("--lvk_file", default=LVK_GWTC5_DEFAULT_FILE,
+                   help="popsummary file for the --lvk overlay")
     args = p.parse_args()
+
+    if args.lvk and not args.marginal:
+        sys.exit("--lvk overlays the LVK *marginal* rate densities, which are "
+                 "not comparable to the default fixed-slice (conditional) "
+                 "panels; add --marginal")
 
     run_dir = os.path.join(args.runs_dir, args.run)
     if not os.path.isdir(run_dir):
@@ -410,29 +468,53 @@ def main():
                    else f"truth anchor R = {R_anchor:.3g} Gpc^-3 yr^-1")
     print(f"{nc_path}: {m_ppd.shape[0]} draws, {anchor_note}")
 
+    lvk_panels = [None, None, None]
+    if args.lvk:
+        lvk = load_lvk_reference(args.lvk_file, zref, args.level)
+        # our m1 panel plots m1 * dN/dm1 dV dt, so scale LVK's dR/dm1 by m1;
+        # q and z panels are dR/dq and R(z) directly.  Their z grid ends at
+        # z ~ 1.9: plot only to its edge (or --zmax_plot, whichever is less).
+        lm1, lq, lz = lvk["m1"], lvk["q"], lvk["z"]
+        zm = lz[0] <= args.zmax_plot
+        lvk_panels = [
+            (lm1[0], lm1[0] * lm1[1], lm1[0] * lm1[2], lm1[0] * lm1[3]),
+            lq,
+            (lz[0][zm], lz[1][zm], lz[2][zm], lz[3][zm]),
+        ]
+
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
+    # fixed y floors for the marginal panels (physical rate-density units);
+    # slice-mode conditionals vary too much across runs for absolute floors,
+    # so there the limits stay dynamic (band max down 7 decades).
+    ymins = (1e-3, 1.0, 10.0) if args.marginal else (None, None, None)
     panels = [
-        (axes[0], xm, m_ppd, tm, r"$m_1\ [M_\odot]$", ylab_m, "log"),
-        (axes[1], xq, q_ppd, tq, r"$q$", ylab_q, "linear"),
-        (axes[2], xz, z_ppd, tz, r"$z$", ylab_z, "linear"),
+        (axes[0], xm, m_ppd, tm, r"$m_1\ [M_\odot]$", ylab_m, "log", ymins[0]),
+        (axes[1], xq, q_ppd, tq, r"$q$", ylab_q, "linear", ymins[1]),
+        (axes[2], xz, z_ppd, tz, r"$z$", ylab_z, "linear", ymins[2]),
     ]
     pct = 100 * args.level
-    for ax, x, ppd, truth, xlab, ylab, xscale in panels:
+    for (ax, x, ppd, truth, xlab, ylab, xscale, ymin), lvk_curve in zip(
+            panels, lvk_panels):
         med, lo, hi = quantile_band(ppd, args.level)
         ax.fill_between(x, lo, hi, color="C0", alpha=0.25, lw=0,
                         label=f"{pct:.0f}% credible")
         ax.plot(x, med, color="C0", lw=1.5, label="median")
         if truth is not None:
             ax.plot(x, truth, color="red", ls="--", lw=1.2, label="truth")
+        if lvk_curve is not None:
+            lx, lmed, llo, lhi = lvk_curve
+            ax.fill_between(lx, llo, lhi, color="0.3", alpha=0.2, lw=0)
+            ax.plot(lx, lmed, color="black", ls="--", lw=1.2,
+                    label="GWTC-5.0 (Default BBH)")
         ax.set_xscale(xscale)
         ax.set_yscale("log")
         # trim the decades of zero-density floor without hiding structure
         ymax = np.nanmax(hi)
-        ax.set_ylim(ymax * 1e-7, ymax * 3)
+        ax.set_ylim(ymin if ymin is not None else ymax * 1e-7, ymax * 3)
         ax.set_xlabel(xlab)
         ax.set_ylabel(ylab + r"  $[\mathrm{Gpc^{-3}\,yr^{-1}}]$", fontsize=9)
         ax.grid(alpha=0.2)
-    axes[0].set_xlim(2, 300)
+    axes[0].set_xlim(3, 150)
     axes[0].legend(loc="best", fontsize=8, framealpha=0.5)
     fig.suptitle(args.run)
     fig.tight_layout()
