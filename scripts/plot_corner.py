@@ -40,6 +40,7 @@ ORDER = [
     ("dmbhmax", r"$\Delta m^{\rm max}_{\rm BH}$"),
     ("sigma", r"$\sigma$"),
     ("log_fpl", r"$\log f_{\rm pl}$"),
+    ("log_r", r"$\log r$"),
     ("lam", r"$\lambda$"),
     ("dkappa", r"$\Delta \kappa$"),
     ("zp", r"$z_p$"),
