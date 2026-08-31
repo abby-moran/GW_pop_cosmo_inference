@@ -107,11 +107,11 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
             samples = np.array(f['C01:Mixed/posterior_samples'])
         elif 'PrecessingSpinIMRHM' in f.keys(): # 2.1
             samples = np.array(f['PrecessingSpinIMRHM/posterior_samples'])        
+        elif 'C00:NRSur7dq4' in f.keys(): #other bit of 04
+            samples = np.array(f['C00:NRSur7dq4']['posterior_samples'])
         elif 'C00:Mixed' in f.keys():
             # 04
             samples = np.array(f['C00:Mixed']['posterior_samples'])
-        elif 'C00:NRSur7dq4' in f.keys(): #other bit of 04
-            samples = np.array(f['C00:NRSur7dq4']['posterior_samples'])
         elif 'C01:IMRPhenomXPHM-SpinTaylor' in f.keys(): # GWTC5
             samples = np.array(f['C01:IMRPhenomXPHM-SpinTaylor']['posterior_samples'])   
         elif 'C00:IMRPhenomXPHM-SpinTaylor' in f.keys(): # GWTC5 
@@ -119,6 +119,8 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
         else:   
             print(f"Available keys in file {file}: {list(f.keys())}")
             return None
+        
+        
 
     zs=samples['redshift'] [()]
     mask = samples['redshift'] < zmax
