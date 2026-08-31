@@ -97,31 +97,33 @@ def li_prior_wt(m1, q, z, cosmology_weighted=False):
     else:
         return np.square(1+z)*m1*np.square(Planck18.luminosity_distance(z).to(u.Gpc).value)*(Planck18.comoving_distance(z).to(u.Gpc).value + (1+z)*Planck18.hubble_distance.to(u.Gpc).value/Planck18.efunc(z))
     
-def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax = 3):    
+def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax = 3, 
+                           special_events={ 'GW150914_095045','GW200129_065458','GW190521_074359','GW190521_030229',},
+                           normal_preference=['C00:NRSur7dq4','C01:Mixed','C00:Mixed','C00:IMRPhenomXPHM-SpinTaylor',
+                                                'C01:IMRPhenomXPHM-SpinTaylor','C01:IMRPhenomXPHM','C01:IMRPhenomPv2_NRTidal:HighSpin',],
+                        special_preference = ['C00:NRSur7dq4','C01:IMRPhenomXPHM',
+                                'C00:IMRPhenomXPHM-SpinTaylor','C01:IMRPhenomXPHM-SpinTaylor','C01:IMRPhenomPv2_NRTidal:HighSpin',
+                                'C01:Mixed','C00:Mixed',] ):    
+    match = re.search(r"(GW\d{6}(?:_\d{6})?)",os.path.basename(file) )
+    if not match:
+        print('unable to find event name for file', file)
+        return None
+    event = match.group(1)
     with h5py.File(file, 'r') as f:
-        if 'PublicationSamples' in f.keys():
-            # O3a files
-            samples = np.array(f['PublicationSamples/posterior_samples'])
-        elif 'C01:Mixed' in f.keys():
-            # O3b files
-            samples = np.array(f['C01:Mixed/posterior_samples'])
-        elif 'PrecessingSpinIMRHM' in f.keys(): # 2.1
-            samples = np.array(f['PrecessingSpinIMRHM/posterior_samples'])        
-        elif 'C00:NRSur7dq4' in f.keys(): #other bit of 04
-            samples = np.array(f['C00:NRSur7dq4']['posterior_samples'])
-        elif 'C00:Mixed' in f.keys():
-            # 04
-            samples = np.array(f['C00:Mixed']['posterior_samples'])
-        elif 'C01:IMRPhenomXPHM-SpinTaylor' in f.keys(): # GWTC5
-            samples = np.array(f['C01:IMRPhenomXPHM-SpinTaylor']['posterior_samples'])   
-        elif 'C00:IMRPhenomXPHM-SpinTaylor' in f.keys(): # GWTC5 
-            samples = np.array(f['C00:IMRPhenomXPHM-SpinTaylor']['posterior_samples'])   
-        else:   
-            print(f"Available keys in file {file}: {list(f.keys())}")
-            return None
-        
-        
+        # Choose the appropriate waveform preference
+        preference = (special_preference if event in special_events else normal_preference)
 
+        # Pick the first available waveform
+        for waveform in preference:
+            if waveform in f:
+                samples = np.array(f[waveform]['posterior_samples'])
+                print(event, waveform)
+                break
+        else:
+            print(f"Available keys in file {event}: {list(f.keys())}")
+            return None
+
+    # Apply redshift cut
     zs=samples['redshift'] [()]
     mask = samples['redshift'] < zmax
     m1_det = samples['mass_1'][()][mask]
@@ -143,7 +145,6 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
 
         prior =dvcdz * m1_det / ddl_dz 
     else:
-        print(filename)
         prior = dLs**2 * m1_det
     
     return m1_det, qs, dLs, prior
