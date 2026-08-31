@@ -59,30 +59,34 @@ with open(run_ini_path, "w") as f:
 
 if __name__ == "__main__":
     files = []
-    print(f'data paths: {data_paths}')
     for path in data_paths:
         print(f'globbing path: {path}')
         files += glob.glob(path)
-    #folder1 = 
-    #folder2 = "../../GW_2025/GWTC-3"
-    #files = glob.glob(os.path.join(folder1, "*_nocosmo.h5"))
-    #files += glob.glob(os.path.join(folder2, "*_nocosmo.h5"))
-    print(files)
+    print('files to start: ', len(files))
     INCLUDE_LIST=[]
     with open(include_file, "r") as f:
         INCLUDE_LIST = set(line.strip() for line in f if line.strip())
         filtered_files = []
     for f in files:
         filename = os.path.basename(f)
-        parts = re.split("_|-", filename)
-        if len(parts) >= 2 and parts[1] != 'GWTC4p0':
-            event_name = parts[3] + "_" + parts[4]
-            if event_name in INCLUDE_LIST:
-                filtered_files.append(f)
-        if len(parts) >= 2 and parts[1] == 'GWTC4p0' or parts[1] == 'GWTC5p0':
-            event_name = parts[4] + "_" + parts[5]
-            if event_name in INCLUDE_LIST:
-                filtered_files.append(f)
+        match = re.search(r"(GW\d{6}(?:_\d{6})?)",os.path.basename(filename) )
+        if not match:
+            print('unable to find event name for file', filename)
+            break
+        event_name = match.group(1)
+        if event_name in INCLUDE_LIST:
+            filtered_files.append(f)
+        else:
+            print('event excluded: ', event_name)
+        #parts = re.split("_|-", filename)
+        #if len(parts) >= 2 and parts[1] != 'GWTC4p0':
+        #    event_name = parts[3] + "_" + parts[4]
+        #    if event_name in INCLUDE_LIST:
+        #        filtered_files.append(f)
+        #if len(parts) >= 2 and parts[1] == 'GWTC4p0' or parts[1] == 'GWTC5p0':
+        #    event_name = parts[4] + "_" + parts[5]
+        #    if event_name in INCLUDE_LIST:
+        #        filtered_files.append(f)
 
     print(f"Filtered to {len(filtered_files)} files.")
     # PE_dfs = []
@@ -110,17 +114,21 @@ if __name__ == "__main__":
 
         filename = os.path.basename(file)
         parts = re.split("_|-", filename)
-        event_here = parts[3] + "_" + parts[4]
+        match = re.search(r"(GW\d{6}(?:_\d{6})?)",os.path.basename(filename) )
+        if not match:
+            print('unable to find event name for file', filename)
+            break
+        event_name = match.group(1)
 
         rows.append({
             "m1": m1[idx],
             "q": q[idx],
             "dl": dl[idx],
             "pdraw": np.log(pdraw[idx]),
-            "evt": event_here
+            "evt": event_name
         })
 
-        print(f"Done {event_here}")
+        print(f"Done {event_name}")
 
     # stack into (nevents, PE_samps)
     m1_arr = np.stack([r["m1"] for r in rows])

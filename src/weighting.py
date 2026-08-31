@@ -117,7 +117,6 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
         for waveform in preference:
             if waveform in f:
                 samples = np.array(f[waveform]['posterior_samples'])
-                print(event, waveform)
                 break
         else:
             print(f"Available keys in file {event}: {list(f.keys())}")
