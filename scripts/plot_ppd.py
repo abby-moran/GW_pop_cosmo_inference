@@ -23,26 +23,37 @@ the truth curve as a spurious global offset.  When the attr is absent
 
 Two modes:
 
-* default: read the fixed-slice deterministics the fast model stores in the
-  posterior (intensity_models_fast.py, `coords` grids) -- conditional rate
+* default (marginal): rebuild LogDNDMDQDV per (thinned) posterior draw and
+  integrate out the other dimensions -- true marginal PPDs:
+      m1 dN/dm1 dV dt at z=zref    (integrated over q)
+      dN/dq dV dt at z=zref        (integrated over m1)
+      R(z) = dN/dV dt              (integrated over m1 and q)
+* --conditional: read the fixed-slice deterministics the fast model stores in
+  the posterior (intensity_models_fast.py, `coords` grids) -- conditional rate
   densities with the *other* parameters held at reference (q=1, z~0, m1=30):
       mdNdmdVdt_fixed_qz   m1 dN/dm1 dq dV dt at q=1,  z=zref
       dNdqdVdt_fixed_mz    mref dN/dm1 dq dV dt at m1=30, z=zref
       dNdVdt_fixed_mq      mref dN/dm1 dq dV dt at m1=30, q=1
-* --marginal: rebuild LogDNDMDQDV per (thinned) posterior draw and integrate
-  out the other dimensions -- true marginal PPDs:
-      m1 dN/dm1 dV dt at z=zref    (integrated over q)
-      dN/dq dV dt at z=zref        (integrated over m1)
-      R(z) = dN/dV dt              (integrated over m1 and q)
 
---lvk (marginal mode only) overlays the official LVK GWTC-5.0 Default BBH
-reference curves (popsummary rates_on_grids; median + --level band) on all
-three panels for a real-catalog comparison.
+--lvk (incompatible with --conditional) overlays the official LVK GWTC-5.0
+Default BBH reference curves (popsummary rates_on_grids; median + --level
+band) on all three panels for a real-catalog comparison.
+
+--mc_var_max imposes the LVK-style cut on the Monte-Carlo variance of the
+log-likelihood estimator by discarding posterior draws (GWTC-5.0 requires
+var < 1; Talbot & Golomb 2023 eq. 11: the total is the per-event sum
+mc_var_loglike = sum_i 1/n_eff,i PLUS the selection term nobs^2/neff_sel --
+our neff_sel is the Farr 2019 estimator, so the -mu^2/Ndraw correction is
+already inside it).  The cut is on the total by default
+(--mc_var_events_only restricts it to the per-event sum) and is applied
+before the --ndraw thinning; the threshold is appended to the output name
+(_var<value>) so unfiltered plots are not overwritten.
 
 Usage:
     uv run python plot_ppd.py --run endO5_fullcosmo_evo7-redo
-    uv run python plot_ppd.py --run endO5_narrowbump_d10 --marginal --ndraw 300
-    uv run python plot_ppd.py --run realGWTC5_noevo_fullsel2 --no_truth --marginal --lvk
+    uv run python plot_ppd.py --run endO5_narrowbump_d10 --ndraw 300
+    uv run python plot_ppd.py --run endO5_narrowbump_d10 --conditional
+    uv run python plot_ppd.py --run realGWTC5_noevo_fullsel2 --no_truth --lvk
 """
 import argparse
 import os
@@ -72,6 +83,33 @@ PARAM_DEFAULTS = {
     "mco_min": 4.0, "mco_floor": 6.0,
 }
 BUMP_KEYS = ("mp_low", "msigma_low", "flow")
+
+# LVK 'PowerLaw + 2 Peaks' control model (run_inf_lvk.py / intensity_models_lvk).
+PARAM_DEFAULTS_LVK = {
+    "alpha_1": None, "alpha_2": None, "mbreak": None,
+    "mpp_1": None, "sigpp_1": None, "mpp_2": None, "sigpp_2": None,
+    "f_peaks": None, "f_p1": None, "beta": None,
+    "lam": None, "kappa": None, "zp": None,
+    "mmin": 4.5, "mmax": 300.0, "delta_m": 4.0, "zmax": 20.0,
+}
+
+# Model families, keyed by the posterior attr `mass_model` run_inf*_py stamps
+# (absent = the original PISN model): (module name, defaults, has_bump,
+# build kwargs passed straight to that module's build_population_model).
+# "lvk_pl2p_mt" is the LVK mass function with the PISN model's total-mass
+# pairing (pairing="mt" in intensity_models_lvk).
+FAMILIES = {
+    "pisn": ("intensity_models_fast", PARAM_DEFAULTS, True, {}),
+    # PISN mass function with the LVK-style normalized q^beta pairing
+    # (run_inf.py with `pairing = lvk`; completes the {PISN, LVK mass} x
+    # {mt, q^beta pairing} 2x2 comparison design).
+    "pisn_lvkpair": ("intensity_models_fast", PARAM_DEFAULTS, True,
+                     {"pairing": "lvk"}),
+    "lvk_pl2p": ("intensity_models_lvk", PARAM_DEFAULTS_LVK, False,
+                 {"pairing": "lvk"}),
+    "lvk_pl2p_mt": ("intensity_models_lvk", PARAM_DEFAULTS_LVK, False,
+                    {"pairing": "mt"}),
+}
 
 # Official LVK GWTC-5.0 Default BBH popsummary release file (--lvk overlay).
 # The etc/ symlink lives at the repo root, so resolve relative to this script.
@@ -142,13 +180,68 @@ def ini_getboolean(value, fallback):
     return configparser.ConfigParser.BOOLEAN_STATES[str(value).strip().lower()]
 
 
+def recover_nobs(post):
+    """Observed-event count, recovered exactly from the model's R definition,
+    R = (nobs + sqrt(nobs) R_unit) / mu_sel, using the recorded draws."""
+    take = 32  # any handful of draws gives the same nobs up to float32 noise
+    x = (np.asarray(post["R"].values).reshape(-1)[:take].astype(np.float64)
+         * np.exp(np.asarray(post["log_mu_sel"].values).reshape(-1)[:take].astype(np.float64)))
+    u = np.asarray(post["R_unit"].values).reshape(-1)[:take].astype(np.float64)
+    sqrt_n = 0.5 * (-u + np.sqrt(u * u + 4 * x))   # positive root of n + sqrt(n) u = x
+    return round(float(np.median(sqrt_n ** 2)))
+
+
+def variance_filter_mask(post, mc_var_max, events_only=False):
+    """Boolean mask over the flattened draws passing the LVK-style cut on the
+    Monte-Carlo variance of the log-likelihood estimator (var[ln L] < max).
+
+    Per-event term: `mc_var_loglike` = sum_i 1/n_eff,i (stored by the model).
+    Selection term: nobs^2 / neff_sel -- `neff_sel` is the Farr (2019)
+    effective count (its estimator already carries the -mu^2/Ndraw
+    correction), so var[ln mu_sel] = 1/neff_sel exactly.  The cut defaults to
+    the total (events + selection), matching Talbot & Golomb 2023 eq. 11 as
+    adopted by GWTC-5.0 ("maximum variance of 1 on the population likelihood
+    estimator", Sec. 3); both criteria are printed either way."""
+    if "mc_var_loglike" not in post:
+        sys.exit("--mc_var_max: posterior lacks 'mc_var_loglike' (older .nc "
+                 "without the stored MC-variance deterministic); re-run "
+                 "inference with a model that records it")
+    ev = np.asarray(post["mc_var_loglike"].values).reshape(-1).astype(np.float64)
+
+    def _report(name, a):
+        print(f"--mc_var_max: {name:<24s} min={a.min():.3f} "
+              f"med={np.median(a):.3f} max={a.max():.3f}  "
+              f"frac<{mc_var_max:g}: {(a < mc_var_max).mean():.4f} "
+              f"({(a < mc_var_max).sum()}/{a.size})")
+
+    _report("events sum_i 1/n_eff,i", ev)
+    crit = ev
+    if "neff_sel" in post and all(k in post for k in ("R", "R_unit", "log_mu_sel")):
+        nobs = recover_nobs(post)
+        sel = nobs ** 2 / np.asarray(post["neff_sel"].values).reshape(-1).astype(np.float64)
+        _report(f"selection {nobs}^2/neff_sel", sel)
+        _report("total (events+selection)", ev + sel)
+        if not events_only:
+            crit = ev + sel
+    elif not events_only:
+        sys.exit("--mc_var_max: posterior lacks neff_sel (or the R/R_unit/"
+                 "log_mu_sel draws needed to recover nobs), so the total "
+                 "variance is unavailable; pass --mc_var_events_only for the "
+                 "per-event-only cut")
+    kind = "events-only" if events_only else "total"
+    mask = crit < mc_var_max
+    if not mask.any():
+        sys.exit(f"--mc_var_max {mc_var_max:g}: no draws pass the {kind} cut")
+    print(f"--mc_var_max: keeping {mask.sum()}/{mask.size} draws "
+          f"({kind} var[ln L] < {mc_var_max:g})")
+    return mask
+
+
 def truth_anchor_R(post):
     """Self-consistent rate for the truth shape: R_true = nobs / mu_sel(truth).
 
     The physical log_mu_sel at the truth point is the posterior attr
     `log_pdraw_sel_scale` (run_inf.py recenters at truth and stores it).
-    nobs is recovered exactly from the model's R definition,
-    R = (nobs + sqrt(nobs) R_unit) / mu_sel, using the recorded draws.
     Returns (R_anchor, label); falls back to the posterior-median R when
     the attr is missing (run not recentered at truth)."""
     R_med = float(np.median(np.asarray(post["R"].values)))
@@ -157,12 +250,7 @@ def truth_anchor_R(post):
         print("warning: no truth-recentering attr in posterior; anchoring the "
               "truth curve at the posterior-median R (level not meaningful)")
         return R_med, "median R"
-    take = 32  # any handful of draws gives the same nobs up to float32 noise
-    x = (np.asarray(post["R"].values).reshape(-1)[:take].astype(np.float64)
-         * np.exp(np.asarray(post["log_mu_sel"].values).reshape(-1)[:take].astype(np.float64)))
-    u = np.asarray(post["R_unit"].values).reshape(-1)[:take].astype(np.float64)
-    sqrt_n = 0.5 * (-u + np.sqrt(u * u + 4 * x))   # positive root of n + sqrt(n) u = x
-    nobs = round(float(np.median(sqrt_n ** 2)))
+    nobs = recover_nobs(post)
     R_true = nobs / np.exp(float(log_mu_sel_true))
     print(f"truth anchor: R_true = nobs/mu_sel(truth) = {R_true:.3g} "
           f"(nobs={nobs}, median posterior R = {R_med:.3g})")
@@ -177,20 +265,24 @@ def quantile_band(arr, level=0.90):
             np.quantile(arr, hi, axis=0))
 
 
-def build_truth_model(tv, smooth_tail_edge):
-    """LogDNDMDQDV at the true parameters (import deferred: jax is only
+def build_truth_model(tv, smooth_tail_edge, family="pisn"):
+    """Population model at the true parameters (import deferred: jax is only
     needed for the truth overlay and --marginal)."""
-    from intensity_models_fast import build_population_model
-    use_low_bump = tv.get("flow", 0.0) > 0 and "mp_low" in tv
-    sample = {k: tv.get(k, d) for k, d in PARAM_DEFAULTS.items()}
+    import importlib
+    mod_name, defaults, has_bump, build_kwargs = FAMILIES[family]
+    build_population_model = importlib.import_module(mod_name).build_population_model
+    use_low_bump = has_bump and tv.get("flow", 0.0) > 0 and "mp_low" in tv
+    sample = {k: tv.get(k, d) for k, d in defaults.items()}
     missing = [k for k, v in sample.items() if v is None]
     if missing:
         sys.exit(f"pop_config is missing required parameters: {missing}")
-    for k in BUMP_KEYS:
-        if k in tv:
-            sample[k] = tv[k]
+    if has_bump:
+        for k in BUMP_KEYS:
+            if k in tv:
+                sample[k] = tv[k]
     return build_population_model(sample, use_low_bump=use_low_bump,
-                                  smooth_tail_edge=smooth_tail_edge)
+                                  smooth_tail_edge=smooth_tail_edge,
+                                  **build_kwargs)
 
 
 def read_run_ini(run_dir, config_path=None):
@@ -250,19 +342,22 @@ def marginal_grids(zmax_plot, coords):
     return mg, qg, zg
 
 
-def make_marginal_fn(mg, qg, zg, zref):
+def make_marginal_fn(mg, qg, zg, zref, family="pisn"):
     """Jittable map draw-params -> (m1 marginal, q marginal, R(z)).
 
     Any approximation here is plotting-only (the likelihood is untouched), so
     plain trapezoids on the stored grids are fine.
     """
+    import importlib
     import jax
     import jax.numpy as jnp
-    from intensity_models_fast import build_population_model
+    mod_name, _, _, build_kwargs = FAMILIES[family]
+    build_population_model = importlib.import_module(mod_name).build_population_model
 
     def _one(params, use_low_bump, smooth_tail_edge):
         ld = build_population_model(params, use_low_bump=use_low_bump,
-                                    smooth_tail_edge=smooth_tail_edge)
+                                    smooth_tail_edge=smooth_tail_edge,
+                                    **build_kwargs)
         R = params["R"]
         # z ~ 0 plane for the mass/mass-ratio marginals: (nm, nq)
         plane = jnp.exp(ld(mg[:, None], qg[None, :], zref))
@@ -293,11 +388,13 @@ def main():
                         "over any auto-discovered .ini in run_dir)")
     p.add_argument("--out", default=None)
     p.add_argument("--runs_dir", default="../runs")
-    p.add_argument("--marginal", action="store_true",
-                   help="integrate out the other dimensions per draw instead of "
-                        "reading the stored fixed-slice deterministics")
+    p.add_argument("--conditional", action="store_true",
+                   help="plot the stored fixed-slice deterministics "
+                        "(conditional rate densities) instead of the default "
+                        "marginal PPDs")
+    p.add_argument("--marginal", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--ndraw", type=int, default=500,
-                   help="posterior draws used in --marginal mode (thinned at random)")
+                   help="posterior draws used in marginal mode (thinned at random)")
     p.add_argument("--zmax_plot", type=float, default=6.5,
                    help="upper edge of the R(z) panel (mock catalogs: zmax=6.5)")
     p.add_argument("--level", type=float, default=0.90, help="credible-band level")
@@ -312,15 +409,32 @@ def main():
     p.add_argument("--seed", type=int, default=42, help="thinning RNG seed")
     p.add_argument("--lvk", action="store_true",
                    help="overlay the official LVK GWTC-5.0 Default BBH "
-                        "reference (marginal mode only)")
+                        "reference (marginal mode only, i.e. not with "
+                        "--conditional)")
     p.add_argument("--lvk_file", default=LVK_GWTC5_DEFAULT_FILE,
                    help="popsummary file for the --lvk overlay")
+    p.add_argument("--mc_var_max", type=float, default=None,
+                   help="discard posterior draws whose MC variance of the "
+                        "log-likelihood estimator exceeds this (LVK GWTC-5.0 "
+                        "standard: 1; default: no filtering).  Total variance "
+                        "= mc_var_loglike + nobs^2/neff_sel unless "
+                        "--mc_var_events_only")
+    p.add_argument("--mc_var_events_only", action="store_true",
+                   help="restrict the --mc_var_max cut to the per-event term "
+                        "sum_i 1/n_eff,i (drop the selection contribution)")
     args = p.parse_args()
 
-    if args.lvk and not args.marginal:
+    if args.marginal:
+        if args.conditional:
+            sys.exit("--marginal (deprecated) and --conditional are mutually "
+                     "exclusive")
+        print("note: --marginal is now the default and the flag is deprecated")
+    marginal = not args.conditional
+
+    if args.lvk and args.conditional:
         sys.exit("--lvk overlays the LVK *marginal* rate densities, which are "
-                 "not comparable to the default fixed-slice (conditional) "
-                 "panels; add --marginal")
+                 "not comparable to the fixed-slice (conditional) panels; "
+                 "drop --conditional")
 
     run_dir = os.path.join(args.runs_dir, args.run)
     if not os.path.isdir(run_dir):
@@ -331,11 +445,26 @@ def main():
             sys.exit(f"expected exactly one .nc in {run_dir}, found {ncs}")
         args.nc = ncs[0]
     nc_path = os.path.join(run_dir, args.nc)
-    suffix = "_ppd_marginal.png" if args.marginal else "_ppd.png"
+    suffix = "_ppd_marginal.png" if marginal else "_ppd.png"
+    if args.mc_var_max is not None:
+        tag = f"_var{args.mc_var_max:g}"
+        if args.mc_var_events_only:
+            tag += "ev"
+        suffix = suffix[:-len(".png")] + tag + ".png"
     out = args.out or os.path.join(run_dir, args.nc[:-3] + suffix)
 
     post = az.from_netcdf(nc_path).posterior
+    var_keep = (None if args.mc_var_max is None else
+                np.flatnonzero(variance_filter_mask(
+                    post, args.mc_var_max, args.mc_var_events_only)))
     attrs = post.attrs
+    family = attrs.get("mass_model", "pisn")
+    if family not in FAMILIES:
+        sys.exit(f"unknown mass_model attr in {nc_path}: {family!r} "
+                 f"(known: {sorted(FAMILIES)})")
+    _, param_defaults, has_bump, _ = FAMILIES[family]
+    if family != "pisn":
+        print(f"mass model family: {family}")
     # run_inf.py >= 1383bbc embeds the whole [run] section as run_config_*
     # attrs (plus the verbatim prior / pop config text); prefer those, and
     # only fall back to loose config files for older .nc's.
@@ -393,19 +522,20 @@ def main():
         qref = float(LogDNDMDQDV.qref)
     else:
         print(f"truth pop config: {truth_src}")
-        ld_true = build_truth_model(truths, smooth_tail_edge)
+        ld_true = build_truth_model(truths, smooth_tail_edge, family)
         zref = float(ld_true.zref)
         mref = float(ld_true.mref)
         qref = float(ld_true.qref)
 
-    if args.marginal:
+    if marginal:
         import jax
         import jax.numpy as jnp
 
         mg, qg, zg = marginal_grids(args.zmax_plot, coords)
-        use_low_bump = "flow" in post  # only recorded when the bump is on
-        param_keys = [k for k in PARAM_DEFAULTS if k in post]
-        defaulted = {k: d for k, d in PARAM_DEFAULTS.items() if k not in post}
+        # bump only recorded when it is on (PISN family only)
+        use_low_bump = has_bump and "flow" in post
+        param_keys = [k for k in param_defaults if k in post]
+        defaulted = {k: d for k, d in param_defaults.items() if k not in post}
         if any(v is None for v in defaulted.values()):
             sys.exit(f"posterior is missing required parameters: "
                      f"{[k for k, v in defaulted.items() if v is None]}")
@@ -413,14 +543,16 @@ def main():
             print(f"note: not in posterior, using defaults: {defaulted}")
 
         nsamp = post["R"].values.size
+        pool = np.arange(nsamp) if var_keep is None else var_keep
         rng = np.random.default_rng(args.seed)
-        idx = rng.choice(nsamp, size=min(args.ndraw, nsamp), replace=False)
+        idx = rng.choice(pool, size=min(args.ndraw, pool.size), replace=False)
         stack = {k: jnp.asarray(np.asarray(post[k].values).reshape(-1)[idx])
                  for k in param_keys + (list(BUMP_KEYS) if use_low_bump else []) + ["R"]}
         for k, d in defaulted.items():
             stack[k] = jnp.full(idx.size, d)
 
-        one = make_marginal_fn(jnp.asarray(mg), jnp.asarray(qg), jnp.asarray(zg), zref)
+        one = make_marginal_fn(jnp.asarray(mg), jnp.asarray(qg), jnp.asarray(zg),
+                               zref, family)
         fn = jax.jit(lambda s: one(s, use_low_bump, smooth_tail_edge))
         print(f"evaluating marginal PPDs for {idx.size} draws "
               f"(use_low_bump={use_low_bump}, smooth_tail_edge={smooth_tail_edge}) ...")
@@ -431,10 +563,11 @@ def main():
         else:
             # truth marginals through the identical code path
             tm, tq, tz = (np.asarray(a) for a in one(
-                {**{k: truths.get(k, PARAM_DEFAULTS[k]) for k in PARAM_DEFAULTS},
-                 **{k: truths[k] for k in BUMP_KEYS if k in truths},
+                {**{k: truths.get(k, param_defaults[k]) for k in param_defaults},
+                 **({k: truths[k] for k in BUMP_KEYS if k in truths}
+                    if has_bump else {}),
                  "R": R_anchor},
-                truths.get("flow", 0.0) > 0, smooth_tail_edge))
+                has_bump and truths.get("flow", 0.0) > 0, smooth_tail_edge))
         xz = zg
         ylab_m = r"$m_1\,\mathrm{d}N/\mathrm{d}m_1\,\mathrm{d}V\,\mathrm{d}t$" + f"  ($z={zref:g}$)"
         ylab_q = r"$\mathrm{d}N/\mathrm{d}q\,\mathrm{d}V\,\mathrm{d}t$" + f"  ($z={zref:g}$)"
@@ -442,10 +575,13 @@ def main():
     else:
         missing = [v for v in SLICE_VARS if v not in post]
         if missing:
-            sys.exit(f"{nc_path} lacks {missing} (older run?); use --marginal instead")
+            sys.exit(f"{nc_path} lacks {missing} (older run?); drop "
+                     f"--conditional to use marginal mode instead")
         m_ppd, q_ppd, z_ppd = (
             np.asarray(post[v].values).reshape(-1, post[v].shape[-1])
             for v in SLICE_VARS)
+        if var_keep is not None:
+            m_ppd, q_ppd, z_ppd = (a[var_keep] for a in (m_ppd, q_ppd, z_ppd))
         zmask = np.asarray(coords["z_grid"]) <= args.zmax_plot
         z_ppd = z_ppd[:, zmask]
         xz = np.asarray(coords["z_grid"])[zmask]
@@ -486,7 +622,7 @@ def main():
     # fixed y floors for the marginal panels (physical rate-density units);
     # slice-mode conditionals vary too much across runs for absolute floors,
     # so there the limits stay dynamic (band max down 7 decades).
-    ymins = (1e-3, 1.0, 10.0) if args.marginal else (None, None, None)
+    ymins = (1e-3, 1.0, 10.0) if marginal else (None, None, None)
     panels = [
         (axes[0], xm, m_ppd, tm, r"$m_1\ [M_\odot]$", ylab_m, "log", ymins[0]),
         (axes[1], xq, q_ppd, tq, r"$q$", ylab_q, "linear", ymins[1]),
