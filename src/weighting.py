@@ -96,9 +96,24 @@ def li_prior_wt(m1, q, z, cosmology_weighted=False):
     else:
         return np.square(1+z)*m1*np.square(Planck18.luminosity_distance(z).to(u.Gpc).value)*(Planck18.comoving_distance(z).to(u.Gpc).value + (1+z)*Planck18.hubble_distance.to(u.Gpc).value/Planck18.efunc(z))
     
-def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax = 3):    
+def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax = 3,
+                           group=None):
+    """Load (m1_det, q, dl_Gpc, prior) PE samples from a single-event release file.
+
+    :param group: If given, read ``f[group]['posterior_samples']`` instead of
+        the default fixed-priority key search.  Use this to select the exact
+        analysis the LVK population papers used per event (e.g. the
+        ``event_sample_IDs`` attribute of a popsummary file).  Returns None if
+        the requested group is absent.
+    """
     with h5py.File(file, 'r') as f:
-        if 'PublicationSamples' in f.keys():
+        if group is not None:
+            if group not in f.keys():
+                print(f"Requested group {group!r} not in file {file}; "
+                      f"available keys: {list(f.keys())}")
+                return None
+            samples = np.array(f[group]['posterior_samples'])
+        elif 'PublicationSamples' in f.keys():
             # O3a files
             samples = np.array(f['PublicationSamples/posterior_samples'])
         elif 'C01:Mixed' in f.keys():
@@ -129,7 +144,7 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
     parts = re.split("_|-", filename)
     data_release=parts[1]
 
-    if data_release == 'GWTC4p0' or data_release == 'GWTC5p0':
+    if data_release in ('GWTC4p0', 'GWTC4p1', 'GWTC5p0', 'GWTC5p1'):
         dvcdz = Planck18.differential_comoving_volume(zs[mask]).to(u.Gpc**3 / u.sr).value
         ddl_dz = (Planck18.comoving_distance(zs[mask]).to(u.Gpc).value + 
                   (1 + zs[mask]) * Planck18.hubble_distance.to(u.Gpc).value / Planck18.efunc(zs[mask]))
