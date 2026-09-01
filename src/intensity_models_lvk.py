@@ -579,6 +579,11 @@ class LogDNDMPISN(object):
         self.mbh_grid = self.mbh_axis.grid
         self.log_Z_grid = log_trapz_grid(self.log_dN_grid, self.mbh_grid)
 
+
+
+
+
+
 @dataclass
 class LogDNDM(object):
     a: object
