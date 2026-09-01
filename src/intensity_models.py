@@ -13,6 +13,10 @@ import numpyro.distributions as dist
 from utils import jnp_cumtrapz, sample_parameters_from_dict, log_expit
 from jax.scipy.ndimage import map_coordinates
 from functools import partial
+# The tabulated q-normalization Zq(m1) of the LVK-style q^beta pairing lives
+# in intensity_models_fast so there is exactly ONE Zq implementation; the slow
+# module importing the fast one is deliberate (fast does not import slow).
+from intensity_models_fast import LogQNorm
 
 
 
@@ -71,9 +75,24 @@ def log_trapz_grid(log_f, x):
 def log_normalized_gaussian(m, mu, sigma):
     return log_gaussian_bump(m, mu, sigma) - 0.5*jnp.log(2*jnp.pi) - jnp.log(sigma)
 
+# Matches intensity_models_fast._LOG_ZERO_FLOOR.
+_LOG_ZERO_FLOOR = -1e6
+
+# NOTE: the power-law tail is non-normalizable for c <= 1 (its area diverges), so
+# log(c - 1) is NaN there.  Priors allow c <= 1, and recentering reference points
+# are drawn from the prior, so the c <= 1 region is floored (large negative, zero
+# gradient) instead of NaN.  The c > 1 branch is bit-identical to the unguarded
+# expression (jnp.where selects the exact same value).
+def _guarded_log_cm1(c):
+    cm1 = c - 1
+    ok = cm1 > 0
+    return ok, jnp.log(jnp.where(ok, cm1, 1.0))
+
 @jax.jit
 def log_normalized_power_law_tail(m, mbhmax, c):
-    return jnp.log(c - 1) - jnp.log(mbhmax) - c*jnp.log(m/mbhmax)
+    ok, log_cm1 = _guarded_log_cm1(c)
+    val = log_cm1 - jnp.log(mbhmax) - c*jnp.log(m/mbhmax)
+    return jnp.where(ok, val, _LOG_ZERO_FLOOR)
 
 
 @dataclass
@@ -148,11 +167,21 @@ class LogDNDM(object):
     mref: object = 30.0
     zref: object = 0.001
     use_low_bump: bool = True          # static flag, not sampled/traced
+    # How the power-law tail's weight is set (static flag, not sampled/traced):
+    #   "simplex": fpl is the sampled area-ratio mixture weight (current default)
+    #   "ref_z":   fpl arrives holding the join-height ratio r; converted once to
+    #              the scalar simplex weight f_eff(zref) (height cap exact at zref only)
+    #   "per_z":   fpl holds r; the tail is height-anchored at every z
+    # See notes/2026-08-29-height-capped-tail-parametrization.md.
+    tail_anchor: str = "simplex"
     log_dndm_pisn: object = dataclasses.field(init=False)
 
     def __post_init__(self):
         self.dmbhmax = self.mbhmax - self.mpisn
         self.setup_interp()
+        if self.tail_anchor == "ref_z":
+            zr = jnp.asarray(self.zref)
+            self.fpl = jnp.exp(self.log_f_eff(self.mbhmax_at_z(zr), zr))
 
     def setup_interp(self):
         self.z_array = jnp.expm1(jnp.linspace(np.log(1), jnp.log(1+self.zmax), 30))
@@ -174,6 +203,39 @@ class LogDNDM(object):
     def log_Z_pisn_at_z(self, z):
         return jnp.interp(z, self.z_array, self.log_Z_pisn_grid)
 
+    def mbhmax_at_z(self, z):
+        return self.mpisn + self.mpisndot*(1 - 1/(1+z)) + self.dmbhmax
+
+    def log_mix_at_join(self, mj, z):
+        # Continuum (+ bump) height at the join point mj = mbhmax(z), for the
+        # height-anchored tail modes (resurrected from e7ad354^ join_point_terms).
+        log_pisn = jnp.where(mj >= self.log_dndm_pisn.mbh_grid[-1], -np.inf,
+                             self.interp_2d_dndmpisn(mj, z) - self.log_Z_pisn_at_z(z))
+        if not self.use_low_bump:
+            return log_pisn
+        return jnp.logaddexp(log_pisn,
+            safe_log(self.flow) + log_normalized_gaussian(mj, self.mp_low, self.msigma_low))
+
+    def log_f_eff(self, mj, z):
+        # Simplex-equivalent tail weight for join-height ratio r (held in self.fpl):
+        # f_eff = r * mu_j(z) * m_j(z) / (c - 1), the anchored tail's pure power-law
+        # area.  The kappa(c) turn-on area correction is deliberately omitted: it is a
+        # z-independent constant, so it cancels in the R-marginalized likelihood (see
+        # notes/2026-08-29-height-capped-tail-parametrization.md).
+        # For c <= 1 the tail is non-normalizable; floor to keep prior-draw
+        # reference points finite (fpl -> 0, continuum-only) instead of NaN.
+        ok, log_cm1 = _guarded_log_cm1(self.c)
+        val = (safe_log(self.fpl) + self.log_mix_at_join(mj, z)
+               + jnp.log(mj) - log_cm1)
+        return jnp.where(ok, val, _LOG_ZERO_FLOOR)
+
+    def tail_weight_at_ref(self):
+        # Simplex-equivalent tail weight at zref (equals fpl in simplex/ref_z modes).
+        if self.tail_anchor == "per_z":
+            zr = jnp.asarray(self.zref)
+            return jnp.exp(self.log_f_eff(self.mbhmax_at_z(zr), zr))
+        return self.fpl
+
     def __call__(self, m, z):
         m = jnp.atleast_1d(m)
         z = jnp.atleast_1d(z)
@@ -181,29 +243,38 @@ class LogDNDM(object):
         log_p_pisn_raw = jnp.where(m >= self.log_dndm_pisn.mbh_grid[-1], -np.inf, log_p_pisn_raw)
         log_p_pisn = log_p_pisn_raw - self.log_Z_pisn_at_z(z)   # unit-area shape
 
-        mbhmax_at_samples = jnp.array(self.mpisn + self.mpisndot*(1 - 1/(1+z)) + self.dmbhmax)
+        mbhmax_at_samples = jnp.array(self.mbhmax_at_z(z))
         # Tail shape: closed-form normalized power law (integrates to unit area over m > mbhmax exactly) with a smooth turn-on at mbhmax (continuity)
         log_p_pl_raw = jnp.where(m < mbhmax_at_samples, -jnp.inf,
             log_normalized_power_law_tail(m, mbhmax_at_samples, self.c))
         log_p_pl = log_p_pl_raw + log_smooth_turnon(m, mbhmax_at_samples)
 
-         # flow and fpl are mixture-weight ratios (relative to the PISN component's weight of 1), not height-anchored amplitudes. Converting to a proper simplex
+        # Tail weight in the simplex: a scalar in simplex/ref_z modes (fpl already
+        # holds the area weight there), z-dependent in per_z mode (height-anchored
+        # at every z, so the weight tracks the evolving join height).
+        if self.tail_anchor == "per_z":
+            log_f_pl = self.log_f_eff(mbhmax_at_samples, z)
+            f_pl = jnp.exp(log_f_pl)
+        else:
+            log_f_pl = safe_log(self.fpl)
+            f_pl = self.fpl
+
         if self.use_low_bump:
             log_p_low = log_normalized_gaussian(m, self.mp_low, self.msigma_low)   # unit-area shape
             # simplex over {w_pisn, w_low, w_pl}, always integrates to 1 no matter params
-            log_denom = jnp.log1p(self.flow + self.fpl)
+            log_denom = jnp.log1p(self.flow + f_pl)
             log_w_pisn = -log_denom
             log_w_low = safe_log(self.flow) - log_denom
-            log_w_pl = safe_log(self.fpl) - log_denom
+            log_w_pl = log_f_pl - log_denom
 
             log_dNdm = jnp.logaddexp(log_w_pisn + log_p_pisn, log_w_low + log_p_low)
             log_dNdm = jnp.logaddexp(log_dNdm, log_w_pl + log_p_pl)
         else:
             # simplex over just {w_pisn, w_pl} -- no bump term at all,
             # exactly zero contribution rather than a numerically tiny one
-            log_denom = jnp.log1p(self.fpl)
+            log_denom = jnp.log1p(f_pl)
             log_w_pisn = -log_denom
-            log_w_pl = safe_log(self.fpl) - log_denom
+            log_w_pl = log_f_pl - log_denom
 
             log_dNdm = jnp.logaddexp(log_w_pisn + log_p_pisn, log_w_pl + log_p_pl)
 
@@ -265,14 +336,27 @@ class LogDNDMDQDV(object):
     log_dndm: object = dataclasses.field(init=False)
     log_dndv: object = dataclasses.field(init=False)
     use_low_bump: object = True
+    tail_anchor: str = "simplex"
+    # Pairing function (STATIC flag, mirrors intensity_models_fast.LogDNDMDQDV):
+    #   "mt" (default): total-mass pairing, beta is the total-mass exponent.
+    #   "lvk": normalized q^beta pairing, beta is the q exponent.
+    pairing: str = "mt"
+    log_qnorm: object = dataclasses.field(init=False)
 
 
     def __post_init__(self):
+        if self.pairing not in ("mt", "lvk"):
+            raise ValueError(f"unknown pairing: {self.pairing!r} "
+                             f"(known: 'mt', 'lvk')")
         self.log_dndm = LogDNDM(self.a, self.b, self.c, self.mpisn, self.mpisndot, self.mbhmax, self.sigma, self.fpl,
-                                mp_low=self.mp_low, msigma_low=self.msigma_low, flow=self.flow, mref=self.mref, zmax=self.zmax, 
+                                mp_low=self.mp_low, msigma_low=self.msigma_low, flow=self.flow, mref=self.mref, zmax=self.zmax,
                                 zref=self.zref, mbh_min=self.mbh_min,delta_m=self.delta_m, mco_min=self.mco_min,
-                                use_low_bump=self.use_low_bump)
+                                use_low_bump=self.use_low_bump, tail_anchor=self.tail_anchor)
         self.log_dndv = LogDNDV(self.lam, self.kappa, self.zp, self.zref, zmax=self.zmax)
+        # One Zq(m1) table per model object (LVK pairing only); shared by the
+        # event term, the selection term and the _normalize reference.
+        self.log_qnorm = (LogQNorm(self.beta, self.mbh_min, self.delta_m)
+                          if self.pairing == "lvk" else None)
         self._normalize()
 
     def _normalize(self):
@@ -288,6 +372,15 @@ class LogDNDMDQDV(object):
         z = jnp.array(z)
 
         m2 = q*m1
+        if self.pairing == "lvk":
+            # Normalized q^beta pairing: p(m1) p(q|m1) is already a density in
+            # (m1, q) -- no second mass-function factor, no + log(m1) Jacobian;
+            # m2 enters only through the low-mass smoothing window S(q m1),
+            # which is exactly what Zq(m1) normalizes.
+            return (self.log_dndm(m1, z) + self.beta*jnp.log(q)
+                    + mmin_log_smooth_turnon(m2, self.delta_m, self.mbh_min)
+                    - self.log_qnorm.log_Zq_from_log(jnp.log(m1))
+                    + self.log_dndv(z) - self.log_norm)
         mt = m1+m2
         return self.log_dndm(m1, z) + self.log_dndm(m2, z) + self.beta*jnp.log(mt/(self.mref*(1 + self.qref))) + jnp.log(m1) + self.log_dndv(z) - self.log_norm
 
@@ -398,16 +491,25 @@ def get_deterministic_parameters(sample, use_low_bump=True):
         else:
             raise KeyError("Need one of logit_flow, flow, log_flow, or log_fpeak")
     
-    if 'logit_fpl' in sample:
+    if 'log_r' in sample or 'r' in sample:
+        # Height-anchored tail modes (tail_anchor = ref_z/per_z): r is the
+        # tail/continuum height ratio at the join.  It travels in the fpl slot;
+        # the model records the simplex-equivalent fpl deterministic itself.
+        if 'r' in sample:
+            r = sample['r']
+        else:
+            r = numpyro.deterministic('r', jnp.exp(sample['log_r']))
+        out['fpl'] = r
+    elif 'logit_fpl' in sample:
         out['fpl'] = numpyro.deterministic('fpl', jax.nn.sigmoid(sample['logit_fpl']))
     elif 'fpl' in sample:
         out['fpl'] = sample['fpl']
     elif 'log_fpl' in sample:
         out['fpl'] = numpyro.deterministic('fpl', jnp.exp(sample['log_fpl']))
     else:
-        raise KeyError("Need one of logit_fpl, fpl, or log_fpl")
- 
- 
+        raise KeyError("Need one of logit_fpl, fpl, log_fpl, or log_r")
+
+
     return out
 def log_smooth_neff_boundary(values, criteria):
         scaled_x = (values - criteria) / (0.05 * criteria)
@@ -416,20 +518,27 @@ def log_smooth_neff_boundary(values, criteria):
         # scaled_x=-20) and power-10 (gradient ~5e12) caused.
         return jnp.minimum(0.0, scaled_x)
 
-def build_population_model(sample, use_low_bump=True):
+def build_population_model(sample, use_low_bump=True, tail_anchor="simplex", pairing="mt"):
     return LogDNDMDQDV(
         a=sample['a'], b=sample['b'], c=sample['c'], mpisn=sample['mpisn'], mpisndot=sample['mpisndot'],
         mbhmax=sample['mbhmax'], sigma=sample['sigma'], fpl=sample['fpl'],
         beta=sample['beta'], lam=sample['lam'], kappa=sample['kappa'], zp=sample['zp'],
         zmax=sample['zmax'], mbh_min=sample['mbh_min'], delta_m=sample['delta_m'],
         mp_low=sample.get('mp_low', 1.0), msigma_low=sample.get('msigma_low', 1.0), flow=sample.get('flow', 0.0), use_low_bump=use_low_bump,
+        tail_anchor=tail_anchor, pairing=pairing,
         #dummy values for mp_low to prevent errors when the bump is turned off, not in use
         )
 #H_GRID = jnp.linspace(0.60, .8, 50)
     
-def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel, Ndraw, priors=None, use_low_bump=True):
+def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel, Ndraw, priors=None, use_low_bump=True, tail_anchor="simplex", pairing="mt", h_pivot=False, h_pivot_gammas=None):
     """
     Ndraw is # of events in the injection samples used to estimate the selection function
+
+    h_pivot, h_pivot_gammas: two-scale h-pivot reparametrization of the sampled
+    mp_low / mpisn_ref sites (exact change of variables handled in
+    utils.sample_parameters_from_dict; must stay in sync with
+    intensity_models_fast.pop_cosmo_model).  See
+    notes/2026-09-01-h-divergences-float32.md.
     """
     m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel = map(jnp.array, (m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel))
 
@@ -440,13 +549,17 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
 
     nsel = m1s_det_sel.shape[0]
 
-    sample = sample_parameters_from_dict(priors)
+    sample = sample_parameters_from_dict(priors, h_pivot=h_pivot,
+                                         h_pivot_gammas=h_pivot_gammas)
     deterministic_parameters = get_deterministic_parameters(sample, use_low_bump=use_low_bump)
     sample.update(deterministic_parameters, ) #sample from hyperparameters, set up cosmology (cosmo) and population model (dN)
 
     cosmo = FlatwCDMCosmology(sample['h'], sample['Om'], sample['w'], zmax=sample['zmax'])
-    log_dN = build_population_model(sample, use_low_bump=use_low_bump) 
-  
+    log_dN = build_population_model(sample, use_low_bump=use_low_bump, tail_anchor=tail_anchor, pairing=pairing)
+    if tail_anchor != "simplex":
+        # keep a comparable fpl (simplex-equivalent tail weight at zref) for downstream scripts
+        _ = numpyro.deterministic('fpl', log_dN.log_dndm.tail_weight_at_ref())
+
     zs = cosmo.z_of_dL(dls)
     m1s = m1s_det / (1 + zs) # convert to source-frame masses
 

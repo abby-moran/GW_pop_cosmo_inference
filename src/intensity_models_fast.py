@@ -503,11 +503,26 @@ def log_trapz_grid(log_f, x):
 def log_normalized_gaussian(m, mu, sigma):
     return log_gaussian_bump(m, mu, sigma) - 0.5 * _LOG_2PI - jnp.log(sigma)
 
+# NOTE: the power-law tail is non-normalizable for c <= 1 (its area diverges), so
+# log(c - 1) is NaN there.  Priors allow c <= 1, and recentering_baselines draws its
+# reference point from the prior, so the c <= 1 region is floored (large negative,
+# zero gradient) instead of NaN to keep prior-draw reference points finite.  The
+# c > 1 branch is bit-identical to the unguarded expression (jnp.where selects the
+# exact same value), preserving the fast/slow and mt-default equivalence tests.
+def _guarded_log_cm1(c):
+    cm1 = c - 1
+    ok = cm1 > 0
+    return ok, jnp.log(jnp.where(ok, cm1, 1.0))
+
 def log_normalized_power_law_tail(m, mbhmax, c):
-    return jnp.log(c - 1) - jnp.log(mbhmax) - c * jnp.log(m / mbhmax)
+    ok, log_cm1 = _guarded_log_cm1(c)
+    val = log_cm1 - jnp.log(mbhmax) - c * jnp.log(m / mbhmax)
+    return jnp.where(ok, val, _LOG_ZERO_FLOOR)
 
 def log_normalized_power_law_tail_from_log(log_m, log_mbhmax, c):
-    return jnp.log(c - 1) - log_mbhmax - c * (log_m - log_mbhmax)
+    ok, log_cm1 = _guarded_log_cm1(c)
+    val = log_cm1 - log_mbhmax - c * (log_m - log_mbhmax)
+    return jnp.where(ok, val, _LOG_ZERO_FLOOR)
 
 def safe_log(x, eps=None):
     # Clamp at the smallest normal value of the actual dtype instead.
@@ -604,11 +619,21 @@ class LogDNDM(object):
     # smooth_tail_edge=True drops the hard cut at m=mbhmax. Turn-on supresses the tail exponetially below edge
     # continuous density, AD agrees with finite differences
     smooth_tail_edge: bool = False
+    # How the power-law tail's weight is set (static flag, not sampled/traced):
+    #   "simplex": fpl is the sampled area-ratio mixture weight (current default)
+    #   "ref_z":   fpl arrives holding the join-height ratio r; converted once to
+    #              the scalar simplex weight f_eff(zref) (height cap exact at zref only)
+    #   "per_z":   fpl holds r; the tail is height-anchored at every z
+    # See notes/2026-08-29-height-capped-tail-parametrization.md.
+    tail_anchor: str = "simplex"
     log_dndm_pisn: object = dataclasses.field(init=False)
 
     def __post_init__(self):
         self.dmbhmax = self.mbhmax - self.mpisn
         self.setup_interp()
+        if self.tail_anchor == "ref_z":
+            zr = jnp.asarray(self.zref)
+            self.fpl = jnp.exp(self.log_f_eff(jnp.asarray(self.mbhmax_at_z(zr)), zr, jnp.log1p(zr)))
 
     def setup_interp(self):
         # If mpisndot is pinned to zero the PISN grid has no z dependence, so just build a slice
@@ -666,6 +691,36 @@ class LogDNDM(object):
             return self.mpisn + self.dmbhmax
         return self.mpisn + self.mpisndot * (1 - 1 / (1 + z)) + self.dmbhmax
 
+    def log_mix_at_join(self, mj, z, log1p_z):
+        # Continuum (+ bump) height at the join point mj = mbhmax(z), for the
+        # height-anchored tail modes.
+        log_pisn = jnp.where(mj >= self.mbh_grid[-1], -jnp.inf,
+            self._interp_from_log(jnp.log(mj), z, log1p_z) - self._log_Z_from_z(z, log1p_z))
+        if not self.use_low_bump:
+            return log_pisn
+        return jnp.logaddexp(log_pisn,
+            safe_log(self.flow) + log_normalized_gaussian(mj, self.mp_low, self.msigma_low))
+
+    def log_f_eff(self, mj, z, log1p_z):
+        # Simplex-equivalent tail weight for join-height ratio r (held in self.fpl):
+        # f_eff = r * mu_j(z) * m_j(z) / (c - 1), the anchored tail's pure power-law
+        # area.  The kappa(c) turn-on area correction is deliberately omitted: it is a
+        # z-independent constant, so it cancels in the R-marginalized likelihood (see
+        # notes/2026-08-29-height-capped-tail-parametrization.md).
+        # For c <= 1 the tail is non-normalizable; floor to keep prior-draw
+        # reference points finite (fpl -> 0, continuum-only) instead of NaN.
+        ok, log_cm1 = _guarded_log_cm1(self.c)
+        val = (safe_log(self.fpl) + self.log_mix_at_join(mj, z, log1p_z)
+               + jnp.log(mj) - log_cm1)
+        return jnp.where(ok, val, _LOG_ZERO_FLOOR)
+
+    def tail_weight_at_ref(self):
+        # Simplex-equivalent tail weight at zref (equals fpl in simplex/ref_z modes).
+        if self.tail_anchor == "per_z":
+            zr = jnp.asarray(self.zref)
+            return jnp.exp(self.log_f_eff(jnp.asarray(self.mbhmax_at_z(zr)), zr, jnp.log1p(zr)))
+        return self.fpl
+
     # -- evaluation --------------------------------------------------------
     def __call__(self, m, z):
         m = jnp.atleast_1d(jnp.asarray(m))
@@ -674,7 +729,7 @@ class LogDNDM(object):
         mbhmax_at_samples = jnp.asarray(self.mbhmax_at_z(z))
         return self.call_from_logs(m, jnp.log(m), z, jnp.log1p(z), jnp.broadcast_to(mbhmax_at_samples, m.shape))
 
-    def call_from_logs(self, m, log_m, z, log1p_z, mbhmax_at_samples):
+    def call_from_logs(self, m, log_m, z, log1p_z, mbhmax_at_samples, log_f_pl=None):
         log_p_pisn_raw = self._interp_from_log(log_m, z, log1p_z)
         log_p_pisn_raw = jnp.where(m >= self.mbh_grid[-1], -jnp.inf, log_p_pisn_raw)
         log_p_pisn = log_p_pisn_raw - self._log_Z_from_z(z, log1p_z)
@@ -685,19 +740,30 @@ class LogDNDM(object):
             log_p_pl_raw = jnp.where(log_m < log_mbhmax, -jnp.inf, log_p_pl_raw)
         log_p_pl = log_p_pl_raw + log_smooth_turnon(m, mbhmax_at_samples)
 
+        # Tail weight in the simplex: a scalar in simplex/ref_z modes (fpl already
+        # holds the area weight there), z-dependent in per_z mode.  log_f_pl may be
+        # passed in so the m1/m2 evaluations (same z) share one join-height lookup.
+        if self.tail_anchor == "per_z":
+            if log_f_pl is None:
+                log_f_pl = self.log_f_eff(mbhmax_at_samples, z, log1p_z)
+            f_pl = jnp.exp(log_f_pl)
+        else:
+            log_f_pl = safe_log(self.fpl)
+            f_pl = self.fpl
+
         if self.use_low_bump:
             log_p_low = log_normalized_gaussian(m, self.mp_low, self.msigma_low)
-            log_denom = jnp.log1p(self.flow + self.fpl)
+            log_denom = jnp.log1p(self.flow + f_pl)
             log_w_pisn = -log_denom
             log_w_low = safe_log(self.flow) - log_denom
-            log_w_pl = safe_log(self.fpl) - log_denom
+            log_w_pl = log_f_pl - log_denom
 
             log_dNdm = jnp.logaddexp(log_w_pisn + log_p_pisn, log_w_low + log_p_low)
             log_dNdm = jnp.logaddexp(log_dNdm, log_w_pl + log_p_pl)
         else:
-            log_denom = jnp.log1p(self.fpl)
+            log_denom = jnp.log1p(f_pl)
             log_w_pisn = -log_denom
-            log_w_pl = safe_log(self.fpl) - log_denom
+            log_w_pl = log_f_pl - log_denom
             log_dNdm = jnp.logaddexp(log_w_pisn + log_p_pisn, log_w_pl + log_p_pl)
 
         # The original also applied `where(m < mbh_min, -inf, ...)` here; the
@@ -732,6 +798,58 @@ class LogDNDV(object):
             + self.log_norm, -jnp.inf,)
 
 @dataclass
+class LogQNorm(object):
+    """Tabulated log Zq(m1) = log int_0^1 q^beta S(q m1 | mmin, delta_m) dq.
+
+    Moved here from intensity_models_lvk (which now imports it) so both the
+    LVK control model and the PISN model's ``pairing = "lvk"`` mode share ONE
+    Zq implementation.
+
+    The support is effectively [mmin/m1, 1] (S vanishes below).  The m1 axis
+    bounds are STATIC so the table shape never depends on traced parameters;
+    only the node values do (through beta, and mmin/delta_m if freed later).
+    """
+    beta: object
+    mmin: object
+    delta_m: object
+    n_m1: int = 256
+    n_q: int = 256
+    m1_lo: float = 2.0
+    m1_hi: float = 500.0
+    m1_axis: object = dataclasses.field(init=False)
+    log_Zq_table: object = dataclasses.field(init=False)
+
+    def __post_init__(self):
+        self.m1_axis = _LogAxis(self.m1_lo, self.m1_hi, int(self.n_m1))
+        m1 = self.m1_axis.grid[:, None]                            # (n_m1, 1)
+        qlo = jnp.clip(self.mmin / m1, 0.0, 1.0 - 1e-6)
+        q = qlo + (1.0 - qlo) * jnp.linspace(0.0, 1.0, int(self.n_q))[None, :]
+        log_S = mmin_log_smooth_turnon(q * m1, self.delta_m, self.mmin)
+        # Clamp the -inf of S below mmin: an all--inf row would give nan
+        # gradients through the logsumexp below.  exp(-100) is an exact zero
+        # in float32, so the integral is unchanged.
+        log_integrand = self.beta * jnp.log(q) + jnp.maximum(log_S, -100.0)
+        # Trapezoid with the ANALYTIC uniform row spacing (1-qlo)/(n_q-1) in
+        # log space.  log(jnp.diff(q)) (as log_trapz_grid does) breaks when
+        # mmin is traced: rows with qlo -> 1-1e-6 have spacing below the
+        # float32 ULP at 1.0, so diff underflows to exact zeros and
+        # d(log 0)/d(mmin) is nan at every draw.
+        log_dx = (jnp.log1p(-jnp.clip(qlo[:, 0], 0.0, 1.0 - 1e-6))
+                  - jnp.log(int(self.n_q) - 1.0))
+        lse = jss.logsumexp(jnp.log(0.5) + jnp.logaddexp(log_integrand[..., :-1],
+                                                         log_integrand[..., 1:]),
+                            axis=-1) + log_dx
+        # Mild floor (NOT _LOG_ZERO_FLOOR): log_Zq enters the density
+        # *negated*, so an extreme floor would inject +1e6 into log weights.
+        # Floored nodes sit at m1 < mmin where the mass function is -inf.
+        self.log_Zq_table = jnp.maximum(lse, -80.0)
+
+    def log_Zq_from_log(self, log_m1):
+        return _lerp1d(self.log_Zq_table, self.m1_axis.frac_index(log_m1),
+                       self.m1_axis.n)
+
+
+@dataclass
 class LogDNDMDQDV(object):
     a: object
     b: object
@@ -762,15 +880,37 @@ class LogDNDMDQDV(object):
     log_dndv: object = dataclasses.field(init=False)
     use_low_bump: object = True
     smooth_tail_edge: bool = False
+    tail_anchor: str = "simplex"
+    # Pairing function (STATIC flag, a plain Python string, never traced):
+    #   "mt" (default): the original PISN-model pairing -- both masses drawn
+    #       from the same single-mass function, paired by a total-mass power
+    #       law (beta is the TOTAL-MASS exponent).
+    #   "lvk": LVK-style normalized q^beta pairing, mirroring
+    #       intensity_models_lvk -- p(q|m1) propto q^beta S(q m1) with its
+    #       m1-dependent normalization Zq(m1) included explicitly (beta is the
+    #       q exponent).
+    pairing: str = "mt"
+    log_qnorm: object = dataclasses.field(init=False)
 
     def __post_init__(self):
+        if self.pairing not in ("mt", "lvk"):
+            raise ValueError(f"unknown pairing: {self.pairing!r} "
+                             f"(known: 'mt', 'lvk')")
         self.log_dndm = LogDNDM(
             self.a, self.b, self.c, self.mpisn, self.mpisndot, self.mbhmax, self.sigma,
             self.fpl, mp_low=self.mp_low, msigma_low=self.msigma_low, flow=self.flow,
             mref=self.mref, zmax=self.zmax, zref=self.zref, mbh_min=self.mbh_min,
             delta_m=self.delta_m, mco_min=self.mco_min, mco_floor=self.mco_floor,
-            n_z=self.n_z, use_low_bump=self.use_low_bump, smooth_tail_edge=self.smooth_tail_edge,)
+            n_z=self.n_z, use_low_bump=self.use_low_bump, smooth_tail_edge=self.smooth_tail_edge,
+            tail_anchor=self.tail_anchor,)
         self.log_dndv = LogDNDV(self.lam, self.kappa, self.zp, self.zref, zmax=self.zmax)
+        # The Zq(m1) table only exists in the LVK pairing; the mt pairing has
+        # no m1-dependent q normalization (constants are absorbed into R).
+        # ONE instance per model object: it serves the event term, the
+        # selection term, the _normalize reference evaluation and the PPD
+        # slices alike (notes/2026-08-08-tabulated-selection-consistency.md).
+        self.log_qnorm = (LogQNorm(self.beta, self.mbh_min, self.delta_m)
+                          if self.pairing == "lvk" else None)
         self._normalize()
 
     def _normalize(self):
@@ -786,16 +926,34 @@ class LogDNDMDQDV(object):
 
     def call_from_logs(self, m1, log_m1, log_q, z, log1p_z):
         """Same value as ``__call__`` but takes the logs the caller already has, eliminate redundancies."""
+        ld = self.log_dndm
+        # Computed once and shared between the m1 and m2 evaluations, depends only on z
+        mbhmax_at_samples = jnp.broadcast_to( jnp.asarray(ld.mbhmax_at_z(z)), jnp.shape(m1))
+        # per_z tail weight also depends only on z: one join-height lookup for both
+        log_f_pl = (ld.log_f_eff(mbhmax_at_samples, z, log1p_z)
+                    if ld.tail_anchor == "per_z" else None)
+
+        if self.pairing == "lvk":
+            # LVK-style normalized q^beta pairing: p(m1) p(q|m1) is already a
+            # density in (m1, q), so there is NO second mass-function factor
+            # and NO + log(m1) Jacobian.  m2's suppression enters only through
+            # the same low-mass smoothing window S(q m1 | mmin, delta_m) used
+            # at the low end of the mass function, which is exactly what
+            # Zq(m1) normalizes.
+            m2 = m1 * jnp.exp(log_q)
+            return ( ld.call_from_logs(m1, log_m1, z, log1p_z, mbhmax_at_samples, log_f_pl)
+                + self.beta * log_q
+                + mmin_log_smooth_turnon(m2, self.delta_m, self.mbh_min)
+                - self.log_qnorm.log_Zq_from_log(log_m1)
+                + self.log_dndv.from_log1p(log1p_z) - self.log_norm)
+
+        # "mt" (default): the original total-mass pairing, unchanged.
         m2 = m1 * jnp.exp(log_q)
         log_m2 = log_m1 + log_q
         mt = m1 + m2
 
-        ld = self.log_dndm
-        # Computed once and shared between the m1 and m2 evaluations, depends only on z
-        mbhmax_at_samples = jnp.broadcast_to( jnp.asarray(ld.mbhmax_at_z(z)), jnp.shape(m1))
-
-        return ( ld.call_from_logs(m1, log_m1, z, log1p_z, mbhmax_at_samples)
-            + ld.call_from_logs(m2, log_m2, z, log1p_z, mbhmax_at_samples)
+        return ( ld.call_from_logs(m1, log_m1, z, log1p_z, mbhmax_at_samples, log_f_pl)
+            + ld.call_from_logs(m2, log_m2, z, log1p_z, mbhmax_at_samples, log_f_pl)
             + self.beta * jnp.log(mt / (self.mref * (1 + self.qref)))
             + log_m1 + self.log_dndv.from_log1p(log1p_z)- self.log_norm)
 
@@ -991,14 +1149,23 @@ def get_deterministic_parameters(sample, use_low_bump=True):
         else:
             raise KeyError("Need one of logit_flow, flow, log_flow, or log_fpeak")
 
-    if 'logit_fpl' in sample:
+    if 'log_r' in sample or 'r' in sample:
+        # Height-anchored tail modes (tail_anchor = ref_z/per_z): r is the
+        # tail/continuum height ratio at the join.  It travels in the fpl slot;
+        # the model records the simplex-equivalent fpl deterministic itself.
+        if 'r' in sample:
+            r = sample['r']
+        else:
+            r = numpyro.deterministic('r', jnp.exp(sample['log_r']))
+        out['fpl'] = r
+    elif 'logit_fpl' in sample:
         out['fpl'] = numpyro.deterministic('fpl', jax.nn.sigmoid(sample['logit_fpl']))
     elif 'fpl' in sample:
         out['fpl'] = sample['fpl']
     elif 'log_fpl' in sample:
         out['fpl'] = numpyro.deterministic('fpl', jnp.exp(sample['log_fpl']))
     else:
-        raise KeyError("Need one of logit_fpl, fpl, or log_fpl")
+        raise KeyError("Need one of logit_fpl, fpl, log_fpl, or log_r")
     return out
 
 
@@ -1025,15 +1192,16 @@ def log_smooth_neff_boundary(values, criteria):
     scaled_x = (values - criteria) / (0.05 * criteria)
     return jnp.minimum(0.0, scaled_x)
 
-def build_population_model(sample, use_low_bump=True, n_z=30, smooth_tail_edge=False):
+def build_population_model(sample, use_low_bump=True, n_z=30, smooth_tail_edge=False, tail_anchor="simplex",
+                           pairing="mt"):
     return LogDNDMDQDV(a=sample['a'], b=sample['b'], c=sample['c'], mpisn=sample['mpisn'],
         mpisndot=sample['mpisndot'], mbhmax=sample['mbhmax'], sigma=sample['sigma'],
         fpl=sample['fpl'], beta=sample['beta'], lam=sample['lam'], kappa=sample['kappa'],
         zp=sample['zp'], zmax=sample['zmax'], mbh_min=sample['mbh_min'],
         delta_m=sample['delta_m'], mp_low=sample.get('mp_low', 1.0), msigma_low=sample.get('msigma_low', 1.0),
         flow=sample.get('flow', 0.0), use_low_bump=use_low_bump, n_z=n_z,
-        smooth_tail_edge=smooth_tail_edge, mco_min=sample.get('mco_min', 4.0),
-        mco_floor=sample.get('mco_floor', 6.0),)
+        smooth_tail_edge=smooth_tail_edge, tail_anchor=tail_anchor, mco_min=sample.get('mco_min', 4.0),
+        mco_floor=sample.get('mco_floor', 6.0), pairing=pairing,)
 
 
 # Floor used when a whole reduction underflows to zero weight.  
@@ -1066,6 +1234,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                     Ndraw, priors=None, use_low_bump=True, n_z=30, store_per_event=False, neff_criterion=None,
                     neff_penalty="mc_variance", mc_variance_budget=5.0, tabulate_mass_function=None, n_mass_table=8192,
                     tabulate_selection=None, scatter_free_tables=None, smooth_tail_edge=True,
+                    tail_anchor="simplex", pairing="mt", h_pivot=False, h_pivot_gammas=None,
                     loglike_ref=None, log_mu_sel_ref=None, log_pdraw_sel_scale=0.0):
     """
     - Ndraw is # of events in the injection samples used to estimate the selection function
@@ -1083,9 +1252,21 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     - tabulate_selection: whether the selection samples use the same table as the event samples. 
         Should be True for accuracy, setting to False with tabulation on emits RuntimeWArning
     - scatter_free_tables: route the gradient of the tabulated lookups through per-parameter tangent tables 
-    - smooth_tail_edge: drop the hard zero of the power-law tail below m = mbhmax 
+    - smooth_tail_edge: drop the hard zero of the power-law tail below m = mbhmax
         Makes the population density continuous at the edge
         Default True (set False for old behavior)
+    - tail_anchor: "simplex" (default, fpl is the sampled area-ratio weight),
+        "ref_z" or "per_z" (height-anchored tail; the prior samples log_r, the
+        join-height ratio, which travels in the fpl slot).  See
+        notes/2026-08-29-height-capped-tail-parametrization.md.
+    - pairing: "mt" (default, the original total-mass pairing) or "lvk"
+        (LVK-style normalized q^beta pairing; beta becomes the q exponent and
+        the Zq(m1) normalization table is shared by the event and selection
+        terms).  Static flag, see LogDNDMDQDV.
+    - h_pivot, h_pivot_gammas: two-scale h-pivot reparametrization of the
+        sampled mp_low / mpisn_ref sites (exact change of variables handled in
+        utils.sample_parameters_from_dict; posterior unchanged, ~2x ESS(h)).
+        See notes/2026-09-01-h-divergences-float32.md.
     - loglike_ref, log_mu_sel_ref: float32 recentering baselines
         Default None: no recentering, bit-identical to the previous behaviour.
     - log_pdraw_sel_scale: constant added to ``log(pdraw_sel)`` before the selection weights.  
@@ -1120,13 +1301,19 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     log_qs_sel = jnp.log(qs_sel)
     log_dls_sel = jnp.log(dls_sel)
 
-    sample = sample_parameters_from_dict(priors)
+    sample = sample_parameters_from_dict(priors, h_pivot=h_pivot,
+                                         h_pivot_gammas=h_pivot_gammas)
     deterministic_parameters = get_deterministic_parameters(sample, use_low_bump=use_low_bump)
     sample.update(deterministic_parameters)
 
     cosmo = FlatwCDMCosmology(sample['h'], sample['Om'], sample['w'], zmax=sample['zmax'])
-    log_dN = build_population_model(sample, use_low_bump=use_low_bump, n_z=n_z, smooth_tail_edge=smooth_tail_edge)
+    log_dN = build_population_model(sample, use_low_bump=use_low_bump, n_z=n_z,
+                                    smooth_tail_edge=smooth_tail_edge, tail_anchor=tail_anchor,
+                                    pairing=pairing)
     ld = log_dN.log_dndm
+    if tail_anchor != "simplex":
+        # keep a comparable fpl (simplex-equivalent tail weight at zref) for downstream scripts
+        _ = numpyro.deterministic('fpl', ld.tail_weight_at_ref())
 
     if tabulate_mass_function is None:
         tabulate_mass_function = True
@@ -1157,7 +1344,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                           mco_min=mco_min_, mco_floor=mco_floor_,
                           mbh_min=mbh_min_, delta_m=delta_m_, zmax=zmax_,
                           mref=ld.mref, zref=ld.zref, n_z=ld.n_z, use_low_bump=ld.use_low_bump,
-                          smooth_tail_edge=ld.smooth_tail_edge)
+                          smooth_tail_edge=ld.smooth_tail_edge, tail_anchor=ld.tail_anchor)
             if ld_._z_dependent:
                 out = ld_(m_axis.grid[None, :], ld_.z_array[:, None])
             else:
@@ -1202,6 +1389,35 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                 log1p_zs_ = _lerp1d(dl_tab[:, 0], t, cosmo._n_dl)
                 Jg = _lerp1d(dl_tab[:, 1], t, cosmo._n_dl) + _two_log_dH
             log_m1s_ = log_m1s_det_ - log1p_zs_
+            if log_dN.pairing == "lvk":
+                # LVK-style q^beta pairing: ONE mass-table lookup (m1 only),
+                # then + beta log q + log S(q m1) - log Zq(m1).  The Zq lookup
+                # goes through the model's single LogQNorm instance and this
+                # closure serves the event AND selection terms, so every
+                # approximation hits both identically
+                # (notes/2026-08-08-tabulated-selection-consistency.md).  The
+                # Zq table is tiny (256 nodes) and stays on the plain replica-
+                # trick backward; it is NOT part of _linearize_table.
+                tm1 = m_axis.frac_index(log_m1s_)
+                if ld._z_dependent:
+                    zs_ = jnp.expm1(log1p_zs_)
+                    iz0, fz = ld.z_axis.cell_and_frac(zs_, log1p_zs_)
+                    if f_theta is not None:
+                        tz = iz0.astype(tm1.dtype) + fz
+                        f1 = _sf_lookup2d(f_theta, f_tab, f_U, tm1, tz)
+                    else:
+                        im1 = jnp.floor(tm1).astype(jnp.int32)
+                        f1 = _gather_lerp2d(f_tab, im1, tm1 - im1, iz0, fz, n_tab, ld._n_z)
+                else:
+                    if f_theta is not None:
+                        f1 = _sf_lookup1d(f_theta, f_tab[:, None], f_U[:, :, None], tm1)[..., 0]
+                    else:
+                        f1 = _lerp1d(f_tab, tm1, n_tab)
+                m2s_ = jnp.exp(log_m1s_ + log_qs_)
+                return (f1 + log_dN.beta * log_qs_
+                        + mmin_log_smooth_turnon(m2s_, log_dN.delta_m, log_dN.mbh_min)
+                        - log_dN.log_qnorm.log_Zq_from_log(log_m1s_)
+                        + Jg - log_dN.log_norm - log_pdraw_)
             if ld._z_dependent:
                 # One z cell shared by the m1 and m2 lookups, same linear-in-z weights the direct path's PISN interp
                 zs_ = jnp.expm1(log1p_zs_)
@@ -1332,13 +1548,32 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     _ = numpyro.deterministic('hz', cosmo.h * cosmo.E(coords['z_grid']))
 
 
-def recentering_baselines(model_args, ref_params, rng_seed=0, **model_kwargs):
+def _ref_point_summary(tr, max_items=40):
+    """Compact 'name=value' summary of the scalar sample sites in a trace, for
+    error messages about a bad recentering reference point."""
+    vals = []
+    for name, site in tr.items():
+        if site.get("type") != "sample" or site.get("is_observed", False):
+            continue
+        v = np.asarray(site["value"])
+        if v.ndim == 0:
+            vals.append(f"{name}={float(v):.4g}")
+        if len(vals) >= max_items:
+            break
+    return ", ".join(vals)
+
+
+def recentering_baselines(model_args, ref_params, rng_seed=0, max_dead_events=0,
+                          **model_kwargs):
     """Evaluate per-event log likelihoods and log_mu_sel once at a fixed ref point
     Baselines need to be near typical posterior values - so init point works
 
     - model_args: the positional arguments of pop_cosmo_model (data + prior).
-    - ref_params: dict of parameter values to condition on (e.g. the init/truth point). 
+    - ref_params: dict of parameter values to condition on (e.g. the init/truth point).
         Parameters not in the dict are drawn from the prior with `rng_seed`
+    - max_dead_events: raise RuntimeError if more than this many events have
+        (near-)zero likelihood at the reference point (default 0: any dead
+        event is fatal; healthy runs report none).
     - model_kwargs: forwarded to pop_cosmo_model, this always evaluates the physical (unscaled) model.
 
     Returns a dict meant to be splatted into pop_cosmo_model:
@@ -1362,15 +1597,29 @@ def recentering_baselines(model_args, ref_params, rng_seed=0, **model_kwargs):
 
     loglike_ref = np.asarray(tr["loglik_array_dim"]["value"], dtype=np.float64)
     log_mu_sel_phys = float(np.asarray(tr["log_mu_sel"]["value"]))
-    n_dead = int(np.sum(loglike_ref <= 0.5 * _LOG_ZERO_FLOOR))
-    if n_dead:
-        # A dead ref event carries a baseline of ~_LOG_ZERO_FLOOR, residual is 1e6
-        # => huge magnitude right back into the sum and defeats the recentering
-        import warnings
-        warnings.warn(
-            f"recentering_baselines: {n_dead} event(s) have (near-)zero "
-            f"likelihood at the reference point; recentering will not help "
-            f"until the reference point is moved inside the support.")
+    # A dead ref event carries a baseline of ~_LOG_ZERO_FLOOR, residual is 1e6
+    # => huge magnitude right back into the sum and defeats the recentering, so
+    # the float32 potential loses all resolution and NUTS stalls.  Hard error
+    # (was a warning: the realGWTC5_noevo_259ev_qpair_h run sailed past it and
+    # burned a full allocation frozen at max tree depth).
+    n_dead = int(np.sum(~(loglike_ref > 0.5 * _LOG_ZERO_FLOOR)))  # counts NaN too
+    if n_dead > max_dead_events:
+        raise RuntimeError(
+            f"recentering_baselines: {n_dead} of {loglike_ref.shape[0]} event(s) "
+            f"have (near-)zero likelihood at the recentering reference point "
+            f"(log L <= {0.5 * _LOG_ZERO_FLOOR:.3g}); float32 recentering would "
+            f"be useless and the sampler will stall.  Reference point: "
+            f"{_ref_point_summary(tr)}.  Provide an explicit reference via a "
+            f"[ref_params] section in the run-config ini (name = value lines "
+            f"for the SAMPLED prior parameters, e.g. posterior medians of a "
+            f"healthy run) instead of relying on the seed-{rng_seed} prior draw.")
+    if not np.isfinite(log_mu_sel_phys) or log_mu_sel_phys <= 0.5 * _LOG_ZERO_FLOOR:
+        raise RuntimeError(
+            f"recentering_baselines: log_mu_sel = {log_mu_sel_phys} at the "
+            f"recentering reference point is non-finite or floored; the "
+            f"selection integral has no support there.  Reference point: "
+            f"{_ref_point_summary(tr)}.  Provide an explicit reference via a "
+            f"[ref_params] section in the run-config ini.")
     nobs = loglike_ref.shape[0]
     return dict(loglike_ref=loglike_ref, log_pdraw_sel_scale=log_mu_sel_phys, log_mu_sel_ref=0.0,
         log_mu_sel_phys_ref=log_mu_sel_phys, offset=float(loglike_ref.sum() - nobs * log_mu_sel_phys),)

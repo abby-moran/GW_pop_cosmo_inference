@@ -789,6 +789,147 @@ delta_m = 1.6
         FAIL.append("reparam model has non-finite gradients at truth")
 
 
+def test_tail_anchor(nobs=400, nsamp=300, nsel=40000):
+    """Height-anchored tail modes (tail_anchor = "ref_z" / "per_z"; the fpl slot
+    carries the join-height ratio r, sampled via log_r):
+      - slow vs fast LogDNDMDQDV sweeps at mpisndot = 0 and != 0
+      - noevo identity: at mpisndot = 0 f_eff(z) is z-independent, so ref_z and
+        per_z are the SAME function -- values and potentials must agree to float
+        tolerance (not merely up to a constant), checked at several points
+      - full-model slow vs fast potential + gradient (direct path, mpisndot free)
+      - AD-vs-FD for log_r through the 2-D tabulated path (the production path)
+      - r / fpl deterministic sites present in the r-modes
+    """
+    print("\n=== 10. height-anchored tail modes (tail_anchor=ref_z/per_z) ===")
+    import numpyro.distributions as dist
+    from numpyro.infer.util import initialize_model
+    from numpyro.infer import init_to_value
+
+    # --- population sweeps --------------------------------------------------
+    m = np.exp(np.linspace(np.log(2.0), np.log(200.0), 137))
+    q = np.linspace(0.02, 1.0, 41)
+    z = np.expm1(np.linspace(np.log1p(1e-3), np.log1p(6.0), 23))
+    M, Q, Z = np.meshgrid(m, q, z, indexing="ij")
+
+    for mpisndot in (0.0, 1.5):
+        pops = {}
+        for mode in ("ref_z", "per_z"):
+            s = full_sample(PARAM_POINTS[0], mpisndot=mpisndot)
+            s["fpl"] = 0.6      # the fpl slot holds r in the r-modes
+            ds = slow.build_population_model(s, tail_anchor=mode)
+            df = fast.build_population_model(s, tail_anchor=mode)
+            report(f"{mode} mpisndot={mpisndot}: log_dN(m1,q,z)",
+                   ds(M, Q, Z), df(M, Q, Z), rtol=3e-4, atol=3e-4)
+            pops[mode] = (ds, df)
+        if mpisndot == 0.0:
+            report("noevo identity ref_z == per_z (slow)",
+                   pops["ref_z"][0](M, Q, Z), pops["per_z"][0](M, Q, Z),
+                   rtol=1e-5, atol=1e-5)
+            report("noevo identity ref_z == per_z (fast)",
+                   pops["ref_z"][1](M, Q, Z), pops["per_z"][1](M, Q, Z),
+                   rtol=1e-5, atol=1e-5)
+
+    # --- full model: r-mode prior (log_r replaces log_fpl) -------------------
+    data = make_synthetic_data(nobs, nsamp, nsel, seed=23)
+    prior = build_prior(False, "/tmp/equiv_prior_r.prior")   # mpisndot free
+    del prior["log_fpl"]
+    prior["log_r"] = dist.Uniform(np.log(1e-2), 0.0)
+    truth = {k: jnp.asarray(v) for k, v in TRUTH.items()
+             if k in prior and not isinstance(prior[k], float)}
+    truth["log_r"] = jnp.asarray(np.log(0.6))
+    truth["mpisndot"] = jnp.asarray(3.0)
+    model_args = (data["m1s_det"], data["qs"], data["dls"], data["log_pdraw"],
+                  data["m1s_det_sel"], data["qs_sel"], data["dls_sel"],
+                  data["pdraw_sel"], data["Ndraw"], prior)
+
+    exact = dict(tabulate_mass_function=False, smooth_tail_edge=False,
+                 neff_penalty="min_neff")
+    for mode in ("ref_z", "per_z"):
+        outs = {}
+        for label, mod, kwargs in (("slow", slow, {}), ("fast", fast, dict(exact))):
+            mi = initialize_model(
+                jax.random.PRNGKey(0), mod.pop_cosmo_model,
+                model_args=model_args,
+                model_kwargs=dict(use_low_bump=True, tail_anchor=mode, **kwargs),
+                dynamic_args=False, init_strategy=init_to_value(values=truth),
+            )
+            v, g = jax.jit(jax.value_and_grad(mi.potential_fn))(mi.param_info.z)
+            outs[label] = (float(v), {k: float(x) for k, x in g.items()})
+            bad = [k for k, x in g.items() if not np.isfinite(x)]
+            print(f"  {mode}/{label:5s} potential={float(v):+.8e}  "
+                  f"non-finite grads: {bad or 'none'}")
+            if bad:
+                FAIL.append(f"{mode}/{label} non-finite grads")
+        vs, gs = outs["slow"]
+        vf, gf = outs["fast"]
+        report(f"{mode}: potential energy", np.array([vs]), np.array([vf]),
+               rtol=2e-4, atol=1e-2)
+        keys = sorted(set(gs) & set(gf))
+        report(f"{mode}: gradient wrt all sampled params",
+               np.array([gs[k] for k in keys]), np.array([gf[k] for k in keys]),
+               rtol=5e-3, atol=5e-3)
+
+        # AD-vs-FD for log_r through the 2-D tabulated path.  eps=1e-3 for the
+        # same kink-straddling reason as in test_tabulated_path_zdep.
+        mi = initialize_model(
+            jax.random.PRNGKey(0), fast.pop_cosmo_model, model_args=model_args,
+            model_kwargs=dict(use_low_bump=True, neff_penalty="none",
+                              tabulate_mass_function=True, smooth_tail_edge=True,
+                              tail_anchor=mode),
+            dynamic_args=False, init_strategy=init_to_value(values=truth),
+        )
+        z0 = mi.param_info.z
+        fn = jax.jit(mi.potential_fn)
+        g = jax.jit(jax.grad(mi.potential_fn))(z0)
+        eps = 1e-3
+        zp = dict(z0); zp["log_r"] = z0["log_r"] + eps
+        zm = dict(z0); zm["log_r"] = z0["log_r"] - eps
+        fd = (float(fn(zp)) - float(fn(zm))) / (2 * eps)
+        ad = float(g["log_r"])
+        rel = abs(ad - fd) / max(abs(fd), 1e-6)
+        ok = rel < 0.1
+        if not ok:
+            FAIL.append(f"{mode} tab2d+smooth AD-vs-FD inconsistent for log_r")
+        print(f"  [{'OK ' if ok else 'FAIL'}] {mode}: tab2d+smooth d/dlog_r "
+              f"AD={ad:+.6e} FD={fd:+.6e} rel={rel:.2e}")
+
+    # --- noevo identity at the potential level (production path) -------------
+    prior0 = build_prior(True, "/tmp/equiv_prior_r0.prior")   # mpisndot = 0 fixed
+    del prior0["log_fpl"]
+    prior0["log_r"] = dist.Uniform(np.log(1e-2), 0.0)
+    truth0 = {k: jnp.asarray(v) for k, v in TRUTH.items()
+              if k in prior0 and not isinstance(prior0[k], float)}
+    truth0["log_r"] = jnp.asarray(np.log(0.6))
+    model_args0 = model_args[:-1] + (prior0,)
+    fns = {}
+    for mode in ("ref_z", "per_z"):
+        mi = initialize_model(
+            jax.random.PRNGKey(0), fast.pop_cosmo_model, model_args=model_args0,
+            model_kwargs=dict(use_low_bump=True, tail_anchor=mode),
+            dynamic_args=False, init_strategy=init_to_value(values=truth0),
+        )
+        fns[mode] = (jax.jit(mi.potential_fn), mi.param_info.z)
+    fn_r, z0 = fns["ref_z"]
+    fn_p, _ = fns["per_z"]
+    # several points, so agreement-up-to-a-constant would be caught
+    pts = [z0] + [{k: v + 0.02 * (j + 1) for k, v in z0.items()} for j in range(3)]
+    vr = np.array([float(fn_r(p)) for p in pts])
+    vp = np.array([float(fn_p(p)) for p in pts])
+    report("noevo identity potential ref_z == per_z (production path)",
+           vr, vp, rtol=1e-6, atol=1e-3)
+
+    # --- deterministic sites in the r-modes ----------------------------------
+    with handlers.seed(rng_seed=0), handlers.substitute(data=truth0):
+        tr = handlers.trace(fast.pop_cosmo_model).get_trace(
+            *model_args0, use_low_bump=True, tail_anchor="per_z")
+    names = {n for n, s_ in tr.items() if s_["type"] == "deterministic"}
+    for want in ("r", "fpl"):
+        ok = want in names
+        if not ok:
+            FAIL.append(f"missing deterministic site '{want}' in r-mode")
+        print(f"  [{'OK ' if ok else 'FAIL'}] deterministic site '{want}' present (per_z)")
+
+
 if __name__ == "__main__":
     test_cosmology()
     test_pisn_grid()
@@ -802,6 +943,7 @@ if __name__ == "__main__":
     test_scatter_free_vjp()
     test_nan_gradient_robustness()
     test_reparam_equivalence()
+    test_tail_anchor()
 
     print("\n" + "=" * 70)
     if FAIL:
