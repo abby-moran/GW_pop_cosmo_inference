@@ -30,6 +30,16 @@ This file keeps agent-facing guidance brief. Project overview, science backgroun
     `mpisn_ref` with a fixed `zpivot` (pivoted mass scale; use tightened
     `mpisn_ref` bounds and keep `sigma`'s hard floor -- see
     `notes/2026-08-09-pivot-reparam.md`)
+  - `r = exp(log_r)` and derived `fpl` when the prior samples `log_r`
+    (height-anchored tail; requires running with `tail_anchor = ref_z` or
+    `per_z` -- `simplex` is the default -- and must NOT be combined with a
+    `log_fpl`/`fpl` prior line.  See
+    `notes/2026-08-29-height-capped-tail-parametrization.md`)
+  - `mp_low = u_mp_low * h^-0.14` and `mpisn_ref = u_mpisn_ref * h^-0.18`
+    when the run ini sets `h_pivot = true` (ini-driven, NOT prior-driven:
+    the prior file keeps its plain `mp_low`/`mpisn_ref` lines and the model
+    swaps them for flat `u_*` sites at runtime; exact reparametrization,
+    requires a sampled `h`.  See `notes/2026-09-01-h-divergences-float32.md`)
 - Prefer sampling `Omh2 = Om*h^2` over `Om` whenever matter density is free:
   it is much less degenerate with `h`.
 - The low-mass Gaussian bump is for narrow features only: keep `msigma_low`

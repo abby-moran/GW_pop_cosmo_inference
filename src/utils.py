@@ -402,6 +402,11 @@ def get_priors_from_file(filename):
     with open(filename, "r") as priorfile:
         lines = priorfile.read().splitlines()
     for line in lines:
+        # skip blanks and full-line comments (same convention as the
+        # pop-config parser in run_inf.py)
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
         param, func = parse_input_line(line)
         prior[param] = func
     return prior
@@ -461,14 +466,106 @@ def warn_log_flow_deprecated(context=None):
     )
     return True
 
-def sample_parameters_from_dict(prior, grid_params=None):
+# Two-scale h-pivot (see notes/2026-09-01-h-divergences-float32.md): default
+# exponents of the h -> mass-scale ridge measured on the real-data h-free run
+# (log mp_low ~ -0.14 log h, log mpisn_ref ~ -0.18 log h).
+H_PIVOT_DEFAULT_GAMMAS = {"mp_low": 0.14, "mpisn_ref": 0.18}
+
+
+def _dist_support_bounds(d):
+    """(low, high) of a numpyro distribution's support; missing sides are +-inf."""
+    sup = getattr(d, "support", None)
+    lo = getattr(sup, "lower_bound", None)
+    hi = getattr(sup, "upper_bound", None)
+    if lo is None:
+        lo = getattr(d, "low", None)
+    if hi is None:
+        hi = getattr(d, "high", None)
+    lo = -np.inf if lo is None else float(lo)
+    hi = np.inf if hi is None else float(hi)
+    return lo, hi
+
+
+def h_pivot_u_bounds(m_dist, h_dist, gamma, name=""):
+    """Uniform bounds for the h-pivot auxiliary variable ``u = m * h**gamma``.
+
+    The derived value ``m = u * h**-gamma`` must stay inside the original
+    truncated support [m_lo, m_hi] for EVERY h in the h prior's support
+    [h_lo, h_hi]; with gamma > 0 that means
+    ``u_lo = m_lo * h_hi**gamma``, ``u_hi = m_hi * h_lo**gamma``.
+    Computed at runtime from the actual prior objects, never hardcoded.
+    """
+    gamma = float(gamma)
+    if not gamma > 0:
+        raise ValueError(f"h_pivot: gamma for {name} must be > 0, got {gamma}")
+    m_lo, m_hi = _dist_support_bounds(m_dist)
+    h_lo, h_hi = _dist_support_bounds(h_dist)
+    if not (np.isfinite(m_lo) and np.isfinite(m_hi) and m_lo > 0):
+        raise ValueError(
+            f"h_pivot: the {name} prior must have finite positive truncation "
+            f"bounds, got support ({m_lo}, {m_hi})")
+    if not (np.isfinite(h_lo) and np.isfinite(h_hi) and h_lo > 0):
+        raise ValueError(
+            f"h_pivot: the h prior must have finite positive truncation "
+            f"bounds, got support ({h_lo}, {h_hi})")
+    u_lo = m_lo * h_hi ** gamma
+    u_hi = m_hi * h_lo ** gamma
+    if u_lo >= u_hi:
+        raise ValueError(
+            f"h_pivot: empty u-range for {name}: the h prior support "
+            f"({h_lo}, {h_hi}) is too wide for the {name} support "
+            f"({m_lo}, {m_hi}) at gamma = {gamma} "
+            f"(u_lo = {u_lo:.6g} >= u_hi = {u_hi:.6g})")
+    return u_lo, u_hi
+
+
+def sample_parameters_from_dict(prior, grid_params=None, h_pivot=False,
+                                h_pivot_gammas=None):
     """
     grid_params: optional dict of {param_name: jnp.array of grid values}
     e.g. {'h': jnp.array([0.60, 0.65, 0.674, 0.70, 0.75])}
+
+    h_pivot: two-scale h-pivot reparametrization (exact change of variables;
+    see notes/2026-09-01-h-divergences-float32.md).  For each pivoted mass
+    scale m in {mp_low, mpisn_ref} that the prior SAMPLES, replaces the
+    m sample site with a flat auxiliary site ``u_m ~ Uniform(u_lo, u_hi)``
+    (bounds from ``h_pivot_u_bounds``), records
+    ``m = u_m * h**-gamma`` as a deterministic under the ORIGINAL name, and
+    adds a ``numpyro.factor`` carrying the original prior log-density at the
+    derived value plus the Jacobian, ``prior[m].log_prob(m) - gamma*log(h)``.
+    The flat u density is constant, so the joint posterior over
+    (h, mp_low, mpisn_ref, ...) is exactly the untransformed one; only the
+    sampling coordinates change (decorrelates the mass scales from h,
+    ~doubles ESS(h)).  Requires a sampled h; a pivoted name that is a fixed
+    float in the prior is skipped silently.
+
+    h_pivot_gammas: optional {name: gamma} overriding H_PIVOT_DEFAULT_GAMMAS.
     """
     grid_params = grid_params or {}
     samples = dict()
+    pivot_sites = {}
+    if h_pivot:
+        gammas = dict(H_PIVOT_DEFAULT_GAMMAS)
+        gammas.update(h_pivot_gammas or {})
+        if 'h' not in prior or isinstance(prior['h'], float):
+            raise ValueError(
+                "h_pivot=True requires the prior to SAMPLE h (the pivot is a "
+                "change of variables along the h ridge and is meaningless "
+                "with fixed h); remove h_pivot or free h in the prior file")
+        for name in gammas:
+            if f'log_{name}' in prior:
+                raise ValueError(
+                    f"h_pivot does not support a log_{name} prior; sample "
+                    f"{name} directly or turn h_pivot off")
+            if name in prior and not isinstance(prior[name], float):
+                pivot_sites[name] = float(gammas[name])
+        if not pivot_sites:
+            raise ValueError(
+                "h_pivot=True but the prior samples none of "
+                f"{sorted(gammas)}; nothing to pivot -- turn h_pivot off")
     for param in prior:
+        if param in pivot_sites:
+            continue
         if param in grid_params:
             grid = grid_params[param]
             idx = numpyro.sample(f'{param}_idx', dist.Categorical(probs=jnp.ones(len(grid)) / len(grid)))
@@ -477,6 +574,16 @@ def sample_parameters_from_dict(prior, grid_params=None):
             samples[param] = numpyro.deterministic(param, prior[param])
         else:
             samples[param] = numpyro.sample(param, prior[param])
+    # Pivoted sites last: they need the h sampled above (robust to the
+    # prior-dict ordering).  Downstream code sees mp_low / mpisn_ref under
+    # their original names, now as deterministics.
+    for name, gamma in pivot_sites.items():
+        u_lo, u_hi = h_pivot_u_bounds(prior[name], prior['h'], gamma, name=name)
+        u = numpyro.sample(f'u_{name}', dist.Uniform(u_lo, u_hi))
+        val = numpyro.deterministic(name, u * samples['h'] ** (-gamma))
+        numpyro.factor(f'{name}_h_pivot_logp',
+                       prior[name].log_prob(val) - gamma * jnp.log(samples['h']))
+        samples[name] = val
     return samples
 
 def log_expit(exponent):
