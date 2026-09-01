@@ -17,3 +17,6 @@ src/.ipynb_checkpoints/*
 *.out
 scripts/out_trash
 *.log
+call*sh
+abbys_runs
+scripts/run_configs/*
