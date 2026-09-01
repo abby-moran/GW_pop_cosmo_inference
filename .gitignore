@@ -17,3 +17,7 @@ src/.ipynb_checkpoints/*
 *.out
 scripts/out_trash
 *.log
+scripts/o4a_dr
+scripts/figure_scripts
+scripts/logs
+scripts/popsummary_files

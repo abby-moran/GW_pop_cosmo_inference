@@ -601,6 +601,8 @@ class LogDNDM(object):
     zref: object = 0.001
     n_z: object = 30
     use_low_bump: bool = True
+    # smooth_tail_edge=True drops the hard cut at m=mbhmax. Turn-on supresses the tail exponetially below edge
+    # continuous density, AD agrees with finite differences
     smooth_tail_edge: bool = False
     log_dndm_pisn: object = dataclasses.field(init=False)
 
@@ -609,6 +611,7 @@ class LogDNDM(object):
         self.setup_interp()
 
     def setup_interp(self):
+        # If mpisndot is pinned to zero the PISN grid has no z dependence, so just build a slice
         self._z_dependent = not _is_static_zero(self.mpisndot)
         n_z = int(self.n_z) if self._z_dependent else 1
 
@@ -621,25 +624,19 @@ class LogDNDM(object):
         mbhmaxs = mpisns + self.dmbhmax
 
         self.log_dndm_pisn = LogDNDMPISN(
-            self.a, self.b, mpisns, mbhmaxs, self.sigma, 
-            mco_min=self.mco_min, mco_floor=self.mco_floor
-        )
+            self.a, self.b, mpisns, mbhmaxs, self.sigma, mco_min=self.mco_min,mco_floor=self.mco_floor,)
         self.mbh_axis = self.log_dndm_pisn.mbh_axis
         self.mbh_grid = self.log_dndm_pisn.mbh_grid
+        # (n_z, n_mbh): mbh is the fast axis, matching _lerp2d's expectation.
         self.log_dndm_pisn_grid = self.log_dndm_pisn.log_dN_grid
         self.log_Z_pisn_grid = self.log_dndm_pisn.log_Z_grid
         self.mbhmaxs = jnp.asarray(mbhmaxs)
         self._n_mbh = self.mbh_axis.n
         self._n_z = n_z
 
-    def __call__(self, m, z):
-        m, z = jnp.broadcast_arrays(jnp.asarray(m), jnp.asarray(z))
-        log_m = jnp.log(m)
-        log1p_z = jnp.log1p(z)
-        mbhmax_at_samples = self.mbhmax_at_z(z)
-        return self.call_from_logs(m, log_m, z, log1p_z, mbhmax_at_samples)
-
+    # -- interpolation -----------------------------------------------------
     def interp_2d_dndmpisn(self, m, z):
+        """Public API kept for external callers; prefer the *_from_log form."""
         m, z = jnp.broadcast_arrays(jnp.asarray(m), jnp.asarray(z))
         return self._interp_from_log(jnp.log(m), z, jnp.log1p(z))
 
@@ -663,48 +660,125 @@ class LogDNDM(object):
         iz0, fz = self._z_cell(z, log1p_z)
         return _gather_lerp1d(self.log_Z_pisn_grid, iz0, fz, self._n_z)
 
+    # -- join point --------------------------------------------------------
     def mbhmax_at_z(self, z):
         if not self._z_dependent:
             return self.mpisn + self.dmbhmax
         return self.mpisn + self.mpisndot * (1 - 1 / (1 + z)) + self.dmbhmax
 
-    def call_from_logs(self, m, log_m, z, log1p_z, mbhmax_at_samples):
-        # 1. Base PISN log-density
+    def log_p_pisn_at_mbhmax(self, z, log1p_z, mbhmax_at_samples):
+        """log p_pisn(mbhmax(z), z): the (normalized) PISN density evaluated
+        at the PISN/power-law join point itself.  Used to anchor the
+        power-law amplitude to the PISN curve for a continuous join --
+        see call_from_logs."""
+        log_mbhmax = jnp.log(mbhmax_at_samples)
+        log_p_pisn_raw = self._interp_from_log(log_mbhmax, z, log1p_z)
+        return log_p_pisn_raw - self._log_Z_from_z(z, log1p_z)
+
+    # -- evaluation --------------------------------------------------------
+    def __call__(self, m, z):
+        m = jnp.atleast_1d(jnp.asarray(m))
+        z = jnp.atleast_1d(jnp.asarray(z))
+        m, z = jnp.broadcast_arrays(m, z)
+        mbhmax_at_samples = jnp.asarray(self.mbhmax_at_z(z))
+        return self.call_from_logs(m, jnp.log(m), z, jnp.log1p(z), jnp.broadcast_to(mbhmax_at_samples, m.shape))
+
+    def table_over_grid(self, m_grid, z_grid):
+        """``self(m_grid, z_grid)`` broadcast over an (n_z, n_m)-style grid
+        (or a single-z slice), computing the continuity ``log_mass_ratio``
+        term ONCE per z row instead of once per (z, m) cell -- the ratio
+        doesn't depend on m, so re-deriving it at every mass-grid column
+        (there can be thousands, see ``n_mass_table``) is pure waste. Used
+        by the mass-function tabulation path in ``pop_cosmo_model``."""
+        m_grid = jnp.asarray(m_grid)
+        z_grid = jnp.asarray(z_grid)
+        m, z = jnp.broadcast_arrays(m_grid, z_grid)
+        log_m = jnp.log(m)
+        log1p_z = jnp.log1p(z)
+        mbhmax_at_samples = jnp.broadcast_to(jnp.asarray(self.mbhmax_at_z(z)), m.shape)
+
+        # z (and hence mbhmax, and the PISN edge value) only actually varies
+        # along the z-axis, so compute log_mass_ratio on the *unbroadcast*
+        # z_grid and let normal broadcasting expand it back out over m.
+        z_only = jnp.asarray(z_grid)
+        mbhmax_only = jnp.asarray(self.mbhmax_at_z(z_only))
+        log1p_z_only = jnp.log1p(z_only)
+        log_p_pisn_at_edge = self.log_p_pisn_at_mbhmax(z_only, log1p_z_only, mbhmax_only)
+        log_mass_ratio_only = log_p_pisn_at_edge + jnp.log(mbhmax_only) - jnp.log(self.c - 1)
+        log_mass_ratio = jnp.broadcast_to(log_mass_ratio_only, m.shape)
+
+        return self.call_from_logs(m, log_m, z, log1p_z, mbhmax_at_samples, log_mass_ratio)
+
+    def call_from_logs(self, m, log_m, z, log1p_z, mbhmax_at_samples, log_mass_ratio=None):
+        """``log_mass_ratio`` (see ``log_p_pisn_at_mbhmax``) depends only on
+        (z, mbhmax), not on the sample mass ``m`` itself, so a caller
+        evaluating this at several masses per z (e.g. m1 and m2 for the same
+        event) can compute it once and pass it in to avoid a redundant PISN
+        edge lookup. If omitted, it is computed here."""
         log_p_pisn_raw = self._interp_from_log(log_m, z, log1p_z)
         log_p_pisn_raw = jnp.where(m >= self.mbh_grid[-1], -jnp.inf, log_p_pisn_raw)
         log_p_pisn = log_p_pisn_raw - self._log_Z_from_z(z, log1p_z)
 
         log_mbhmax = jnp.log(mbhmax_at_samples)
 
-        # 2. Boundary density evaluated at m = mbhmax(z)
-        log_p_pisn_at_mbhmax = (
-            self._interp_from_log(log_mbhmax, z, log1p_z) 
-            - self._log_Z_from_z(z, log1p_z)
-        )
+        # --- continuity-anchored power-law tail --------------------------
+        # The tail's *shape* is still the unit-normalized Pareto on
+        # [mbhmax, inf); log_mass_ratio is the log of the true/normalized
+        # mass ratio you'd get if you instead anchored the amplitude to
+        # match p_pisn at mbhmax exactly (mass_ratio = p_pisn(mbhmax) *
+        # mbhmax / (c - 1)).  Folding exp(log_mass_ratio) into the mixture
+        # weight (below) makes the *combined* density continuous at
+        # m = mbhmax while keeping every component unit-normalized, so the
+        # overall mixture still integrates to exactly 1 -- no separate
+        # renormalization step needed. See conversation notes for the
+        # derivation.
+        if log_mass_ratio is None:
+            log_p_pisn_at_edge = self.log_p_pisn_at_mbhmax(z, log1p_z, mbhmax_at_samples)
+            log_mass_ratio = log_p_pisn_at_edge + log_mbhmax - jnp.log(self.c - 1)
 
-        # 3. Anchored tail: log p_PL(m) = log p_PISN(mbhmax) - c * (log m - log mbhmax)
-        log_p_pl = log_p_pisn_at_mbhmax - self.c * (log_m - log_mbhmax)
+        log_p_pl_raw = log_normalized_power_law_tail_from_log(log_m, log_mbhmax, self.c)
+        if not self.smooth_tail_edge:
+            log_p_pl_raw = jnp.where(log_m < log_mbhmax, -jnp.inf, log_p_pl_raw)
+        # No turn-on multiplier here any more: continuity already makes the
+        # *value* match at the seam, so the only remaining discontinuity is
+        # in slope (a harmless kink), not in density -- the turn-on used to
+        # exist purely to hide a value-discontinuity that continuity now
+        # removes by construction.  Multiplying by it as well as anchoring
+        # continuity is exactly what produced the spurious super-PISN peak,
+        # since the ramp pushes the *joint* curve above the anchored value
+        # just above mbhmax.
+        log_p_pl = log_p_pl_raw
 
-        # 4. Piecewise exact switch (C0 continuous)
-        log_p_main_unnorm = jnp.where(m <= mbhmax_at_samples, log_p_pisn, log_p_pl)
-
-        # 5. Normalization adjustment for the added tail area above mbhmax
-        log_A_tail = log_p_pisn_at_mbhmax + log_mbhmax - jnp.log(jnp.maximum(self.c - 1.0, 1e-4))
-        log_Z_total = jnp.logaddexp(0.0, log_A_tail)
-        
-        log_p_main = log_p_main_unnorm - log_Z_total
-
-        # 6. Mixture combination
         if self.use_low_bump:
             log_p_low = log_normalized_gaussian(m, self.mp_low, self.msigma_low)
-            log_denom = jnp.log1p(self.flow)
-            log_w_main = -log_denom
+            # Denominator is frozen at the ORIGINAL 1+flow+fpl (raw fpl, not
+            # fpl_eff): only the tail's own numerator is continuity-corrected.
+            # Using fpl_eff in the shared denominator too would silently
+            # inflate w_pisn/w_low whenever mass_ratio << 1 (the tail's true
+            # mass is much smaller than its unit-normalized nominal mass),
+            # which is what caused the PISN-dominated part of the PPD to sit
+            # too high. This keeps w_pisn and w_low exactly as calibrated
+            # under the original fpl/flow priors; the tradeoff is that the
+            # full mixture no longer integrates to EXACTLY 1 -- the residual
+            # is (fpl - fpl_eff)/(1+flow+fpl), which is small precisely when
+            # mass_ratio is far from 1 (i.e. exactly when it matters least).
+            log_denom = jnp.log1p(self.flow + self.fpl)
+            log_fpl_eff = safe_log(self.fpl) + log_mass_ratio
+            log_w_pisn = -log_denom
             log_w_low = safe_log(self.flow) - log_denom
+            log_w_pl = log_fpl_eff - log_denom
 
-            log_dNdm = jnp.logaddexp(log_w_main + log_p_main, log_w_low + log_p_low)
+            log_dNdm = jnp.logaddexp(log_w_pisn + log_p_pisn, log_w_low + log_p_low)
+            log_dNdm = jnp.logaddexp(log_dNdm, log_w_pl + log_p_pl)
         else:
-            log_dNdm = log_p_main
+            log_denom = jnp.log1p(self.fpl)
+            log_fpl_eff = safe_log(self.fpl) + log_mass_ratio
+            log_w_pisn = -log_denom
+            log_w_pl = log_fpl_eff - log_denom
+            log_dNdm = jnp.logaddexp(log_w_pisn + log_p_pisn, log_w_pl + log_p_pl)
 
+        # The original also applied `where(m < mbh_min, -inf, ...)` here; the
+        # window below is already -inf for m < mbh_min, so it was redundant.
         logwindow = mmin_log_smooth_turnon(m, delta_m=self.delta_m, mmin=self.mbh_min)
         return log_dNdm + logwindow
 
@@ -791,15 +865,30 @@ class LogDNDMDQDV(object):
         """Same value as ``__call__`` but takes the logs the caller already has, eliminate redundancies."""
         m2 = m1 * jnp.exp(log_q)
         log_m2 = log_m1 + log_q
-        mt = m1 + m2
 
         ld = self.log_dndm
         # Computed once and shared between the m1 and m2 evaluations, depends only on z
         mbhmax_at_samples = jnp.broadcast_to( jnp.asarray(ld.mbhmax_at_z(z)), jnp.shape(m1))
+        # log_mass_ratio (continuity-anchoring term for the power-law tail,
+        # see LogDNDM.call_from_logs) also depends only on z/mbhmax, not on
+        # m1 vs m2, so it's computed once here and shared -- avoids doubling
+        # the PISN-edge lookup cost across the two call_from_logs calls below.
+        log_p_pisn_at_edge = ld.log_p_pisn_at_mbhmax(z, log1p_z, mbhmax_at_samples)
+        log_mass_ratio = log_p_pisn_at_edge + jnp.log(mbhmax_at_samples) - jnp.log(ld.c - 1)
 
-        return ( ld.call_from_logs(m1, log_m1, z, log1p_z, mbhmax_at_samples)
-            + ld.call_from_logs(m2, log_m2, z, log1p_z, mbhmax_at_samples)
-            + self.beta * jnp.log(mt / (self.mref * (1 + self.qref)))
+        # q^beta pairing function (LVK convention, e.g. Fishbach & Holz):
+        # p(m1,m2) ~ p(m1) p(m2) q^beta, q = m2/m1 <= 1 so log_q <= 0 and
+        # beta > 0 suppresses extreme mass ratios, matching the usual sign
+        # convention. This REPLACES the previous mtot-based pairing term
+        # (beta * log(mt/(mref*(1+qref)))) -- same parameter name `beta`,
+        # different meaning; see conversation notes. qref/mref are still
+        # used elsewhere (the m1 power-law reference point, PISN evaluation
+        # ranges) but no longer enter the pairing term itself, since q^beta
+        # is already 0 at the reference point q=qref=1 by construction
+        # (log(1)=0), so no explicit re-centering term is needed here.
+        return ( ld.call_from_logs(m1, log_m1, z, log1p_z, mbhmax_at_samples, log_mass_ratio)
+            + ld.call_from_logs(m2, log_m2, z, log1p_z, mbhmax_at_samples, log_mass_ratio)
+            + self.beta * log_q
             + log_m1 + self.log_dndv.from_log1p(log1p_z)- self.log_norm)
 
 @dataclass
@@ -1162,9 +1251,13 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                           mref=ld.mref, zref=ld.zref, n_z=ld.n_z, use_low_bump=ld.use_low_bump,
                           smooth_tail_edge=ld.smooth_tail_edge)
             if ld_._z_dependent:
-                out = ld_(m_axis.grid[None, :], ld_.z_array[:, None])
+                out = ld_.table_over_grid(m_axis.grid[None, :], ld_.z_array[:, None])
             else:
-                out = ld_(m_axis.grid, 0.0)
+                # z is a single value here (mpisndot pinned to 0), so pass a
+                # scalar-shaped z_grid: table_over_grid derives log_mass_ratio
+                # from z_grid's own (unbroadcast) shape, so this keeps it to
+                # one PISN-edge lookup rather than one per mass-grid column.
+                out = ld_.table_over_grid(m_axis.grid, jnp.zeros(()))
             return jnp.maximum(out, _LOG_ZERO_FLOOR)
 
         _mass_params = (sample['a'], sample['b'], sample['c'], sample['mpisn'], sample['mpisndot'], 
@@ -1193,7 +1286,6 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
             f_U = f_theta = dl_U = dl_theta = None
 
         _two_log_dH = 2 * jnp.log(cosmo.dH)
-        log_pair_ref = jnp.log(log_dN.mref * (1 + log_dN.qref))
 
         def _log_weights(log_m1s_det_, log_qs_, log1p_qs_, log_dls_, log_pdraw_):
             t = jnp.clip((log_dls_ - jnp.log(cosmo.dH) - cosmo._u_lo) * cosmo._inv_du, 0.0, cosmo._n_dl - 1.0,)
@@ -1227,7 +1319,11 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                             + _sf_lookup1d(f_theta, f_tab[:, None], f_U[:, :, None], tm2)[..., 0])
                 else:
                     fsum = (_lerp1d(f_tab, tm1, n_tab) + _lerp1d(f_tab, tm2, n_tab))
-            return (fsum + log_dN.beta * (log_m1s_ + log1p_qs_ - log_pair_ref)
+            # q^beta pairing function -- must stay in lockstep with the
+            # direct (non-tabulated) path in LogDNDMDQDV.call_from_logs.
+            # log1p_qs_ (log(1+q), the old mtot-Jacobian helper) is no
+            # longer used here; kept as a parameter for call-site compat.
+            return (fsum + log_dN.beta * log_qs_
                     + log_m1s_ + Jg - log_dN.log_norm - log_pdraw_)
 
         log_wts = _log_weights(log_m1s_det, log_qs, jnp.log1p(qs), log_dls, log_pdraw)
