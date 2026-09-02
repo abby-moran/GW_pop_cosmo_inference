@@ -93,6 +93,8 @@ max_tree_depth=run.getint("max_tree_depth", fallback=7)
 dense_mass=run.getboolean("dense_mass", fallback=False)
 target_accept_prob=run.getfloat("target_accept_prob", fallback=0.8)
 
+pairing=run.get("pairing", fallback='mt')
+
 truth_params = {}
 truth_file_name = cfg["run"].get("pop_config_file")
 
@@ -191,7 +193,7 @@ if __name__ == "__main__":
                   max_tree_depth=max_tree_depth, dense_mass=dense_mass, target_accept_prob=target_accept_prob)
     mcmc = MCMC(kernel, num_warmup=nmcmc, num_samples=nmcmc, num_chains=nchain, chain_method="parallel", progress_bar=True)
     # make sure we get sample stats to check the sampler health post run
-    mcmc.run(jax.random.PRNGKey(random_seed), *model_args, use_low_bump=use_low_bump, smooth_tail_edge=smooth_tail_edge,
+    mcmc.run(jax.random.PRNGKey(random_seed), *model_args, use_low_bump=use_low_bump, smooth_tail_edge=smooth_tail_edge, pairing=pairing,
         **recenter_kwargs, extra_fields=("potential_energy", "energy", "num_steps", "accept_prob","adapt_state.step_size"))
     samples = az.from_numpyro(mcmc, num_chains=nchain)
     
