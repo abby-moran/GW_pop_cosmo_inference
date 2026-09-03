@@ -1,4 +1,4 @@
-from astropy.cosmology import Planck18
+from astropy.cosmology import Planck18, FlatLambdaCDM
 import astropy.units as u
 import dataclasses
 from dataclasses import dataclass
@@ -96,6 +96,66 @@ def li_prior_wt(m1, q, z, cosmology_weighted=False):
     else:
         return np.square(1+z)*m1*np.square(Planck18.luminosity_distance(z).to(u.Gpc).value)*(Planck18.comoving_distance(z).to(u.Gpc).value + (1+z)*Planck18.hubble_distance.to(u.Gpc).value/Planck18.efunc(z))
     
+# Cosmology assumed by bilby's UniformSourceFrame distance prior in the
+# GWTC-4.x/5.x PE releases: 'Planck15_LAL' = flat LambdaCDM with
+# H0 = 67.90 km/s/Mpc, Om0 = 0.3065 (Ode0 = 0.6935).  NOT astropy's Planck15
+# (H0 = 67.74) and NOT Planck18.  Used to map the released luminosity
+# distances back to the redshift the prior was actually defined in.
+PLANCK15_LAL = FlatLambdaCDM(H0=67.90, Om0=0.3065)
+_P15LAL_ZGRID = np.linspace(0.0, 10.0, 20000)
+_P15LAL_DLGRID_GPC = PLANCK15_LAL.luminosity_distance(_P15LAL_ZGRID).to(u.Gpc).value
+
+
+def _gwtc45_pe_prior(m1_det, dL_Gpc):
+    """PE sampling-prior density in (m1_det, q, dL) for GWTC-4/5 release files.
+
+    The declared bilby priors are
+      luminosity_distance = UniformSourceFrame(cosmology='Planck15_LAL')
+                          -> p(z) propto dVc/dz / (1+z),
+                             p(dL) = p(z) / (ddL/dz),  ddL/dz = D_C + (1+z) D_H / E(z)
+      chirp_mass = UniformInComponentsChirpMass, mass_ratio = UniformInComponentsMassRatio
+                          -> uniform in (m1_det, m2_det) -> p(m1_det, q) propto m1_det
+    so  prior = m1_det * dVc/dz / ((1+z) * ddL/dz),  z = z(dL | Planck15_LAL).
+    Per-event constants (units, 4pi sr, bounds, normalization) are irrelevant
+    to the hierarchical likelihood.  See notes/2026-09-03-gwtc45-pe-prior-fix.md.
+    """
+    z = np.interp(dL_Gpc, _P15LAL_DLGRID_GPC, _P15LAL_ZGRID)
+    dvcdz = PLANCK15_LAL.differential_comoving_volume(z).to(u.Gpc**3 / u.sr).value
+    ddl_dz = (PLANCK15_LAL.comoving_distance(z).to(u.Gpc).value
+              + (1.0 + z) * PLANCK15_LAL.hubble_distance.to(u.Gpc).value
+              / PLANCK15_LAL.efunc(z))
+    return m1_det * dvcdz / ((1.0 + z) * ddl_dz)
+
+
+def _decode_h5_string(x):
+    x = np.asarray(x).ravel()[0]
+    return x.decode() if isinstance(x, bytes) else str(x)
+
+
+def _check_gwtc45_analytic_prior(file, group_used):
+    """Guard: the GWTC-4/5 prior formula above assumes UniformSourceFrame x
+    uniform-in-components.  Verify against the file's declared analytic
+    priors when present; otherwise warn that the assumption is unchecked."""
+    with h5py.File(file, 'r') as f:
+        g = f[group_used]
+        if 'priors' in g and 'analytic' in g['priors']:
+            a = g['priors']['analytic']
+            ld = _decode_h5_string(a['luminosity_distance'][()])
+            mc = _decode_h5_string(a['chirp_mass'][()])
+            if ('UniformSourceFrame' not in ld
+                    or 'UniformInComponentsChirpMass' not in mc):
+                raise ValueError(
+                    f"Unexpected PE prior in {file} group {group_used!r}: "
+                    f"luminosity_distance = {ld!r}, chirp_mass = {mc!r}. "
+                    "get_samples_from_event assumes UniformSourceFrame x "
+                    "UniformInComponentsChirpMass for GWTC-4/5 files.")
+        else:
+            print(f"WARNING: {os.path.basename(file)} group {group_used!r} "
+                  "has no priors/analytic block; ASSUMING the bilby "
+                  "UniformSourceFrame(Planck15_LAL) x uniform-in-components "
+                  "PE prior.")
+
+
 def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax = 3,
                            group=None):
     """Load (m1_det, q, dl_Gpc, prior) PE samples from a single-event release file.
@@ -106,33 +166,27 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
         ``event_sample_IDs`` attribute of a popsummary file).  Returns None if
         the requested group is absent.
     """
+    # Fixed-priority group search (used when `group` is None).
+    _default_groups = ('PublicationSamples',          # O3a
+                       'C01:Mixed',                   # O3b
+                       'PrecessingSpinIMRHM',         # GWTC-2.1
+                       'C00:Mixed',                   # O4
+                       'C00:NRSur7dq4',               # other bit of O4
+                       'C01:IMRPhenomXPHM-SpinTaylor',  # GWTC-5
+                       'C00:IMRPhenomXPHM-SpinTaylor')  # GWTC-5
     with h5py.File(file, 'r') as f:
         if group is not None:
             if group not in f.keys():
                 print(f"Requested group {group!r} not in file {file}; "
                       f"available keys: {list(f.keys())}")
                 return None
-            samples = np.array(f[group]['posterior_samples'])
-        elif 'PublicationSamples' in f.keys():
-            # O3a files
-            samples = np.array(f['PublicationSamples/posterior_samples'])
-        elif 'C01:Mixed' in f.keys():
-            # O3b files
-            samples = np.array(f['C01:Mixed/posterior_samples'])
-        elif 'PrecessingSpinIMRHM' in f.keys(): # 2.1
-            samples = np.array(f['PrecessingSpinIMRHM/posterior_samples'])        
-        elif 'C00:Mixed' in f.keys():
-            # 04
-            samples = np.array(f['C00:Mixed']['posterior_samples'])
-        elif 'C00:NRSur7dq4' in f.keys(): #other bit of 04
-            samples = np.array(f['C00:NRSur7dq4']['posterior_samples'])
-        elif 'C01:IMRPhenomXPHM-SpinTaylor' in f.keys(): # GWTC5
-            samples = np.array(f['C01:IMRPhenomXPHM-SpinTaylor']['posterior_samples'])   
-        elif 'C00:IMRPhenomXPHM-SpinTaylor' in f.keys(): # GWTC5 
-            samples = np.array(f['C00:IMRPhenomXPHM-SpinTaylor']['posterior_samples'])   
-        else:   
-            print(f"Available keys in file {file}: {list(f.keys())}")
-            return None
+            group_used = group
+        else:
+            group_used = next((g for g in _default_groups if g in f.keys()), None)
+            if group_used is None:
+                print(f"Available keys in file {file}: {list(f.keys())}")
+                return None
+        samples = np.array(f[group_used]['posterior_samples'])
 
     zs=samples['redshift'] [()]
     mask = samples['redshift'] < zmax
@@ -145,12 +199,13 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
     data_release=parts[1]
 
     if data_release in ('GWTC4p0', 'GWTC4p1', 'GWTC5p0', 'GWTC5p1'):
-        dvcdz = Planck18.differential_comoving_volume(zs[mask]).to(u.Gpc**3 / u.sr).value
-        ddl_dz = (Planck18.comoving_distance(zs[mask]).to(u.Gpc).value + 
-                  (1 + zs[mask]) * Planck18.hubble_distance.to(u.Gpc).value / Planck18.efunc(zs[mask]))
-
-        prior =dvcdz * m1_det * ddl_dz# /(1+zs[mask]) #  dvcdz * m1_det * ddl_dz
-        #prior = dvcdz*m1_det
+        # bilby UniformSourceFrame(Planck15_LAL) x uniform-in-components:
+        # prior = m1_det * dVc/dz / ((1+z) * ddL/dz), z from dL under
+        # Planck15_LAL (the file's `redshift` column uses a different
+        # cosmology).  See _gwtc45_pe_prior and
+        # notes/2026-09-03-gwtc45-pe-prior-fix.md.
+        _check_gwtc45_analytic_prior(file, group_used)
+        prior = _gwtc45_pe_prior(m1_det, dLs)
     else:
         print(filename)
         prior = dLs**2 * m1_det

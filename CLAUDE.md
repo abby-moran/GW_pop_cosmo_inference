@@ -53,6 +53,7 @@ This file keeps agent-facing guidance brief. Project overview, science backgroun
 - PE samples use columns `mass_1`, `mass_ratio`, `luminosity_distance_Gpc`, `prior_m1d_q_dL`.
 - Selection samples use columns `m1`, `q`, `z`, `pdraw_m1sqz`, `dm1sz_dm1ddl`, `ndraw`.
 - `pdraw` stores the draw probability used for importance-sampling corrections.
+- The PE `prior`/`pdraw` column is the PE sampling-prior density in (m1_det, q, dL): O1-O3 `_nocosmo` files use dL^2 m1_det; GWTC-4/5 files use m1_det dVc/dz/((1+z) ddL/dz) (bilby UniformSourceFrame, Planck15_LAL) -- see `notes/2026-09-03-gwtc45-pe-prior-fix.md`.
 - Selection samples also require `m1d = m1 * (1 + z)` on the fly.
 
 ## Paths And JAX
