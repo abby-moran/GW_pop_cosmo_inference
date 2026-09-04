@@ -511,7 +511,9 @@ def log_normalized_power_law_tail(m, mbhmax, c):
     return jnp.log(c - 1) - jnp.log(mbhmax) - c * jnp.log(m / mbhmax)
 
 def log_normalized_power_law_tail_from_log(log_m, log_mbhmax, c):
-    return jnp.log(c - 1) - log_mbhmax - c * (log_m - log_mbhmax)
+    ok, log_cm1 = _guarded_log_cm1(c)
+    val = log_cm1 - log_mbhmax - c * (log_m - log_mbhmax)
+    return jnp.where(ok, val, _LOG_ZERO_FLOOR)
 
 def safe_log(x, eps=None):
     # Clamp at the smallest normal value of the actual dtype instead.
@@ -641,20 +643,34 @@ class LogDNDM(object):
         self._n_mbh = self.mbh_axis.n
         self._n_z = n_z
 
+    def _log_mix_at_join(self, mj, z, log1p_z):
+        """log continuum(+bump) height at the join point mj -- matches the
+        v2/tail_anchor="ref_z" definition of the height ratio exactly: the
+        power-law tail is anchored against PISN+bump combined, not PISN alone."""
+        log_pisn = jnp.where(mj >= self.mbh_grid[-1], -jnp.inf,
+            self._interp_from_log(jnp.log(mj), z, log1p_z) - self._log_Z_from_z(z, log1p_z))
+        if not self.use_low_bump:
+            return log_pisn
+        return jnp.logaddexp(log_pisn,
+            safe_log(self.flow) + log_normalized_gaussian(mj, self.mp_low, self.msigma_low))
+
     def _setup_pl_anchor(self):
-        """Convert r_pl to effective fpl at zref_pl by baking in the join-height term."""
+        """Convert r_pl to effective fpl at zref_pl by baking in the join-height term.
+
+        r_pl is the ratio of the power-law tail's height to the PISN+bump
+        MIXTURE height at the join (mbhmax(zref_pl)), matching tail_anchor="ref_z".
+        """
         zref_pl = jnp.asarray(self.zref_pl)
         mbhmax_ref = jnp.asarray(self.mbhmax_at_z(zref_pl))
         self.mbhmax_pl_ref = mbhmax_ref
-        
-        # Compute continuum height at join
+
         log1p_zref = jnp.log1p(zref_pl)
-        log_pisn = self._interp_from_log(jnp.log(mbhmax_ref), zref_pl, log1p_zref) - self._log_Z_from_z(zref_pl, log1p_zref)
-        
-        # Convert r_pl to simplex weight: f_eff = r * mu_j * m_j / (c-1)
+        log_mix = self._log_mix_at_join(mbhmax_ref, zref_pl, log1p_zref)
+
+        # Convert r_pl to simplex weight: f_eff = r * mix_height(mj) * mj / (c-1)
         # Guarded: c <= 1 makes the power-law tail non-normalizable => floor fpl to 0 (tail contributes nothing)
         ok, log_cm1 = _guarded_log_cm1(self.c)
-        log_fpl_raw = safe_log(self.r_pl) + log_pisn + jnp.log(mbhmax_ref) - log_cm1
+        log_fpl_raw = safe_log(self.r_pl) + log_mix + jnp.log(mbhmax_ref) - log_cm1
         self.fpl = jnp.where(ok, jnp.exp(log_fpl_raw), 0.0)
     
 
@@ -1066,7 +1082,12 @@ def get_deterministic_parameters(sample, use_low_bump=True):
     mpisn = out.get('mpisn', sample.get('mpisn'))
     # -----------------------------------------------------------------------
 
-    out['kappa'] = numpyro.deterministic('kappa', sample['lam'] + sample['dkappa'])
+    if 'kappa' not in sample and 'dkappa' in sample:
+        out['kappa'] = numpyro.deterministic('kappa', sample['lam'] + sample['dkappa'])
+    elif 'kappa' in sample:
+        out['kappa'] = sample['kappa']
+    else:
+        raise KeyError("Need one of kappa or (lam and dkappa) to determine kappa")
 
     # mbhmax: only derive it if it wasn't sampled directly (case (1) above).
     if 'mbhmax' not in sample:
@@ -1100,14 +1121,23 @@ def get_deterministic_parameters(sample, use_low_bump=True):
         else:
             raise KeyError("Need one of logit_flow, flow, log_flow, or log_fpeak")
 
-    if 'logit_fpl' in sample:
+    if 'log_r' in sample or 'r' in sample:
+        # Height-anchored tail modes (tail_anchor = ref_z/per_z): r is the
+        # tail/continuum height ratio at the join.  It travels in the fpl slot;
+        # the model records the simplex-equivalent fpl deterministic itself.
+        if 'r' in sample:
+            r = sample['r']
+        else:
+            r = numpyro.deterministic('r', jnp.exp(sample['log_r']))
+        out['fpl'] = r
+    elif 'logit_fpl' in sample:
         out['fpl'] = numpyro.deterministic('fpl', jax.nn.sigmoid(sample['logit_fpl']))
     elif 'fpl' in sample:
         out['fpl'] = sample['fpl']
     elif 'log_fpl' in sample:
         out['fpl'] = numpyro.deterministic('fpl', jnp.exp(sample['log_fpl']))
     else:
-        raise KeyError("Need one of logit_fpl, fpl, or log_fpl")
+        raise KeyError("Need one of logit_fpl, fpl, log_fpl, or log_r")
     return out
 
 

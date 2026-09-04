@@ -12,7 +12,7 @@ import argparse
 import astropy.units as u
 import configparser
 import subprocess
-import weighting 
+import weighting
 import re
 import ast
 
@@ -162,5 +162,3 @@ if __name__ == "__main__":
     df['m1d']= df['m1']*(1+df['z'])
     df['dl'] = Planck18.luminosity_distance(df['z'].to_numpy()).to(u.Gpc).value
     df.to_hdf(output_sel_file, key='true_parameters')
-
-

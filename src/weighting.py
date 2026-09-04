@@ -133,7 +133,7 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
     parts = re.split("_|-", filename)
     data_release=parts[1]
 
-    if data_release == 'GWTC4p0' or data_release == 'GWTC5p0':
+    if data_release == 'GWTC4p0' or data_release == 'GWTC5p0' or data_release == 'GWTC4p1':
         # https://arxiv.org/pdf/2605.27225: uniform in redshifted masses, spin mag, 
         # # isotropic spins, sky location
         # # distance prior is uniform merger rate in comoving volume and time
@@ -142,7 +142,7 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
                   (1 + zs[mask]) * Planck18.hubble_distance.to(u.Gpc).value / Planck18.efunc(zs[mask]))
         # pdraw(m,q,z)/(dm1_det dm2_det dz) = dvc/dz * dm1m2/dm1q *dz/dl =pdraw/(dm1_det, dq ddL)
 
-        prior =dvcdz * m1_det / ddl_dz 
+        prior =dvcdz * m1_det / (ddl_dz *(1+zs))
     else:
         prior = dLs**2 * m1_det
     
@@ -184,16 +184,19 @@ def log_p_spin_vector(sx, sy, sz, sigma=0.5):
 
 def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1, rng=None, mass_sel=2.5):
     """Return `(m1, q, z, pdraw, nsel)` to estimate selection effects.
-    
+
     :param file: The injection file.
 
-    :param nsamp: The number of samples to be returned.
+    :param nsamp: The number of samples to be returned.  If `None` (the usual
+        case), ALL detected injections are returned with their true draw
+        density `pdraw` and `ndraw` = total number of proposals; no
+        resampling or rescaling of `pdraw` is performed.
 
     :param desired_pop_wt: Function giving a weight in `(m1, q, z)` from which
-        the population of injections should be drawn.  If none is given, the
-        reference distribution for the actual injections will be used; otherwise
-        the distribution of injections will be re-weighted to achieve the
-        desired poplation.
+        the population of injections should be drawn.  Only used when `nsamp`
+        is not `None`: the detected injections are then resampled to the
+        desired population (Farr 2019 convention) and the returned `ndraw`
+        equals `nsamp`.
 
     :param far_threshold: The threshold on the FAR (per year) at which an
         injection is considered detected.
@@ -201,9 +204,12 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
     :param rng: A random number generator for the draws; if `None`, one will be
         initialized randomly.
 
-    :return: A tuple `(m1, q, z, pdraw, nsel)`, giving a draw of detected
-        injections from the desired population.  `pdraw` is properly normalized
-        for estimating detectability as in, e.g., [Farr
+    :param mass_sel: Cut on the TRUE source-frame secondary mass (Msun);
+        injections with `mass2_source <= mass_sel` are discarded.
+
+    :return: A tuple `(m1, q, z, a1, a2, costilt1, costilt2, pdraw, ndraw)`,
+        giving the detected injections.  `pdraw` is properly normalized for
+        estimating detectability as in, e.g., [Farr
         (2019)](https://ui.adsabs.harvard.edu/abs/2019RNAAS...3...66F/abstract).
     """
     if rng is None:
@@ -255,19 +261,25 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
             costilt2s_sel = costilt2s_sel[detected]
             pdraw_sel = pdraw_sel[detected]
 
-            if desired_pop_wt is None:
-                pop_wt = pdraw_sel
-            else:
-                pop_wt = desired_pop_wt(m1s_sel, qs_sel, zs_sel)
-
-            unnorm_wt = pop_wt/pdraw_sel
-            sum_norm_wt = unnorm_wt / np.sum(unnorm_wt)
-            pdraw_wt = pop_wt / (np.sum(unnorm_wt) / ndraw)
-
-            if nsamp is not None:
-                inds = rng.choice(len(m1s_sel), size=nsamp, p=sum_norm_wt)
-            else:
+            # for O3 format
+            if nsamp is None:
                 inds = np.arange(len(m1s_sel))
+                pdraw_wt = pdraw_sel
+                ndraw_out = ndraw
+            else:
+                # Farr (2019) resampling: draw nsamp injections with weight
+                # pop_wt/pdraw; the resampled set is distributed as pop_wt
+                # (restricted to detections), so the consistent draw density
+                # is pop_wt/(sum(wt)/ndraw) with ndraw_out = nsamp.
+                if desired_pop_wt is None:
+                    pop_wt = pdraw_sel
+                else:
+                    pop_wt = desired_pop_wt(m1s_sel, qs_sel, zs_sel)
+                unnorm_wt = pop_wt/pdraw_sel
+                sum_norm_wt = unnorm_wt / np.sum(unnorm_wt)
+                pdraw_wt = pop_wt / (np.sum(unnorm_wt) / ndraw)
+                inds = rng.choice(len(m1s_sel), size=nsamp, p=sum_norm_wt)
+                ndraw_out = nsamp
             m1s_sel_cut = m1s_sel[inds]
             qs_sel_cut = qs_sel[inds]
             zs_sel_cut = zs_sel[inds]
@@ -276,37 +288,23 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
             costilt1s_sel_cut = costilt1s_sel[inds]
             costilt2s_sel_cut = costilt2s_sel[inds]
             pdraw_sel_cut = pdraw_wt[inds]
-            ndraw_cut = np.zeros(len(a2s_sel_cut))+ndraw
+            ndraw_cut = np.zeros(len(a2s_sel_cut))+ndraw_out
     else: #for pd format
         f = pd.read_hdf(file, key='events')
+        with h5py.File(file, 'r') as obj:
+            searches = [s.decode() if isinstance(s, bytes) else s
+                        for s in obj.attrs['searches']]
+            ndraw = obj.attrs['total_generated']
+            T = np.array(obj.attrs['total_analysis_time'])/(3600.0*24.0*365.25)
+
         m1s_sel = np.array(f['mass1_source'])
-        qs_sel = np.array(f['mass2_source'])/m1s_sel
-        m2s_sel=np.array(f['mass2_source'])
-        
-
-        theta_true = np.random.beta(2, 4, len(m1s_sel))  # default fallback
-
-        if 'right_ascension' in f.columns:
-            ras = np.array(f['right_ascension'])
-            decs = np.array(f['declination'])
-            iotas = np.array(f['inclination'])
-            gps_time = np.array(f['time_geocenter'])
-
-            good = np.isfinite(ras) & np.isfinite(decs)
-
-            theta_true[good] = finn_chernoff_theta(
-                ras[good],
-                decs[good],
-                iotas[good],
-                gps_time[good]
-            )
-            print(len(gps_time[good]))
+        m2s_sel = np.array(f['mass2_source'])
+        qs_sel = m2s_sel/m1s_sel
 
         try:
             zs_sel = np.array(f['z'])
-        except:
+        except KeyError:
             zs_sel = np.array(f['redshift'])
-        m1s_det=m1s_sel*(1+zs_sel)
         a1s_sel = np.sqrt(sum([np.array(f[f'spin1{ii}'])**2 for ii in ['x', 'y', 'z']]))
         a2s_sel = np.sqrt(sum([np.array(f[f'spin2{ii}'])**2 for ii in ['x', 'y', 'z']]))
         costilt1s_sel  = (
@@ -314,113 +312,30 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
         costilt2s_sel  = (
             np.array(f[f'spin2z']) / a2s_sel)
 
+        # Draw density over (m1_source, q, z) per detector-frame year.  
+        # lnpdraw is the joint density over (m1_s, m2_s, z, spins)
+        # multiplying by m1 converts m2 -> q, multiplying by (4 pi a^2) deals w spins (isotropic)
         try:
+            # older mock format: factorized mass/z draw pdfs with no spin term
             pdraw_sel = (np.exp(np.array(f['lnpdraw_mass1_source']))*
                      np.exp(np.array(f['lnpdraw_mass2_source_GIVEN_mass1_source']))*
                     np.exp(np.array(f['lnpdraw_z']))*m1s_sel/np.array(f['weights'])
                 )
-        except:
-            log_pdraw_joint = np.array(f['lnpdraw_mass1_source_mass2_source_redshift_spin1x_spin1y_spin1z_spin2x_spin2y_spin2z'])
-            log_p_s1 = log_p_spin_vector(np.array(f['spin1x']), np.array(f['spin1y']), np.array(f['spin1z']))
-            log_p_s2 = log_p_spin_vector(np.array(f['spin2x']), np.array(f['spin2y']), np.array(f['spin2z']))
-            pdraw_sel = np.exp(log_pdraw_joint - log_p_s1 - log_p_s2) * m1s_sel / np.array(f['weights'])
-            #dm1_src, dq dz currently
-            
-        #pdraw_sel *= (np.array(f['spin1x_spin1y_spin1z_sampling_pdf']) * np.array(f['spin2x_spin2y_spin2z_sampling_pdf']) * (2 * np.pi * a1s_sel**2 * 2 * np.pi * a2s_sel**2))
-        def get_first(f, keys, example=pdraw_sel):
-            for k in keys:
-                try:
-                    key_out = np.array(f[k])
+        except KeyError:
+            pdraw_sel = (np.exp(np.array(f['lnpdraw_mass1_source_mass2_source_redshift_spin1x_spin1y_spin1z_spin2x_spin2y_spin2z']))*
+                        m1s_sel/np.array(f['weights'])*
+                        (4*np.pi*a1s_sel**2)*(4*np.pi*a2s_sel**2))
 
-                    # replace invalid FARs with large value
-                    key_out[np.isinf(key_out)] = 100
-                    key_out[np.isnan(key_out)] = 100
+        # Detection: an injection is found if its semianalytic (O1/O2 epochs) SNR?10, or any search hits FAR threshold
+        far_cols = np.vstack([np.array(f[f'{s}_far']) for s in searches])
+        if np.isnan(far_cols).any():
+            raise ValueError("NaNs found in FAR columns; expected missing FARs to be +inf")
+        far = far_cols.min(axis=0)
+        snr_net = np.array(f['semianalytic_observed_phase_maximized_snr_net'])
 
-                    return key_out
-
-                except Exception:
-                    pass
-            raise KeyError(f"None of these keys found: {keys}")
-            #print(f"None of these keys found: {keys}")
-            #return np.ones_like(example)
-
-        def combine_far_rowwise(f, keys):
-            """Row-wise minimum FAR across all available pipeline/run columns.
-            NaN/inf in a given column for a given row means 'this pipeline/run
-            didn't report on this injection' -> treat as +inf, not as 100."""
-            cols = []
-            for k in keys:
-                try:
-                    arr = np.array(f[k], dtype=float)
-                    cols.append(arr)
-                except Exception:
-                    continue
-            if not cols:
-                raise KeyError(f"None of these keys found: {keys}")
-            stacked = np.vstack(cols)
-            stacked[np.isnan(stacked)] = np.inf
-            return np.min(stacked, axis=0)
-
-        pycbc_far   = combine_far_rowwise(f, ['pycbc_far', 'o4b_pycbc_far', 'o4a_pycbc_far', 'o3_pycbc_bbh_far'])
-        cwb_bbh_far = combine_far_rowwise(f, ['cwb-bbh_far', 'o4b_cwb-bbh_far', 'o4a_cwb-bbh_far', 'o3_cwb_far'])
-        gstlal_far  = combine_far_rowwise(f, ['gstlal_far', 'o4b_gstlal_far', 'o4a_gstlal_far', 'o3_gstlal_far'])
-        mbta_far    = combine_far_rowwise(f, ['mbta_far', 'o4b_mbta_far', 'o4a_mbta_far', 'o3_mbta_far'])
-
-        # --- semi-analytic path for O1/O2 (no pipeline FAR exists for these rows) ---
-
-        is_semianalytic = f['semianalytic_observed_phase_maximized_snr_net'] > 0
-        semianalytic_detected = is_semianalytic & (f['semianalytic_observed_phase_maximized_snr_net'] > 10)
-
-        far_detected = (pycbc_far < far_threshold) | (cwb_bbh_far < far_threshold) | \
-                    (gstlal_far < far_threshold) | (mbta_far < far_threshold)
-
-        #is_semianalytic = ~np.isfinite(np.minimum.reduce([pycbc_far, cwb_bbh_far, gstlal_far, mbta_far]))
-        #semianalytic_detected = is_semianalytic & (SNR_net > 10)   # LVK uses 9-11; 10 is their stated default
-
-        #pycbc_far = get_first(f, ['pycbc_far', 'o4b_pycbc_far', 'o4a_pycbc_far', 'o3_pycbc_bbh_far'])
-        #cwb_bbh_far = get_first(f, ['cwb-bbh_far', 'o4b_cwb-bbh_far', 'o4a_cwb-bbh_far', 'o3_cwb_far'])
-        #gstlal_far = get_first(f, ['gstlal_far', 'o4b_gstlal_far', 'o4a_gstlal_far', 'o3_gstlal_far'])
-        #mbta_far = get_first(f, ['mbta_far', 'o4b_mbta_far', 'o4a_mbta_far', 'o3_mbta_far'])
-        
-        
-        SNR=np.array(f['estimated_optimal_snr_net'])
-        a_rho = (0.0 - SNR) / np.sqrt(3)
-        SNR_obs = truncnorm.rvs(a_rho, np.inf, loc=SNR, scale=np.sqrt(3))
-
-        uncert = mock_observations.Uncertainties.from_snr(SNR_obs, mc_scale=.1, q_scale=1.7, th_scale=1.1)
-        slmc = np.asarray(uncert.sigma_log_mc)
-        sq   = np.asarray(uncert.sigma_q)
-        sth  = np.asarray(uncert.sigma_theta)
-
-        # --- log_mc_obs ---
-        mc_det=get_mc(m1s_det, qs_sel)
-        log_mc_obs = norm.rvs(loc=np.log(mc_det), scale=slmc)
-        mc_obs = np.exp(log_mc_obs)
-
-        # --- q_obs (vectorized truncnorm) ---
-        a_q = (0.0 - qs_sel) / sq
-        b_q = (1.0 - qs_sel) / sq
-        q_obs = truncnorm.rvs(a_q, b_q, loc=qs_sel, scale=sq)
-
-        # --- theta_obs (vectorized truncnorm) ---
-        a_th = (0.0 - theta_true) / sth
-        b_th = (1.0 - theta_true) / sth
-        theta_obs = truncnorm.rvs(a_th, b_th, loc=theta_true, scale=sth)
-
-        # --- derived quantities ---
-        m1_det_obs = get_m1(mc_obs, q_obs)
-        z_obs= theta_obs/theta_true * SNR/SNR_obs
-        m1_src_obs = m1_det_obs / (1 + z_obs)
-        m2_src_obs = m1_src_obs * q_obs
-
-        #m2s_det=m2s_sel*(1+zs_sel)
-        #m1_src = m1_det / (1 + z_obs)
-        #m2_src = m1_src * q_obs
-        detected = (far_detected | semianalytic_detected) & (m2_src_obs > mass_sel)
-        #detected = ((pycbc_far < far_threshold) | (cwb_bbh_far < far_threshold) | (gstlal_far < far_threshold) | (mbta_far < far_threshold)) & (m2_src_obs>mass_sel)
-        with h5py.File(file, 'r') as obj:
-            ndraw = obj.attrs['total_generated']
-            T=np.array(obj.attrs['total_analysis_time'])/(3600.0*24.0*365.25)
+        # Cut on the TRUE source-frame secondary mass; scattering the cut
+        # through mock-observed masses is inconsistent with the true pdraw. - i dont get this
+        detected = ((snr_net > 10) | (far < far_threshold)) & (m2s_sel > mass_sel)
 
         pdraw_sel /= T
 
@@ -433,26 +348,23 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
         costilt2s_sel = costilt2s_sel[detected]
         pdraw_sel = pdraw_sel[detected]
 
-        if desired_pop_wt is None:
-            pop_wt = pdraw_sel
-        else:
-            pop_wt = desired_pop_wt(m1s_sel, qs_sel, zs_sel)
-
-        unnorm_wt = pop_wt/pdraw_sel
-        sum_norm_wt = unnorm_wt / np.sum(unnorm_wt)
-        pdraw_wt = pop_wt / (np.sum(unnorm_wt) / ndraw)
-
-        #if nsamp is not None:
-        #    inds = rng.choice(len(m1s_sel), size=nsamp, p=sum_norm_wt)
-        #else:
-        #    inds = np.arange(len(m1s_sel))
-
-        if nsamp is not None:
-            inds = rng.choice(len(m1s_sel), size=nsamp, p=sum_norm_wt)
-            pdraw_final = pdraw_wt      # resampling changes the effective draw density -> use reweighted version
-        else:
+        if nsamp is None:
+            # No subsampling: true draw prob, ndraw=total # rpoposals
             inds = np.arange(len(m1s_sel))
-            pdraw_final = pdraw_sel 
+            pdraw_wt = pdraw_sel
+            ndraw_out = ndraw
+        else:
+            # Farr (2019) resampling: draw nsamp injections with weight pop_wt/pdraw => 
+            # draw density is pop_wt/(sum(wt)/ndraw) with ndraw_out = nsamp
+            if desired_pop_wt is None:
+                pop_wt = pdraw_sel
+            else:
+                pop_wt = desired_pop_wt(m1s_sel, qs_sel, zs_sel)
+            unnorm_wt = pop_wt/pdraw_sel
+            sum_norm_wt = unnorm_wt / np.sum(unnorm_wt)
+            pdraw_wt = pop_wt / (np.sum(unnorm_wt) / ndraw)
+            inds = rng.choice(len(m1s_sel), size=nsamp, p=sum_norm_wt)
+            ndraw_out = nsamp
         m1s_sel_cut = m1s_sel[inds]
         qs_sel_cut = qs_sel[inds]
         zs_sel_cut = zs_sel[inds]
@@ -460,11 +372,10 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
         a2s_sel_cut = a2s_sel[inds]
         costilt1s_sel_cut = costilt1s_sel[inds]
         costilt2s_sel_cut = costilt2s_sel[inds]
-        pdraw_sel_cut = pdraw_final[inds]
-        ndraw_cut = np.zeros(len(a2s_sel_cut))+ndraw
-        
-    return m1s_sel_cut, qs_sel_cut, zs_sel_cut, a1s_sel_cut, a2s_sel_cut, costilt1s_sel_cut, costilt2s_sel_cut, pdraw_sel_cut, ndraw_cut
+        pdraw_sel_cut = pdraw_wt[inds]
+        ndraw_cut = np.zeros(len(a2s_sel_cut))+ndraw_out
 
+    return m1s_sel_cut, qs_sel_cut, zs_sel_cut, a1s_sel_cut, a2s_sel_cut, costilt1s_sel_cut, costilt2s_sel_cut, pdraw_sel_cut, ndraw_cut
 
 def dm1sz_dm1ddl(z, cosmology=None):
     if not cosmology:
