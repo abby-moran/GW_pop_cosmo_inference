@@ -1,9 +1,3 @@
-# NOTE (power-law-z change): this file predates the switch of the LVK
-# model's redshift evolution to a pure power law (1+z)^lam.  Its dkappa
-# and zp lines are Madau-Dickinson parameters the LVK model no longer
-# reads, so run_inf_lvk.py now RAISES on this file rather than sampling
-# them as dead dimensions.  Kept as the record of the run it produced.
-# For a new run, use lvk_gwtc5_plz.prior (or drop the dkappa/zp lines).
 # Control run: LVK GWTC-5 Default 'PowerLaw + 2 Peaks' mass model
 # (arXiv 2605.27226), no spins.  Run with run_inf_lvk.py.
 # Cosmology fixed to Planck; free it by replacing the first three lines with

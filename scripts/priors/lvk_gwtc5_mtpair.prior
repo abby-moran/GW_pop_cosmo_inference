@@ -1,9 +1,3 @@
-# NOTE (power-law-z change): this file predates the switch of the LVK
-# model's redshift evolution to a pure power law (1+z)^lam.  Its dkappa
-# and zp lines are Madau-Dickinson parameters the LVK model no longer
-# reads, so run_inf_lvk.py now RAISES on this file rather than sampling
-# them as dead dimensions.  Kept as the record of the run it produced.
-# For a new run, use lvk_gwtc5_plz.prior (or drop the dkappa/zp lines).
 # Hybrid control run: LVK GWTC-5 Default 'PowerLaw + 2 Peaks' mass model
 # (arXiv 2605.27226, no spins) for BOTH masses, but paired the way the
 # original PISN model (intensity_models_fast.LogDNDMDQDV) pairs them --

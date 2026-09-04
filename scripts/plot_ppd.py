@@ -89,8 +89,23 @@ PARAM_DEFAULTS_LVK = {
     "alpha_1": None, "alpha_2": None, "mbreak": None,
     "mpp_1": None, "sigpp_1": None, "mpp_2": None, "sigpp_2": None,
     "f_peaks": None, "f_p1": None, "beta": None,
-    "lam": None,
+    "lam": None, "kappa": None, "zp": None,
     "mmin": 4.5, "mmax": 300.0, "delta_m": 4.0, "zmax": 20.0,
+}
+
+# Per-family OPTIONAL parameters: a third behaviour alongside the two encoded
+# by PARAM_DEFAULTS (None = required, else optional-with-that-default).  An
+# optional key is passed through when the posterior / pop config has it and
+# OMITTED from the built parameter dict when it does not -- never defaulted to
+# a number.  intensity_models_lvk dispatches its redshift evolution on exactly
+# that absence: kappa/zp present -> Madau-Dickinson, absent -> the pure power
+# law (1+z)^lam.  Defaulting kappa to a number would fabricate a turnover, and
+# treating it as required would break the power-law runs.  The PISN family is
+# NOT listed, so kappa/zp stay strictly required there (PARAM_DEFAULTS is
+# untouched).
+OPTIONAL_PARAMS = {
+    "lvk_pl2p": ("kappa", "zp"),
+    "lvk_pl2p_mt": ("kappa", "zp"),
 }
 
 # Model families, keyed by the posterior attr `mass_model` run_inf*_py stamps
@@ -272,7 +287,9 @@ def build_truth_model(tv, smooth_tail_edge, family="pisn"):
     mod_name, defaults, has_bump, build_kwargs = FAMILIES[family]
     build_population_model = importlib.import_module(mod_name).build_population_model
     use_low_bump = has_bump and tv.get("flow", 0.0) > 0 and "mp_low" in tv
-    sample = {k: tv.get(k, d) for k, d in defaults.items()}
+    optional = OPTIONAL_PARAMS.get(family, ())
+    sample = {k: tv.get(k, d) for k, d in defaults.items()
+              if k in tv or k not in optional}
     missing = [k for k, v in sample.items() if v is None]
     if missing:
         sys.exit(f"pop_config is missing required parameters: {missing}")
@@ -534,13 +551,22 @@ def main():
         mg, qg, zg = marginal_grids(args.zmax_plot, coords)
         # bump only recorded when it is on (PISN family only)
         use_low_bump = has_bump and "flow" in post
+        optional = OPTIONAL_PARAMS.get(family, ())
         param_keys = [k for k in param_defaults if k in post]
-        defaulted = {k: d for k, d in param_defaults.items() if k not in post}
+        # Optional keys absent from the posterior are omitted entirely (see
+        # OPTIONAL_PARAMS) rather than defaulted, so they never count as
+        # missing-and-required.
+        omitted = [k for k in optional if k not in post]
+        defaulted = {k: d for k, d in param_defaults.items()
+                     if k not in post and k not in optional}
         if any(v is None for v in defaulted.values()):
             sys.exit(f"posterior is missing required parameters: "
                      f"{[k for k, v in defaulted.items() if v is None]}")
         if defaulted:
             print(f"note: not in posterior, using defaults: {defaulted}")
+        if omitted:
+            print(f"note: optional parameters not in posterior, omitted: "
+                  f"{omitted}")
 
         nsamp = post["R"].values.size
         pool = np.arange(nsamp) if var_keep is None else var_keep
@@ -563,7 +589,8 @@ def main():
         else:
             # truth marginals through the identical code path
             tm, tq, tz = (np.asarray(a) for a in one(
-                {**{k: truths.get(k, param_defaults[k]) for k in param_defaults},
+                {**{k: truths.get(k, param_defaults[k]) for k in param_defaults
+                    if k in truths or k not in optional},
                  **({k: truths[k] for k in BUMP_KEYS if k in truths}
                     if has_bump else {}),
                  "R": R_anchor},

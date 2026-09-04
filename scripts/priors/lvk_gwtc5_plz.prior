@@ -1,8 +1,10 @@
 # Control run: LVK GWTC-5 Default 'PowerLaw + 2 Peaks' mass model
 # (arXiv 2605.27226), no spins, with a PURE POWER-LAW redshift evolution
 # dN/dV/dt ~ (1+z)^lam (no Madau-Dickinson turnover: no kappa/dkappa, no zp).
-# This is now the redshift form the LVK model implements; the older
-# lvk_gwtc5_control.prior records the superseded Madau-Dickinson run.
+# The LVK model supports BOTH redshift forms and picks one from the prior
+# itself: THIS file selects the pure power law by OMITTING dkappa/zp, while
+# lvk_gwtc5_control.prior selects Madau-Dickinson by including them.  The two
+# are otherwise identical, so the run pair isolates the turnover.
 # Run with run_inf_lvk.py.
 # Cosmology fixed to Planck; free it by replacing the first three lines with
 # log_h / Omh2 / w prior lines (the model derives Om = Omh2/h^2).

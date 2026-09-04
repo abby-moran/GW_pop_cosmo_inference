@@ -18,12 +18,24 @@ Checks, in order:
      log_dN from the object's own pieces, the selection-consistency identity,
      finite potential/gradients, and bit-identity of pairing="lvk" with the
      default
+  7. (with --mcmc) a short NUTS smoke run on both redshift parametrizations
+  8. traced mmin/delta_m (the mminfree parametrization): finite d(log Zq)
+     gradients across the prior box and finite potential/gradients for both
+     pairings with mmin and delta_m sampled
+  9. the redshift-evolution dispatch: a prior WITHOUT dkappa/kappa selects
+     LogDNDVPowerLaw, one WITH dkappa (+ zp) selects the shared
+     intensity_models_fast.LogDNDV bit-for-bit, both are point-normalized,
+     and the misconfigurations (kappa without zp, zp without kappa) raise
+ 10. the Madau-Dickinson branch end to end: recorded kappa = lam + dkappa,
+     the selection-consistency identity, and finite potential/gradients
 
-Run from scripts/testing_scripts:
-    uv run python test_lvk_model.py             # tests 1-5
-    uv run python test_lvk_model.py --mcmc 50   # + short NUTS smoke run
+Run from scripts/ (sys.path.append("../src/") below is CWD-relative, so
+invoking this from scripts/testing_scripts/ will not find the src modules):
+    uv run python testing_scripts/test_lvk_model.py            # checks 1-6, 8-10
+    uv run python testing_scripts/test_lvk_model.py --mcmc 50  # + check 7
 """
 import argparse
+import dataclasses
 import os
 import sys
 import tempfile
@@ -36,6 +48,7 @@ from scipy.stats import norm as scipy_norm
 import jax
 import jax.numpy as jnp
 
+import intensity_models_fast as ifast
 import intensity_models_lvk as ilvk
 from utils import get_priors_from_file
 from bench_model import make_synthetic_data, diagnose
@@ -70,18 +83,38 @@ lam = TruncatedNormal(2.7, 2.0, low=-1.3, high=6.7)
 zmax = 6.5
 """
 
+# The same model with the Madau-Dickinson redshift sector (the
+# lvk_gwtc5_control.prior coordinates): supplying dkappa/zp is what selects
+# it -- there is no flag.
+LVK_PRIOR_TEXT_MD = LVK_PRIOR_TEXT + """dkappa = TruncatedNormal(2.9, 2.0, low=1, high=6.9)
+zp = TruncatedNormal(1.9, 1, low=0, high=3.9)
+"""
+
 # Roughly the GWTC-5 Default release posterior medians (see the plan notes).
 LVK_TRUTH = dict(alpha_1=1.5, alpha_2=5.4, mbreak=37.0, mpp_1=9.9, sigpp_1=0.8,
                  mpp_2=32.0, sigpp_2=5.0, f_peaks=0.4, f_p1=0.55, beta=1.0,
                  lam=2.5)
+LVK_TRUTH_MD = dict(LVK_TRUTH, dkappa=3.0, zp=1.9)
 FIXED = dict(mmin=4.5, mmax=300.0, delta_m=4.0)
 
 
-def build_lvk_prior():
+def build_lvk_prior(text=LVK_PRIOR_TEXT):
     fd, path = tempfile.mkstemp(suffix=".prior", prefix="lvk_test_")
     with os.fdopen(fd, "w") as f:
-        f.write(LVK_PRIOR_TEXT)
+        f.write(text)
     return get_priors_from_file(path)
+
+
+def build_from_prior(prior, truth, **build_kwargs):
+    """prior -> sample dict -> deterministics -> intensity: the run_inf.py
+    path, inside a seed handler (the deterministic sites need one)."""
+    import numpyro.handlers as handlers
+    from utils import sample_parameters_from_dict
+    values = {k: jnp.asarray(v) for k, v in truth.items()}
+    with handlers.seed(rng_seed=0), handlers.substitute(data=values):
+        sample = sample_parameters_from_dict(prior)
+        sample.update(ilvk.get_deterministic_parameters(sample))
+        return sample, ilvk.build_population_model(sample, **build_kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +357,17 @@ def test_mt_pairing(prior):
         lam=LVK_TRUTH["lam"], mmin=FIXED["mmin"], mmax=FIXED["mmax"],
         delta_m=FIXED["delta_m"], zmax=6.5, pairing="mt")
     check("mt pairing builds no Zq table", ld.log_qnorm is None)
+    check("mt + no kappa selects LogDNDVPowerLaw",
+          type(ld.log_dndv) is ilvk.LogDNDVPowerLaw,
+          type(ld.log_dndv).__name__)
+
+    # ... and the Madau-Dickinson variant of the same object (kappa/zp given).
+    ld_md = dataclasses.replace(
+        ld, kappa=LVK_TRUTH["lam"] + LVK_TRUTH_MD["dkappa"],
+        zp=LVK_TRUTH_MD["zp"])
+    check("mt + kappa/zp selects the shared LogDNDV",
+          type(ld_md.log_dndv) is ifast.LogDNDV,
+          type(ld_md.log_dndv).__name__)
 
     m1 = jnp.array([8.0, 20.0, 35.0, 60.0, 120.0])
     q = jnp.array([0.9, 0.5, 0.7, 0.95, 0.6])
@@ -337,10 +381,25 @@ def test_mt_pairing(prior):
     d = np.max(np.abs(got - manual))
     check("mt log_dN == f(m1) f(m2) (mt/60)^beta m1 dNdV / norm",
           bool(d < 1e-4), f"max |dlog| = {d:.2e}")
+    # the same recomposition for the M-D variant: only log_dndv / log_norm
+    # change, so this is the mt-pairing algebra on the other branch.
+    got_md = np.asarray(ld_md(m1, q, z), np.float64)
+    manual_md = np.asarray(
+        ld_md.log_dndm(m1) + ld_md.log_dndm(m2)
+        + ld_md.beta * jnp.log((m1 + m2) / (30.0 * (1.0 + 1.0)))
+        + jnp.log(m1) + ld_md.log_dndv(z) - ld_md.log_norm, np.float64)
+    d_md = np.max(np.abs(got_md - manual_md))
+    check("mt log_dN recomposes with the M-D log_dndv too",
+          bool(d_md < 1e-4), f"max |dlog| = {d_md:.2e}")
+    # and the two branches must actually differ away from zref
+    dz = float(np.max(np.abs(got - got_md)))
+    check("power-law and M-D mt intensities differ off zref", dz > 0.1,
+          f"max |dlog| = {dz:.3f}")
     # point normalization: m1 dN == 1 at (mref=30, qref=1, zref=1e-3)
-    ref = float(np.asarray(jnp.log(30.0) + ld(30.0, 1.0, 0.001))[0])
-    check("mt point normalization at (30, 1, 0.001)", abs(ref) < 1e-5,
-          f"log(m dN) = {ref:.2e}")
+    for label, obj in (("power law", ld), ("M-D", ld_md)):
+        ref = float(np.asarray(jnp.log(30.0) + obj(30.0, 1.0, 0.001))[0])
+        check(f"mt point normalization at (30, 1, 0.001), {label}",
+              abs(ref) < 1e-5, f"log(m dN) = {ref:.2e}")
 
     # (a) selection-consistency identity with pairing="mt".
     data = make_synthetic_data(nobs=32, nsamp=64, nsel=100)
@@ -437,6 +496,144 @@ def test_traced_bounds():
               f"U = {float(val):.4e}" + (f", bad: {bad}" if bad else ""))
 
 
+def test_redshift_dispatch(prior, prior_md):
+    """Section 9: the prior alone selects the redshift form."""
+    print("\n=== 9. redshift-evolution dispatch (prior-driven) ===")
+
+    sample_pl, ld_pl = build_from_prior(prior, LVK_TRUTH)
+    sample_md, ld_md = build_from_prior(prior_md, LVK_TRUTH_MD)
+
+    check("prior without dkappa -> LogDNDVPowerLaw",
+          type(ld_pl.log_dndv) is ilvk.LogDNDVPowerLaw,
+          type(ld_pl.log_dndv).__name__)
+    check("no kappa/zp leak into the power-law sample dict",
+          "kappa" not in sample_pl and "zp" not in sample_pl,
+          str(sorted(k for k in ("kappa", "dkappa", "zp") if k in sample_pl)))
+    check("prior with dkappa -> intensity_models_fast.LogDNDV",
+          type(ld_md.log_dndv) is ifast.LogDNDV,
+          type(ld_md.log_dndv).__name__)
+
+    kap = float(np.asarray(sample_md["kappa"]))
+    check("kappa == lam + dkappa",
+          abs(kap - (LVK_TRUTH["lam"] + LVK_TRUTH_MD["dkappa"])) < 1e-6,
+          f"kappa = {kap}")
+    check("zp passed through to the M-D object",
+          abs(float(np.asarray(ld_md.log_dndv.zp)) - LVK_TRUTH_MD["zp"]) < 1e-6)
+
+    # point normalization survives both branches in both pairings
+    for label, pr, tv in (("power law", prior, LVK_TRUTH),
+                          ("M-D", prior_md, LVK_TRUTH_MD)):
+        for pairing in ("lvk", "mt"):
+            _, ld = build_from_prior(pr, tv, pairing=pairing)
+            v = float(np.asarray(jnp.log(30.0) + ld(30.0, 1.0, 0.001))[0])
+            check(f"point normalization, {label}, pairing={pairing}",
+                  abs(v) < 1e-5, f"log(m dN) = {v:.2e}")
+
+    zs = np.array([1e-3, 0.05, 0.3, 1.0, 1.9, 3.0, 6.0, 6.49])
+    lam, zp, zmax = LVK_TRUTH["lam"], LVK_TRUTH_MD["zp"], 6.5
+    zref = float(ilvk.LogDNDMDQDV_LVK.zref)
+    kappa = lam + LVK_TRUTH_MD["dkappa"]
+
+    # (a) the M-D branch IS the PISN model's object, so it is bit-identical to
+    #     constructing intensity_models_fast.LogDNDV directly -- i.e. exactly
+    #     the pre-power-law-change numbers.
+    direct = ifast.LogDNDV(lam, kappa, zp, zref, zmax=zmax)
+    got = np.asarray(ld_md.log_dndv(jnp.asarray(zs)))
+    want = np.asarray(direct(jnp.asarray(zs)))
+    check("M-D log_dndv bit-identical to intensity_models_fast.LogDNDV",
+          bool(np.array_equal(got, want)),
+          f"max |d| = {np.max(np.abs(got - want)):.3e}")
+
+    # (b) ... and it matches an independent float64 Madau-Dickinson formula.
+    def ref_md(z):
+        def f(zz):
+            l1p = np.log1p(np.asarray(zz, np.float64))
+            return lam * l1p - np.log1p(np.exp(kappa * (l1p - np.log1p(zp))))
+        return f(z) - f(zref)
+
+    d = np.max(np.abs(got.astype(np.float64) - ref_md(zs)))
+    check("M-D log_dndv matches the float64 M-D reference",
+          bool(d < 1e-4), f"max |d| = {d:.2e}")
+
+    # (c) the power-law branch matches lam * [log1p(z) - log1p(zref)].
+    got_pl = np.asarray(ld_pl.log_dndv(jnp.asarray(zs)), np.float64)
+    ref_pl = lam * (np.log1p(zs) - np.log1p(zref))
+    d = np.max(np.abs(got_pl - ref_pl))
+    check("power-law log_dndv == lam (log1p(z) - log1p(zref))",
+          bool(d < 1e-4), f"max |d| = {d:.2e}")
+
+    # (d) kappa -> 0 degenerates M-D to the power law (the log 2 in the
+    #     denominator is z-independent and cancels through log_norm).
+    md0 = ifast.LogDNDV(lam, 0.0, zp, zref, zmax=zmax)
+    d = float(np.max(np.abs(np.asarray(md0(jnp.asarray(zs)), np.float64)
+                            - got_pl)))
+    check("M-D at kappa = 0 reproduces the power law", d < 1e-4,
+          f"max |d| = {d:.2e}")
+
+    # (e) both truncate hard at zmax
+    for label, obj in (("power law", ld_pl.log_dndv), ("M-D", ld_md.log_dndv)):
+        v = np.asarray(obj(jnp.asarray([zmax, zmax + 1.0])))
+        check(f"{label} log_dndv = -inf at/above zmax",
+              bool(np.all(np.isneginf(v))), str(v))
+
+    # (f) the half-specified turnover is a misconfiguration, not a branch
+    base = {f.name: getattr(ld_pl, f.name)
+            for f in ld_pl.__dataclass_fields__.values() if f.init}
+    for label, kw in (("kappa without zp", dict(kappa=kappa)),
+                      ("zp without kappa", dict(zp=zp))):
+        try:
+            ilvk.LogDNDMDQDV_LVK(**{**base, **kw})
+            check(f"{label} raises ValueError", False)
+        except ValueError:
+            check(f"{label} raises ValueError", True)
+
+
+def test_madau_dickinson(prior_md):
+    """Section 10: the M-D branch through the full model."""
+    print("\n=== 10. Madau-Dickinson branch, full model ===")
+
+    # selection-consistency identity with sel := flattened events
+    data = make_synthetic_data(nobs=32, nsamp=64, nsel=100)
+    nobs, nsamp = data["m1s_det"].shape
+    nsel = nobs * nsamp
+    ident_args = (
+        data["m1s_det"], data["qs"], data["dls"], data["log_pdraw"],
+        data["m1s_det"].reshape(-1), data["qs"].reshape(-1),
+        data["dls"].reshape(-1), np.exp(data["log_pdraw"].reshape(-1)),
+        float(nsel), prior_md)
+    tr = None
+    for pairing in ("lvk", "mt"):
+        tr = _trace_at(ident_args, LVK_TRUTH_MD, store_per_event=True,
+                       pairing=pairing)
+        loglike = np.asarray(tr["loglik_array_dim"]["value"], np.float64)
+        log_mu_sel = float(np.asarray(tr["log_mu_sel"]["value"]))
+        lhs = log_mu_sel + np.log(nsel)
+        rhs = np_logsumexp(loglike) + np.log(nsamp)
+        check(f"log_mu_sel identity at M-D truth (pairing={pairing!r})",
+              abs(lhs - rhs) < 5e-4, f"|d| = {abs(lhs - rhs):.2e} nats")
+    check("'kappa' recorded as a deterministic site", "kappa" in tr,
+          f"kappa = {float(np.asarray(tr['kappa']['value'])):.4f}"
+          if "kappa" in tr else "")
+
+    # finite potential / gradients, d/d(dkappa) and d/d(zp) included
+    data = make_synthetic_data(nobs=48, nsamp=128, nsel=20000)
+    model_args = (
+        data["m1s_det"], data["qs"], data["dls"], data["log_pdraw"],
+        data["m1s_det_sel"], data["qs_sel"], data["dls_sel"], data["pdraw_sel"],
+        data["Ndraw"], prior_md)
+    _, bad = diagnose(ilvk.pop_cosmo_model, model_args, {}, LVK_TRUTH_MD)
+    check("M-D trace at truth has no non-finite sites", not bad, str(bad))
+    z0, pe_fn = _init_model(model_args, LVK_TRUTH_MD)
+    check("dkappa and zp are sample sites",
+          "dkappa" in z0 and "zp" in z0, str(sorted(z0)))
+    val, grad = jax.value_and_grad(pe_fn)(z0)
+    bad_g = [k for k, g in grad.items() if not np.all(np.isfinite(np.asarray(g)))]
+    check("M-D potential finite at truth", bool(np.isfinite(val)),
+          f"U = {float(val):.6e}")
+    check("M-D gradients all finite (dkappa/zp included)", not bad_g,
+          str(bad_g))
+
+
 def test_mcmc_smoke(prior, n):
     print(f"\n=== 7. NUTS smoke run ({n} warmup + {n} samples) ===")
     from numpyro.infer import MCMC, NUTS, init_to_value
@@ -453,7 +650,10 @@ def test_mcmc_smoke(prior, n):
     post = mcmc.get_samples()
     finite = all(np.all(np.isfinite(np.asarray(v))) for v in post.values())
     check("all posterior draws finite", finite)
-    for k in ("R", "log_mu_sel", "frac_bpl"):
+    expect = ["R", "log_mu_sel", "frac_bpl"]
+    if "dkappa" in prior:      # M-D prior -> derived `kappa` deterministic
+        expect.append("kappa")
+    for k in expect:
         check(f"site {k!r} recorded", k in post)
 
 
@@ -465,6 +665,7 @@ def main():
 
     print(f"jax {jax.__version__} on {jax.devices()}  x64={jax.config.jax_enable_x64}")
     prior = build_lvk_prior()
+    prior_md = build_lvk_prior(LVK_PRIOR_TEXT_MD)
 
     test_mass_pdf_reference()
     test_q_norm()
@@ -473,8 +674,11 @@ def main():
     test_recentering(prior, model_args)
     test_mt_pairing(prior)
     test_traced_bounds()
+    test_redshift_dispatch(prior, prior_md)
+    test_madau_dickinson(prior_md)
     if args.mcmc:
         test_mcmc_smoke(prior, args.mcmc)
+        test_mcmc_smoke(prior_md, args.mcmc)
 
     print()
     if FAILURES:

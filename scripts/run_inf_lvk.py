@@ -70,11 +70,13 @@ def load_true_vals_lvk(filename):
                 key, val = line.split("=", 1)
                 tv[key.strip()] = float(val.strip())
 
-    # The redshift evolution is a pure power law, so `lam` is the only
-    # evolution parameter -- a legacy pop config's Madau-Dickinson turnover
-    # values are dropped rather than mapped.
-    for k in ('kappa', 'dkappa', 'zp'):
-        tv.pop(k, None)
+    # Madau-Dickinson pop config -> the prior's dkappa coordinate.  Harmless
+    # for a pure-power-law prior (lvk_gwtc5_plz.prior): dkappa/zp are then not
+    # sample sites, and both init_to_value and the recentering `substitute`
+    # ignore truth entries that name no site.
+    if 'kappa' in tv and 'dkappa' not in tv:
+        tv['dkappa'] = tv['kappa'] - tv['lam']
+        del tv['kappa']
     if 'Omh2' not in tv and 'Om' in tv and 'h' in tv:
         tv['Omh2'] = tv['Om'] * tv['h'] ** 2
     # Flat mixture fractions -> stick-breaking coordinates.
