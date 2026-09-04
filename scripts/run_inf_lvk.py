@@ -70,9 +70,11 @@ def load_true_vals_lvk(filename):
                 key, val = line.split("=", 1)
                 tv[key.strip()] = float(val.strip())
 
-    if 'kappa' in tv and 'dkappa' not in tv:
-        tv['dkappa'] = tv['kappa'] - tv['lam']
-        del tv['kappa']
+    # The redshift evolution is a pure power law, so `lam` is the only
+    # evolution parameter -- a legacy pop config's Madau-Dickinson turnover
+    # values are dropped rather than mapped.
+    for k in ('kappa', 'dkappa', 'zp'):
+        tv.pop(k, None)
     if 'Omh2' not in tv and 'Om' in tv and 'h' in tv:
         tv['Omh2'] = tv['Om'] * tv['h'] ** 2
     # Flat mixture fractions -> stick-breaking coordinates.

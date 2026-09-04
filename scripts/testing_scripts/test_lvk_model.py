@@ -67,15 +67,13 @@ mmin = 4.5
 mmax = 300.0
 delta_m = 4.0
 lam = TruncatedNormal(2.7, 2.0, low=-1.3, high=6.7)
-dkappa = TruncatedNormal(2.9, 2.0, low=1, high=6.9)
-zp = TruncatedNormal(1.9, 1, low=0, high=3.9)
 zmax = 6.5
 """
 
 # Roughly the GWTC-5 Default release posterior medians (see the plan notes).
 LVK_TRUTH = dict(alpha_1=1.5, alpha_2=5.4, mbreak=37.0, mpp_1=9.9, sigpp_1=0.8,
                  mpp_2=32.0, sigpp_2=5.0, f_peaks=0.4, f_p1=0.55, beta=1.0,
-                 lam=2.5, dkappa=3.0, zp=1.9)
+                 lam=2.5)
 FIXED = dict(mmin=4.5, mmax=300.0, delta_m=4.0)
 
 
@@ -323,8 +321,7 @@ def test_mt_pairing(prior):
         sigpp_1=LVK_TRUTH["sigpp_1"], mpp_2=LVK_TRUTH["mpp_2"],
         sigpp_2=LVK_TRUTH["sigpp_2"], f_peaks=LVK_TRUTH["f_peaks"],
         f_p1=LVK_TRUTH["f_p1"], beta=LVK_TRUTH["beta"],
-        lam=LVK_TRUTH["lam"], kappa=LVK_TRUTH["lam"] + LVK_TRUTH["dkappa"],
-        zp=LVK_TRUTH["zp"], mmin=FIXED["mmin"], mmax=FIXED["mmax"],
+        lam=LVK_TRUTH["lam"], mmin=FIXED["mmin"], mmax=FIXED["mmax"],
         delta_m=FIXED["delta_m"], zmax=6.5, pairing="mt")
     check("mt pairing builds no Zq table", ld.log_qnorm is None)
 
@@ -456,7 +453,7 @@ def test_mcmc_smoke(prior, n):
     post = mcmc.get_samples()
     finite = all(np.all(np.isfinite(np.asarray(v))) for v in post.values())
     check("all posterior draws finite", finite)
-    for k in ("R", "log_mu_sel", "kappa", "frac_bpl"):
+    for k in ("R", "log_mu_sel", "frac_bpl"):
         check(f"site {k!r} recorded", k in post)
 
 

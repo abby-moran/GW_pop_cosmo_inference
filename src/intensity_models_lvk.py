@@ -9,10 +9,13 @@ included explicitly (it does not cancel into R).  A second, static ``pairing
 = "mt"`` mode instead pairs the LVK mass function the way the original PISN
 model does (f(m1) f(m2) with a total-mass power law; see LogDNDMDQDV_LVK),
 which disentangles mass-model effects from pairing-function effects across
-run families.  Everything else -- cosmology,
-Madau-Dickinson redshift evolution, detector->source conversion, selection
-integral, n_eff guards, R sampling, float32 recentering -- is identical to
-``intensity_models_fast`` and imported from there unchanged.
+run families.  The redshift evolution is a pure power law,
+dN/dV/dt propto (1 + z)^lam (``LogDNDVPowerLaw``, defined here -- the PISN
+model in ``intensity_models_fast`` keeps its Madau-Dickinson form, so there
+is no shared kappa / zp turnover in this module at all).  Everything else --
+cosmology, detector->source conversion, selection integral, n_eff guards,
+R sampling, float32 recentering -- is identical to ``intensity_models_fast``
+and imported from there unchanged.
 
 The intensity keeps the same point-normalization convention as
 ``LogDNDMDQDV._normalize``: m1 * dN/dm1 dq dV dt == 1 at (mref=30, qref=1,
@@ -36,7 +39,7 @@ import numpyro.distributions as dist
 from utils import sample_parameters_from_dict
 
 from intensity_models_fast import (
-    FlatwCDMCosmology, LogDNDV, LogQNorm, coords, log_smooth_neff_boundary,
+    FlatwCDMCosmology, LogQNorm, coords, log_smooth_neff_boundary,
     mmin_log_smooth_turnon, safe_log, _logsumexp_and_neff,
     _LOG_ZERO_FLOOR,
 )
@@ -116,6 +119,47 @@ def log_smoothed_mixture(m, log_m, alpha_1, alpha_2, mbreak, mpp_1, sigpp_1,
 
 
 @dataclass
+class LogDNDVPowerLaw(object):
+    r"""Pure power-law merger rate density over cosmic time:
+
+    .. math::
+        \frac{\mathrm{d} N}{\mathrm{d} V \mathrm{d} t}
+            \propto \left( 1 + z \right)^\lambda
+
+    Deliberately local to this module: it is the drop-in replacement for
+    ``intensity_models_fast.LogDNDV`` (the Madau-Dickinson form, which the
+    PISN model keeps), with the same interface and the same conventions --
+
+    * ``log_norm = -self(zref)`` in ``__post_init__``, so the evolution is
+      exactly 1 at ``zref`` (analytically ``-lam * log1p(zref)``, but computed
+      through the same pattern as ``LogDNDV`` so the two stay structurally
+      identical);
+    * the hard ``z < zmax`` truncation to ``-inf``;
+    * ``from_log1p(log1p_z)`` for callers that already hold ``log(1 + z)``
+      (the truncation is applied in log1p space, against ``log1p(zmax)``).
+
+    There is no ``kappa`` and no ``zp``: the rate density rises monotonically
+    as a power law all the way to ``zmax``.
+    """
+    lam: object
+    zref: object = 0.001
+    zmax: object = 20
+    log_norm: object = 0.0
+
+    def __post_init__(self):
+        self.log_norm = -self(self.zref)
+
+    def __call__(self, z):
+        z = jnp.asarray(z)
+        return self.from_log1p(jnp.log1p(z))
+
+    def from_log1p(self, log1p_z):
+        log1p_zmax = jnp.log1p(self.zmax)
+        return jnp.where(log1p_z < log1p_zmax,
+            self.lam * log1p_z + self.log_norm, -jnp.inf,)
+
+
+@dataclass
 class LogDNDMDQDV_LVK(object):
     """LVK PowerLaw + 2 Peaks intensity.
 
@@ -138,6 +182,9 @@ class LogDNDMDQDV_LVK(object):
     [mmin, mmax] support, so S(m2) comes for free (and m2 <= m1 keeps the
     mmax cut on m2 from ever binding).  Here beta is the TOTAL-MASS exponent,
     not the q exponent.
+
+    In both pairings the redshift factor log dNdV(z) is the pure power law
+    (1 + z)^lam (``LogDNDVPowerLaw``), normalized to 1 at ``zref``.
     """
     alpha_1: object
     alpha_2: object
@@ -150,8 +197,6 @@ class LogDNDMDQDV_LVK(object):
     f_p1: object
     beta: object
     lam: object
-    kappa: object
-    zp: object
     mmin: object
     mmax: object
     delta_m: object
@@ -169,8 +214,7 @@ class LogDNDMDQDV_LVK(object):
         if self.pairing not in ("lvk", "mt"):
             raise ValueError(f"unknown pairing: {self.pairing!r} "
                              f"(known: 'lvk', 'mt')")
-        self.log_dndv = LogDNDV(self.lam, self.kappa, self.zp, self.zref,
-                                zmax=self.zmax)
+        self.log_dndv = LogDNDVPowerLaw(self.lam, self.zref, zmax=self.zmax)
         # The Zq(m1) table only exists in the LVK pairing; the mt pairing has
         # no m1-dependent q normalization (constants are absorbed into R).
         self.log_qnorm = (LogQNorm(self.beta, self.mmin, self.delta_m,
@@ -229,15 +273,14 @@ class LogDNDMDQDV_LVK(object):
 
 def get_deterministic_parameters(sample):
     """Derived parameters for the LVK model.  Tolerant: each rule fires only
-    when its source keys are present, so a prior may sample kappa or Om
-    directly instead.  No PISN-model rules."""
+    when its source keys are present, so a prior may sample h or Om directly
+    instead.  No PISN-model rules, and no redshift-evolution rule: the
+    evolution is the pure power law (1 + z)^lam, whose only parameter is
+    sampled directly."""
     out = {}
     if 'log_h' in sample and 'h' not in sample:
         out['h'] = numpyro.deterministic('h', jnp.exp(sample['log_h']))
     h = out.get('h', sample.get('h'))
-
-    if 'dkappa' in sample and 'kappa' not in sample:
-        out['kappa'] = numpyro.deterministic('kappa', sample['lam'] + sample['dkappa'])
 
     if 'Omh2' in sample and 'Om' not in sample:
         out['Om'] = numpyro.deterministic('Om', sample['Omh2'] / jnp.square(h))
@@ -255,13 +298,28 @@ def build_population_model(sample, pairing="lvk", **_ignored):
     """Construct the LVK intensity from a parameter dict.  ``pairing`` selects
     the static pairing convention ("lvk" or "mt", see LogDNDMDQDV_LVK).  Extra
     kwargs (use_low_bump, smooth_tail_edge, ...) are accepted and ignored so
-    call sites shared with the PISN model stay uniform."""
+    call sites shared with the PISN model stay uniform.
+
+    Raises on the retired Madau-Dickinson redshift parameters.  This model's
+    evolution is the pure power law (1+z)^lam, so a prior that still supplies
+    kappa / dkappa / zp would otherwise sample them as dead dimensions the
+    likelihood never reads -- no error, just wasted NUTS directions and a
+    posterior that looks like it constrains a turnover that is not computed."""
+    retired = [k for k in ('kappa', 'dkappa', 'zp') if k in sample]
+    if retired:
+        raise ValueError(
+            f"LVK model: prior supplies retired redshift parameter(s) "
+            f"{retired}; the LVK redshift evolution is now the pure power law "
+            f"(1+z)^lam with no turnover.  Drop these lines from the prior "
+            f"file (keep lam and zmax); see scripts/priors/lvk_gwtc5_plz.prior. "
+            f"The Madau-Dickinson form is still available in the PISN model "
+            f"(intensity_models_fast.LogDNDV).")
     return LogDNDMDQDV_LVK(
         alpha_1=sample['alpha_1'], alpha_2=sample['alpha_2'], mbreak=sample['mbreak'],
         mpp_1=sample['mpp_1'], sigpp_1=sample['sigpp_1'],
         mpp_2=sample['mpp_2'], sigpp_2=sample['sigpp_2'],
         f_peaks=sample['f_peaks'], f_p1=sample['f_p1'], beta=sample['beta'],
-        lam=sample['lam'], kappa=sample['kappa'], zp=sample['zp'],
+        lam=sample['lam'],
         mmin=sample['mmin'], mmax=sample['mmax'], delta_m=sample['delta_m'],
         zmax=sample['zmax'], pairing=pairing)
 

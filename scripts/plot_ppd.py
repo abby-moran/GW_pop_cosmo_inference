@@ -89,7 +89,7 @@ PARAM_DEFAULTS_LVK = {
     "alpha_1": None, "alpha_2": None, "mbreak": None,
     "mpp_1": None, "sigpp_1": None, "mpp_2": None, "sigpp_2": None,
     "f_peaks": None, "f_p1": None, "beta": None,
-    "lam": None, "kappa": None, "zp": None,
+    "lam": None,
     "mmin": 4.5, "mmax": 300.0, "delta_m": 4.0, "zmax": 20.0,
 }
 
