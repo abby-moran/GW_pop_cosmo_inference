@@ -7,7 +7,7 @@
 #SBATCH -J cosmo_GWTC5
 #SBATCH --constraint=h100
 #SBATCH --exclude=workergpu067
-s
+
 module load cuda/12 cudnn
 
 source /mnt/home/amoran/GW_pop_cosmo_inference/.venv/bin/activate
@@ -15,4 +15,4 @@ unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/confg_realTC5_cosmo_LIGOz.ini
+srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/confg_realTC5_nocosmo.ini

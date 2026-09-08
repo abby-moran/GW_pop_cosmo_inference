@@ -1,11 +1,12 @@
 #!/usr/bin/bash
 #SBATCH -p gpu
-#SBATCH --gpus=h100_pcie:2
+#SBATCH --gpus=2
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
-#SBATCH --time=1-00
-#SBATCH -J fullcosmo_evo7
+#SBATCH --time=0-03
+#SBATCH --constraint=h100
+#SBATCH -J evo7_cosmo
+#SBATCH --exclude=workergpu067
 
 
 module load cuda/12 cudnn
@@ -15,4 +16,4 @@ unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/mock_O5_fullcosmo_evo7.ini
+srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/confg_realTC5_nocosmo_mt.ini

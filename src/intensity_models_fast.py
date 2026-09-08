@@ -2,12 +2,18 @@
 Replacement for intensity_models.py with these changes:
 
 1. No ``jnp.interp`` / ``searchsorted`` - grids are uniform so we can use the grid indicies
-2. One fused cosmology lookup instead of three. 
+2. One fused cosmology lookup instead of three.
 3. The PISN mco integral is done as a max-subtracted trapezoid in linear space (one ``exp`` over the big grid)
 4. When ``mpisndot`` is a fixed 0 the PISN grid is z-independent, so we collapse 2D => 1D interpolation
 5. The per-event ``logsumexp`` and the ``neff`` diagnostic share one max-subtracted pass
 6. ``get_deterministic_parameters`` is no longer wrapped in ``jax.jit``. Lets deterministic params reach output
-7. The mass function is tabulated once per likelihood call, just do table lookups per sample 
+7. The mass function is tabulated once per likelihood call, just do table lookups per sample
+8. Tail-height parametrization: ONE mode only, always height-anchored at ``zref``
+   (equivalent to the old ``tail_anchor="ref_z"`` path). ``fpl`` always holds the
+   join-height ratio ``r``; it is converted once, in ``LogDNDM.__post_init__``, into
+   the simplex-equivalent tail weight evaluated at ``self.zref``. There is no
+   "simplex" (direct area-weight) mode and no separate ``zref_pl`` pivot -- anchoring
+   always happens at the model's own ``zref``.
 """
 from astropy.cosmology import Planck18
 import astropy.units as u
@@ -80,7 +86,7 @@ class _Log1pAxis:
     def cell_and_frac(self, z, log1p_z):
         """(cell index, within-cell weight) reproducing ``jnp.interp(z, z_array, arange(n))`` exactly.
 
-        The cell index still comes from log1p(z) in closed form, but the weight is computed linearly in z.  
+        The cell index still comes from log1p(z) in closed form, but the weight is computed linearly in z.
         This axis has only ~30 nodes spanning z in [0, zmax], so linear-in-z and linear-in-log1p(z) differ by up to ~1e-2 in
         log-density, well above float32 noise.
         """
@@ -93,7 +99,7 @@ class _Log1pAxis:
         safe_dz = jnp.where(dz > 0, dz, 1.0)
         frac = jnp.where(dz > 0, (z - z0) / safe_dz, 0.0)
         return i0, jnp.clip(frac, 0.0, 1.0)
-        
+
 
 # ---------------------------------------------------------------------------
 # Scatter-contention mitigation: for Reverse-mode AD, keep R identical copies of the table so we can
@@ -114,7 +120,7 @@ def _replicas_for(shape, R=None):
     return int(R)
 
 def _replica_offset(shape, R, n_table):
-    """Per-point offset into the replicated table.  Varying along the last axis means adjacent lanes in a 
+    """Per-point offset into the replicated table.  Varying along the last axis means adjacent lanes in a
     warp hit different replicas, which is where the conflicts would otherwise be."""
     iota = lax.broadcasted_iota(jnp.int32, shape, len(shape) - 1)
     # np.int32 rather than Python int so this also works under jax_enable_x64
@@ -122,7 +128,7 @@ def _replica_offset(shape, R, n_table):
 
 
 def _lerp1d(table, t, n, R=None):
-    """Linear interpolation into ``table`` (1-D, length n) at fractional indices ``t``.  
+    """Linear interpolation into ``table`` (1-D, length n) at fractional indices ``t``.
     t must be clipped to [0, n-1], to reproduce jnp.interp's map_coordinates(mode='nearest') edge clamping."""
     i0f = jnp.floor(t)
     return _gather_lerp1d(table, i0f.astype(jnp.int32), t - i0f, n, R=R)
@@ -218,8 +224,8 @@ def _sf_lookup1d_fwd(theta, T, U, t):
     return _sf_lookup1d(theta, T, U, t), (theta, T, U, t)
 
 # The theta_bar accumulation is the performance-critical piece of the
-# scatter-free backward. 
-# Small Pallas kernel: each program loads a block of points once, keeps the k partial sums in registers, 
+# scatter-free backward.
+# Small Pallas kernel: each program loads a block of points once, keeps the k partial sums in registers,
 # and gathers tangent-table rows that stay hot in L2  (the tables are ~1 MB per channel).
 _SF_BLOCK = 1024
 _SF_CHUNK = 1 << 21
@@ -445,7 +451,7 @@ def largest_mco(mpisn, mbhmax):
 
 def log_dNdmCO(mco, a, b, mco_floor=6.0):
     """Log of the CO-core IMF: a broken power law with indices -a (below the
-    fixed break at 20 Msun) and -b (above), cf. Eq. 2 of Golomb, Isi & Farr (2024), arXiv:2312.03973 -- 
+    fixed break at 20 Msun) and -b (above), cf. Eq. 2 of Golomb, Isi & Farr (2024), arXiv:2312.03973 --
     except that the power law is flattened below mco_floor (the density is constant on [mco_min, mco_floor]).
 
     The floor is deliberate, the remnant map is the identity below mpisn, CO cores of 4-6 Msun feed BH masses of ~4-6 Msun
@@ -492,10 +498,6 @@ def mmin_log_smooth_turnon(m, delta_m, mmin):
     # log(logistic(-e)) == -softplus(e): one transcendental instead of two, exact (rather than log(exp()))
     return jnp.where(m < mmin, -jnp.inf, -jax.nn.softplus(exponent))
 
-def _guarded_log_cm1(c):
-    cm1 = c - 1
-    ok = cm1 > 0
-    return ok, jnp.log(jnp.where(ok, cm1, 1.0))
 
 def log_gaussian_bump(m, mu, sigma):
     return -0.5 * jnp.square((m - mu) / sigma)
@@ -507,8 +509,21 @@ def log_trapz_grid(log_f, x):
 def log_normalized_gaussian(m, mu, sigma):
     return log_gaussian_bump(m, mu, sigma) - 0.5 * _LOG_2PI - jnp.log(sigma)
 
+# NOTE: the power-law tail is non-normalizable for c <= 1 (its area diverges), so
+# log(c - 1) is NaN there.  Priors allow c <= 1, and recentering_baselines draws its
+# reference point from the prior, so the c <= 1 region is floored (large negative,
+# zero gradient) instead of NaN to keep prior-draw reference points finite.  The
+# c > 1 branch is bit-identical to the unguarded expression (jnp.where selects the
+# exact same value), preserving the fast/slow equivalence tests.
+def _guarded_log_cm1(c):
+    cm1 = c - 1
+    ok = cm1 > 0
+    return ok, jnp.log(jnp.where(ok, cm1, 1.0))
+
 def log_normalized_power_law_tail(m, mbhmax, c):
-    return jnp.log(c - 1) - jnp.log(mbhmax) - c * jnp.log(m / mbhmax)
+    ok, log_cm1 = _guarded_log_cm1(c)
+    val = log_cm1 - jnp.log(mbhmax) - c * jnp.log(m / mbhmax)
+    return jnp.where(ok, val, _LOG_ZERO_FLOOR)
 
 def log_normalized_power_law_tail_from_log(log_m, log_mbhmax, c):
     ok, log_cm1 = _guarded_log_cm1(c)
@@ -584,7 +599,7 @@ class LogDNDMPISN(object):
         self.log_dN_grid = log_int - 0.5 * _LOG_2PI - jnp.log(sigma) - log_mbh[None, :]
         self.mbh_grid = self.mbh_axis.grid
         self.log_Z_grid = log_trapz_grid(self.log_dN_grid, self.mbh_grid)
-                
+
 @dataclass
 class LogDNDM(object):
     a: object
@@ -594,12 +609,10 @@ class LogDNDM(object):
     mpisndot: object
     mbhmax: object
     sigma: object
-    fpl: object
+    fpl: object          # holds r, the join-height ratio -- NOT a simplex weight on input
     mp_low: object
     msigma_low: object
     flow: object
-    r_pl: object = 1.0
-    zref_pl: object = 0.001
     mco_min: object = 4.0
     mco_floor: object = 6.0
     mbh_min: object = 3.0
@@ -610,20 +623,26 @@ class LogDNDM(object):
     n_z: object = 30
     use_low_bump: bool = True
     smooth_tail_edge: bool = False
-    log_dndm_pisn: object = dataclasses.field(init=False)
     # smooth_tail_edge=True drops the hard cut at m=mbhmax. Turn-on supresses the tail exponetially below edge
     # continuous density, AD agrees with finite differences
+    log_dndm_pisn: object = dataclasses.field(init=False)
 
     def __post_init__(self):
         self.dmbhmax = self.mbhmax - self.mpisn
         self.setup_interp()
-        self._setup_pl_anchor()
+        # Single tail-height mode: fpl always arrives holding r (the join-height
+        # ratio of the power-law tail to the PISN+bump mixture), and is always
+        # converted, once, into the simplex-equivalent tail weight evaluated at
+        # self.zref -- equivalent to the old tail_anchor="ref_z" path, and the
+        # ONLY mode this class supports.
+        zr = jnp.asarray(self.zref)
+        self.fpl = jnp.exp(self.log_f_eff(jnp.asarray(self.mbhmax_at_z(zr)), zr, jnp.log1p(zr)))
 
     def setup_interp(self):
         # If mpisndot is pinned to zero the PISN grid has no z dependence, so just build a slice
         self._z_dependent = not _is_static_zero(self.mpisndot)
         n_z = int(self.n_z) if self._z_dependent else 1
-    
+
         self.z_axis = _Log1pAxis(self.zmax, n_z)
         self.z_array = self.z_axis.grid
         if self._z_dependent:
@@ -631,7 +650,7 @@ class LogDNDM(object):
         else:
             mpisns = jnp.atleast_1d(self.mpisn)
         mbhmaxs = mpisns + self.dmbhmax
-    
+
         self.log_dndm_pisn = LogDNDMPISN(
             self.a, self.b, mpisns, mbhmaxs, self.sigma, mco_min=self.mco_min, mco_floor=self.mco_floor,)
         self.mbh_axis = self.log_dndm_pisn.mbh_axis
@@ -643,57 +662,26 @@ class LogDNDM(object):
         self._n_mbh = self.mbh_axis.n
         self._n_z = n_z
 
-    def _log_mix_at_join(self, mj, z, log1p_z):
-        """log continuum(+bump) height at the join point mj -- matches the
-        v2/tail_anchor="ref_z" definition of the height ratio exactly: the
-        power-law tail is anchored against PISN+bump combined, not PISN alone."""
-        log_pisn = jnp.where(mj >= self.mbh_grid[-1], -jnp.inf,
-            self._interp_from_log(jnp.log(mj), z, log1p_z) - self._log_Z_from_z(z, log1p_z))
-        if not self.use_low_bump:
-            return log_pisn
-        return jnp.logaddexp(log_pisn,
-            safe_log(self.flow) + log_normalized_gaussian(mj, self.mp_low, self.msigma_low))
-
-    def _setup_pl_anchor(self):
-        """Convert r_pl to effective fpl at zref_pl by baking in the join-height term.
-
-        r_pl is the ratio of the power-law tail's height to the PISN+bump
-        MIXTURE height at the join (mbhmax(zref_pl)), matching tail_anchor="ref_z".
-        """
-        zref_pl = jnp.asarray(self.zref_pl)
-        mbhmax_ref = jnp.asarray(self.mbhmax_at_z(zref_pl))
-        self.mbhmax_pl_ref = mbhmax_ref
-
-        log1p_zref = jnp.log1p(zref_pl)
-        log_mix = self._log_mix_at_join(mbhmax_ref, zref_pl, log1p_zref)
-
-        # Convert r_pl to simplex weight: f_eff = r * mix_height(mj) * mj / (c-1)
-        # Guarded: c <= 1 makes the power-law tail non-normalizable => floor fpl to 0 (tail contributes nothing)
-        ok, log_cm1 = _guarded_log_cm1(self.c)
-        log_fpl_raw = safe_log(self.r_pl) + log_mix + jnp.log(mbhmax_ref) - log_cm1
-        self.fpl = jnp.where(ok, jnp.exp(log_fpl_raw), 0.0)
-    
-
     # -- interpolation -----------------------------------------------------
     def interp_2d_dndmpisn(self, m, z):
         """Public API kept for external callers; prefer the *_from_log form."""
         m, z = jnp.broadcast_arrays(jnp.asarray(m), jnp.asarray(z))
         return self._interp_from_log(jnp.log(m), z, jnp.log1p(z))
-    
+
     def _z_cell(self, z, log1p_z):
         return self.z_axis.cell_and_frac(z, log1p_z)
-    
+
     def _interp_from_log(self, log_m, z, log1p_z):
         im0, fm = self.mbh_axis.cell_and_frac(log_m)
         if not self._z_dependent:
             return _gather_lerp1d(self.log_dndm_pisn_grid[0], im0, fm, self._n_mbh)
         iz0, fz = self._z_cell(z, log1p_z)
         return _gather_lerp2d(self.log_dndm_pisn_grid, im0, fm, iz0, fz, self._n_mbh, self._n_z)
-    
+
     def log_Z_pisn_at_z(self, z):
         z = jnp.asarray(z)
         return self._log_Z_from_z(z, jnp.log1p(z))
-    
+
     def _log_Z_from_z(self, z, log1p_z):
         if not self._z_dependent:
             return self.log_Z_pisn_grid[0]
@@ -706,15 +694,29 @@ class LogDNDM(object):
             return self.mpisn + self.dmbhmax
         return self.mpisn + self.mpisndot * (1 - 1 / (1 + z)) + self.dmbhmax
 
-    def log_p_pisn_at_mbhmax(self, z, log1p_z, mbhmax_at_samples):
-        """log p_pisn(mbhmax(z), z): the (normalized) PISN density evaluated
-        at the PISN/power-law join point itself.  Used to anchor the
-        power-law amplitude to the PISN curve for a continuous join --
-        see call_from_logs."""
-        log_mbhmax = jnp.log(mbhmax_at_samples)
-        log_p_pisn_raw = self._interp_from_log(log_mbhmax, z, log1p_z)
-        return log_p_pisn_raw - self._log_Z_from_z(z, log1p_z)
-   
+    def log_mix_at_join(self, mj, z, log1p_z):
+        """log continuum(+bump) height at the join point mj -- the power-law
+        tail is always anchored against PISN+bump combined, not PISN alone."""
+        log_pisn = jnp.where(mj >= self.mbh_grid[-1], -jnp.inf,
+            self._interp_from_log(jnp.log(mj), z, log1p_z) - self._log_Z_from_z(z, log1p_z))
+        if not self.use_low_bump:
+            return log_pisn
+        return jnp.logaddexp(log_pisn,
+            safe_log(self.flow) + log_normalized_gaussian(mj, self.mp_low, self.msigma_low))
+
+    def log_f_eff(self, mj, z, log1p_z):
+        """Simplex-equivalent tail weight for join-height ratio r (held in
+        self.fpl at call time): f_eff = r * mix_height(mj, z) * mj / (c - 1),
+        the anchored tail's pure power-law area.  The kappa(c) turn-on area
+        correction is deliberately omitted: it is a z-independent constant
+        that cancels in the R-marginalized likelihood.
+        For c <= 1 the tail is non-normalizable; floor to keep prior-draw
+        reference points finite (fpl -> 0, continuum-only) instead of NaN."""
+        ok, log_cm1 = _guarded_log_cm1(self.c)
+        val = (safe_log(self.fpl) + self.log_mix_at_join(mj, z, log1p_z)
+               + jnp.log(mj) - log_cm1)
+        return jnp.where(ok, val, _LOG_ZERO_FLOOR)
+
     # -- evaluation --------------------------------------------------------
     def __call__(self, m, z):
         m = jnp.atleast_1d(jnp.asarray(m))
@@ -722,7 +724,7 @@ class LogDNDM(object):
         m, z = jnp.broadcast_arrays(m, z)
         mbhmax_at_samples = jnp.asarray(self.mbhmax_at_z(z))
         return self.call_from_logs(m, jnp.log(m), z, jnp.log1p(z), jnp.broadcast_to(mbhmax_at_samples, m.shape))
-        
+
     def table_over_grid(self, m_grid, z_grid):
         """``self(m_grid, z_grid)`` broadcast over an (n_z, n_m)-style grid (or single z slice)
         Used by the mass-function tabulation path in ``pop_cosmo_model``."""
@@ -732,25 +734,9 @@ class LogDNDM(object):
         log_m = jnp.log(m)
         log1p_z = jnp.log1p(z)
         mbhmax_at_samples = jnp.broadcast_to(jnp.asarray(self.mbhmax_at_z(z)), m.shape)
-
-        # z (and hence mbhmax, and the PISN edge value) only actually varies
-        # along the z-axis, so compute log_mass_ratio on the *unbroadcast*
-        # z_grid and let normal broadcasting expand it back out over m.
-        #z_only = jnp.asarray(z_grid)
-        #mbhmax_only = jnp.asarray(self.mbhmax_at_z(z_only))
-        #log1p_z_only = jnp.log1p(z_only)
-        #log_p_pisn_at_edge = self.log_p_pisn_at_mbhmax(z_only, log1p_z_only, mbhmax_only)
-        #log_mass_ratio_only = log_p_pisn_at_edge + jnp.log(mbhmax_only) - jnp.log(self.c - 1)
-        #log_mass_ratio = jnp.broadcast_to(log_mass_ratio_only, m.shape)
-
         return self.call_from_logs(m, log_m, z, log1p_z, mbhmax_at_samples)
 
-    def call_from_logs(self, m, log_m, z, log1p_z, mbhmax_at_samples, log_mass_ratio=None):
-        """``log_mass_ratio`` (see ``log_p_pisn_at_mbhmax``) depends only on
-        (z, mbhmax), not on the sample mass ``m`` itself, so a caller
-        evaluating this at several masses per z (e.g. m1 and m2 for the same
-        event) can compute it once and pass it in to avoid a redundant PISN
-        edge lookup. If omitted, it is computed here."""
+    def call_from_logs(self, m, log_m, z, log1p_z, mbhmax_at_samples):
         log_p_pisn_raw = self._interp_from_log(log_m, z, log1p_z)
         log_p_pisn_raw = jnp.where(m >= self.mbh_grid[-1], -jnp.inf, log_p_pisn_raw)
         log_p_pisn = log_p_pisn_raw - self._log_Z_from_z(z, log1p_z)
@@ -762,19 +748,25 @@ class LogDNDM(object):
             log_p_pl_raw = jnp.where(log_m < log_mbhmax, -jnp.inf, log_p_pl_raw)
         log_p_pl = log_p_pl_raw + log_smooth_turnon(m, mbhmax_at_samples)
 
+        # self.fpl is the scalar simplex weight (already converted once, in
+        # __post_init__, from r to f_eff at zref) -- constant here, not
+        # recomputed per sample.
+        log_f_pl = safe_log(self.fpl)
+        f_pl = self.fpl
+
         if self.use_low_bump:
             log_p_low = log_normalized_gaussian(m, self.mp_low, self.msigma_low)
-            log_denom = jnp.log1p(self.flow + self.fpl)
+            log_denom = jnp.log1p(self.flow + f_pl)
             log_w_pisn = -log_denom
             log_w_low = safe_log(self.flow) - log_denom
-            log_w_pl = safe_log(self.fpl) - log_denom
+            log_w_pl = log_f_pl - log_denom
 
             log_dNdm = jnp.logaddexp(log_w_pisn + log_p_pisn, log_w_low + log_p_low)
             log_dNdm = jnp.logaddexp(log_dNdm, log_w_pl + log_p_pl)
         else:
-            log_denom = jnp.log1p(self.fpl)
+            log_denom = jnp.log1p(f_pl)
             log_w_pisn = -log_denom
-            log_w_pl = safe_log(self.fpl) - log_denom
+            log_w_pl = log_f_pl - log_denom
             log_dNdm = jnp.logaddexp(log_w_pisn + log_p_pisn, log_w_pl + log_p_pl)
 
         logwindow = mmin_log_smooth_turnon(m, delta_m=self.delta_m, mmin=self.mbh_min)
@@ -854,8 +846,6 @@ class LogDNDMDQDV(object):
     mp_low: object
     msigma_low: object
     flow: object
-    r_pl: object = 1.0
-    zref_pl: object = 0.001
     mref: object = 30.0
     qref: object = 1.0
     zref: object = 0.001
@@ -881,7 +871,6 @@ class LogDNDMDQDV(object):
         self.log_dndm = LogDNDM(
             self.a, self.b, self.c, self.mpisn, self.mpisndot, self.mbhmax, self.sigma,
             self.fpl, mp_low=self.mp_low, msigma_low=self.msigma_low, flow=self.flow,
-            r_pl=self.r_pl, zref_pl=self.zref_pl,
             mref=self.mref, zmax=self.zmax, zref=self.zref, mbh_min=self.mbh_min,
             delta_m=self.delta_m, mco_min=self.mco_min, mco_floor=self.mco_floor,
             n_z=self.n_z, use_low_bump=self.use_low_bump, smooth_tail_edge=self.smooth_tail_edge,)
@@ -905,9 +894,9 @@ class LogDNDMDQDV(object):
     def call_from_logs(self, m1, log_m1, log_q, z, log1p_z):
         ld = self.log_dndm
         mbhmax_at_samples = jnp.broadcast_to(jnp.asarray(ld.mbhmax_at_z(z)), jnp.shape(m1))
-        
+
         if self.pairing == "q":
-            # LVK-style q^β pairing: one mass function evaluation + window + Zq normalization
+            # LVK-style q^beta pairing: one mass function evaluation + window + Zq normalization
             m2 = m1 * jnp.exp(log_q)
             return (ld.call_from_logs(m1, log_m1, z, log1p_z, mbhmax_at_samples)
                     + self.beta * log_q
@@ -924,6 +913,7 @@ class LogDNDMDQDV(object):
             + ld.call_from_logs(m2, log_m2, z, log1p_z, mbhmax_at_samples)
             + self.beta * jnp.log(mt / (self.mref * (1 + self.qref)))
             + log_m1 + self.log_dndv.from_log1p(log1p_z) - self.log_norm)
+
 @dataclass
 class FlatwCDMCosmology(object):
     """
@@ -1121,10 +1111,13 @@ def get_deterministic_parameters(sample, use_low_bump=True):
         else:
             raise KeyError("Need one of logit_flow, flow, log_flow, or log_fpeak")
 
+    # --- tail height: ONE mode only, always the height-anchored ratio r ----
+    # Whatever the prior samples here, it is interpreted as r, the join-height
+    # ratio of the power-law tail to the PISN+bump mixture at zref -- there is
+    # no direct/"simplex" area-weight mode any more.  It travels in the `fpl`
+    # dict slot for backward-compatible wiring into LogDNDM, which converts it
+    # to the simplex-equivalent weight once, in __post_init__.
     if 'log_r' in sample or 'r' in sample:
-        # Height-anchored tail modes (tail_anchor = ref_z/per_z): r is the
-        # tail/continuum height ratio at the join.  It travels in the fpl slot;
-        # the model records the simplex-equivalent fpl deterministic itself.
         if 'r' in sample:
             r = sample['r']
         else:
@@ -1170,12 +1163,12 @@ def build_population_model(sample, use_low_bump=True, n_z=30, smooth_tail_edge=F
         fpl=sample['fpl'], beta=sample['beta'], lam=sample['lam'], kappa=sample['kappa'],
         zp=sample['zp'], zmax=sample['zmax'], mbh_min=sample['mbh_min'],
         delta_m=sample['delta_m'], mp_low=sample.get('mp_low', 1.0), msigma_low=sample.get('msigma_low', 1.0),
-        flow=sample.get('flow', 0.0), r_pl=sample.get('r_pl', 1.0), zref_pl=sample.get('zref_pl', 0.001),
-        use_low_bump=use_low_bump, n_z=n_z, smooth_tail_edge=smooth_tail_edge,
+        flow=sample.get('flow', 0.0), use_low_bump=use_low_bump, n_z=n_z,
+        smooth_tail_edge=smooth_tail_edge,
         mco_min=sample.get('mco_min', 4.0), mco_floor=sample.get('mco_floor', 6.0), pairing=pairing,)
 
 
-# Floor used when a whole reduction underflows to zero weight.  
+# Floor used when a whole reduction underflows to zero weight.
 _LOG_ZERO_FLOOR = -1e6
 
 
@@ -1201,7 +1194,6 @@ def _logsumexp_and_neff(log_wts, axis):
     return lse1, lse2, neff
 
 
-
 def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel,
                     Ndraw, priors=None, use_low_bump=True, n_z=30, store_per_event=False, neff_criterion=None,
                     neff_penalty="mc_variance", mc_variance_budget=5.0, tabulate_mass_function=None, n_mass_table=8192,
@@ -1213,7 +1205,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     - store_per_event: record the per-event log-likelihood and n_eff arrays as deterministi
     - neff_penalty: what gaurd?
         1. "mc_variance" (default): penalize when the total MC variance of the LL sum_i 1/n_eff_i > `mc_variance_budget`
-            (Talbot & Golomb 2023, arXiv:2304.06138), cannot be dominated by nsamp 
+            (Talbot & Golomb 2023, arXiv:2304.06138), cannot be dominated by nsamp
         2. "min_neff": penalize when the min-over-events n_eff drops below `neff_criterion`. Old version used this
         3. "none": no per-event factor in the potential; still records diagnostics b
         For "mc_variance" and "none," uses a smooth -softplus boundary instead of the original min(0, .) kink
@@ -1221,15 +1213,15 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     - mc_variance_budget: threshold for sum_i 1/n_eff_i when neff_penalty="mc_variance"
     - tabulate_mass_function: evaluate the single-mass function log_dndm(m, z) once per call on log-m grid
         when mpisndot==0, just do one slice
-    - tabulate_selection: whether the selection samples use the same table as the event samples. 
+    - tabulate_selection: whether the selection samples use the same table as the event samples.
         Should be True for accuracy, setting to False with tabulation on emits RuntimeWArning
-    - scatter_free_tables: route the gradient of the tabulated lookups through per-parameter tangent tables 
-    - smooth_tail_edge: drop the hard zero of the power-law tail below m = mbhmax 
+    - scatter_free_tables: route the gradient of the tabulated lookups through per-parameter tangent tables
+    - smooth_tail_edge: drop the hard zero of the power-law tail below m = mbhmax
         Makes the population density continuous at the edge
         Default True (set False for old behavior)
     - loglike_ref, log_mu_sel_ref: float32 recentering baselines
         Default None: no recentering, bit-identical to the previous behaviour.
-    - log_pdraw_sel_scale: constant added to ``log(pdraw_sel)`` before the selection weights.  
+    - log_pdraw_sel_scale: constant added to ``log(pdraw_sel)`` before the selection weights.
         Used to park the float32 ``log_mu_sel`` scalar near zero; Default 0: no scaling.
     """
     # Static bounds for the tabulated mass axis, taken from the data *before* touched by jnp (don't want them as tracers)
@@ -1279,7 +1271,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         import warnings
         warnings.warn(
             "tabulate_selection=False with tabulate_mass_function on evaluates "
-            "the selection integral with a DIFFERENT density than the event samples."  
+            "the selection integral with a DIFFERENT density than the event samples."
             "This is not a valid hierarchical likelihood and is exploitable by the sampler (see "
             "notes/2026-08-08-tabulated-selection-consistency.md). Diagnostics/benchmarking only -- never use for inference.",
             stacklevel=2,)
@@ -1293,10 +1285,9 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         # -inf table entries (below mbh_min, above zmax) are floored
         def _build_mass_table(a_, b_, c_, mpisn_, mpisndot_, mbhmax_, sigma_,
                               fpl_, mp_low_, msigma_low_, flow_, mbh_min_,
-                              delta_m_, zmax_, mco_min_, mco_floor_, r_pl_, zref_pl_):
+                              delta_m_, zmax_, mco_min_, mco_floor_):
             ld_ = LogDNDM(a_, b_, c_, mpisn_, mpisndot_, mbhmax_, sigma_, fpl_,
                           mp_low=mp_low_, msigma_low=msigma_low_, flow=flow_,
-                          r_pl=r_pl_, zref_pl=zref_pl_,
                           mco_min=mco_min_, mco_floor=mco_floor_,
                           mbh_min=mbh_min_, delta_m=delta_m_, zmax=zmax_,
                           mref=ld.mref, zref=ld.zref, n_z=ld.n_z, use_low_bump=ld.use_low_bump,
@@ -1311,11 +1302,10 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                 out = ld_.table_over_grid(m_axis.grid, jnp.zeros(()))
             return jnp.maximum(out, _LOG_ZERO_FLOOR)
 
-        _mass_params = (sample['a'], sample['b'], sample['c'], sample['mpisn'], sample['mpisndot'], 
-                        sample['mbhmax'], sample['sigma'], sample['fpl'], sample.get('mp_low', 1.0), 
-                        sample.get('msigma_low', 1.0), sample.get('flow', 0.0), sample['mbh_min'], sample['delta_m'], 
-                        sample['zmax'], sample.get('mco_min', 4.0), sample.get('mco_floor', 6.0),
-                        sample.get('r_pl', 1.0), sample.get('zref_pl', 0.001),)
+        _mass_params = (sample['a'], sample['b'], sample['c'], sample['mpisn'], sample['mpisndot'],
+                        sample['mbhmax'], sample['sigma'], sample['fpl'], sample.get('mp_low', 1.0),
+                        sample.get('msigma_low', 1.0), sample.get('flow', 0.0), sample['mbh_min'], sample['delta_m'],
+                        sample['zmax'], sample.get('mco_min', 4.0), sample.get('mco_floor', 6.0),)
 
         # Fused dL table
         def _build_dl_table(Om_, w_, lam_, kappa_, zp_, zmax_):
@@ -1339,7 +1329,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
 
         _two_log_dH = 2 * jnp.log(cosmo.dH)
         log_pair_ref = jnp.log(log_dN.mref * (1 + log_dN.qref))
- 
+
         def _log_weights(log_m1s_det_, log_qs_, log1p_qs_, log_dls_, log_pdraw_):
             t = jnp.clip((log_dls_ - jnp.log(cosmo.dH) - cosmo._u_lo) * cosmo._inv_du, 0.0, cosmo._n_dl - 1.0)
             if dl_theta is not None:
@@ -1349,9 +1339,9 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
             else:
                 log1p_zs_ = _lerp1d(dl_tab[:, 0], t, cosmo._n_dl)
                 Jg = _lerp1d(dl_tab[:, 1], t, cosmo._n_dl) + _two_log_dH
-             
+
             log_m1s_ = log_m1s_det_ - log1p_zs_
-             
+
             if pairing == "q":
                 # LVK-style q^beta pairing: one mass lookup + window + Zq
                 if ld._z_dependent:
@@ -1370,13 +1360,13 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                         f1 = _sf_lookup1d(f_theta, f_tab[:, None], f_U[:, :, None], tm1)[..., 0]
                     else:
                         f1 = _lerp1d(f_tab, tm1, n_tab)
-                
+
                 m2s_ = jnp.exp(log_m1s_ + log_qs_)
                 return (f1 + log_dN.beta * log_qs_
                         + mmin_log_smooth_turnon(m2s_, log_dN.delta_m, log_dN.mbh_min)
                         - log_dN.log_qnorm.log_Zq_from_log(log_m1s_)
                         + Jg - log_dN.log_norm - log_pdraw_)
-            
+
             # "mt" (default): total-mass pairing with two mass lookups
             if ld._z_dependent:
                 zs_ = jnp.expm1(log1p_zs_)
@@ -1411,7 +1401,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         else:
             log_sel_wts = _log_weights(log_m1s_det_sel, log_qs_sel, jnp.log1p(qs_sel), log_dls_sel, log_pdraw_sel)
     else:
-        # detected events 
+        # detected events
         log1p_zs, J = cosmo.z_and_log_jacobian(log_dls)
         opz = jnp.exp(log1p_zs)
         zs = opz - 1.0
@@ -1420,7 +1410,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
 
         log_wts = log_dN.call_from_logs(m1s, log_m1s, log_qs, zs, log1p_zs) - log_pdraw + J
 
-        #  selection samples 
+        #  selection samples
         log1p_zs_sel, J_sel = cosmo.z_and_log_jacobian(log_dls_sel)
         opz_sel = jnp.exp(log1p_zs_sel)
         zs_sel = opz_sel - 1.0
@@ -1430,7 +1420,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         log_sel_wts = (log_dN.call_from_logs(m1s_sel, log_m1s_sel, log_qs_sel, zs_sel, log1p_zs_sel)- log_pdraw_sel + J_sel)
 
     lse1, lse2, neff = _logsumexp_and_neff(log_wts, axis=1)
-    # lse1 is already floored and gradient-safe, so no nan_to_num, 
+    # lse1 is already floored and gradient-safe, so no nan_to_num,
     # change: don't map NaN to 0, gives LL of 1
     log_like_per_event = lse1 - jnp.log(nsamp)
     if store_per_event:
@@ -1449,7 +1439,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     log_mu_sel_scaled = jnp.squeeze(lse_sel) - jnp.log(Ndraw)
     log_mu_sel = log_mu_sel_scaled + log_pdraw_sel_scale
     numpyro.deterministic('log_mu_sel', log_mu_sel)
-    # Peanlize selection integral underflowing to 0 
+    # Peanlize selection integral underflowing to 0
     sel_dead = jnp.squeeze(lse_sel) <= _LOG_ZERO_FLOOR
     # Recentering selection factor
     if log_mu_sel_ref is not None:
@@ -1462,7 +1452,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     x = 2 * log_mu_sel_scaled - jnp.log(Ndraw) - log_mu2
     log_s2 = log_mu2 + jnp.log(-jnp.expm1(jnp.minimum(x, -1e-7)))
 
-    # n_eff guards 
+    # n_eff guards
     min_neff = jnp.min(neff)
     mc_var = jnp.sum(1.0 / jnp.clip(neff, 1.0, None))
     if store_per_event:
@@ -1511,7 +1501,7 @@ def recentering_baselines(model_args, ref_params, rng_seed=0, **model_kwargs):
     Baselines need to be near typical posterior values - so init point works
 
     - model_args: the positional arguments of pop_cosmo_model (data + prior).
-    - ref_params: dict of parameter values to condition on (e.g. the init/truth point). 
+    - ref_params: dict of parameter values to condition on (e.g. the init/truth point).
         Parameters not in the dict are drawn from the prior with `rng_seed`
     - model_kwargs: forwarded to pop_cosmo_model, this always evaluates the physical (unscaled) model.
 

@@ -13,7 +13,7 @@ dkappa = TruncatedNormal(2.9, 2.0, low=1, high=6.9)
 zp = TruncatedNormal(1.9, 1, low=0, high=3.9)
 mpisndot = Uniform(low=-15, high=15)
 zmax = 3.0
-mbh_min = 1
+mbh_min = 1.5
 delta_m = 1.6
 mp_low = TruncatedNormal(9.0, 5.0, low=4.0, high=15.0)
 msigma_low = TruncatedNormal(3.0, 2.0, low=0.5, high=5.0)
