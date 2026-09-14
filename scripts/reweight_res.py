@@ -80,7 +80,13 @@ pop_config_file = pop_config_file.resolve()
 use_low_bump=run.getboolean("use_low_bump", fallback=True)
 m_min=run.getfloat("m_min", fallback=0)
 delta_m_sel = run.getfloat("delta_m_sel", fallback=1.0)
-    
+n_evt = run.getint("n_evt", fallback=10000)
+
+
+
+
+smooth_tail_edge=run.getboolean("smooth_tail_edge", fallback=True)
+pairing=run.get("pairing", fallback="q")
 def get_mock_obs(df, out_file, cosmo, rho_fun, detection_threshold=8, 
                  jitter_SNR=True, ndet=1, append_tf=False, evt_offset=0,
                  detection_rng=None, mc_scale=None, q_scale=None, th_scale=None, m_min=5, delta_m=1):
@@ -334,7 +340,8 @@ if __name__ == "__main__":
     # smooth_tail_edge=True matches the run_inf.py / pop_cosmo_model default;
     # set smooth_tail_edge=False for the old hard-edged behavior.
     log_dN_func = intensity_models.build_population_model(pop_params, use_low_bump=use_low_bump,
-                                                          smooth_tail_edge=True)
+                                                          smooth_tail_edge=smooth_tail_edge, pairing=pairing)
+
 
     if write_obs:
         print("Pass 1: computing weights, caching to disk...")
@@ -482,7 +489,7 @@ if __name__ == "__main__":
         print("Using old obs file")
 
     print("Generating mock PE...")
-    pe_samples_full = pd.read_hdf(obs_file, 'observations', start=0, stop =10000)
+    pe_samples_full = pd.read_hdf(obs_file, 'observations', start=0, stop =n_evt)
     #pe_samples_full=pe_samples_full[0:10000]
     evt_df = pe_samples_full.drop_duplicates('evt').sort_values('evt')
     log_mc_obs_arr  = jnp.array(evt_df['log_mc_obs'].values)

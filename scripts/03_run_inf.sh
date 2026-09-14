@@ -3,11 +3,10 @@
 #SBATCH --gpus=2
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
-#SBATCH --time=1-00
+#SBATCH --time=0-8
 #SBATCH --constraint=h100
 #SBATCH -J ne_nocosmo
 #SBATCH --exclude=workergpu067
-#SBATCH -o /mnt/home/amoran/GW_pop_cosmo_inference/scripts/logs/ne_nocosmo_run_inf%j.log
 
 set -euo pipefail
 
