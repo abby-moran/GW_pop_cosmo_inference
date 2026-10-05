@@ -1,6 +1,6 @@
 h =TruncatedNormal(.7, .4, low=.1, high=1.1)
-Omh2 = TruncatedNormal(0.143, 0.05, low=0.02, high=0.4)
-w = TruncatedNormal(-1.0, 0.3, low=-2.0, high=-0.3)
+Om = 0.315
+w = -1
 a = TruncatedNormal(2.35, 2, low=-6.0, high=6.35)
 b = TruncatedNormal(1.9, 2, low=-6.0, high=5.9)
 c = TruncatedNormal(4, 2, low=0, high=8)

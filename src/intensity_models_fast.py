@@ -14,6 +14,8 @@ Replacement for intensity_models.py with these changes:
    the simplex-equivalent tail weight evaluated at ``self.zref``. There is no
    "simplex" (direct area-weight) mode and no separate ``zref_pl`` pivot -- anchoring
    always happens at the model's own ``zref``.
+9. ``mlow_dot`` (default 0): linear-in-z/(1+z) drift of the low-mass bump location,
+   ``mp_low(z) = mp_low + mlow_dot * (1 - 1/(1+z))``, same form as ``mpisndot``.
 """
 from astropy.cosmology import Planck18
 import astropy.units as u
@@ -623,6 +625,7 @@ class LogDNDM(object):
     n_z: object = 30
     use_low_bump: bool = True
     smooth_tail_edge: bool = False
+    mlow_dot: object = 0.0
     # smooth_tail_edge=True drops the hard cut at m=mbhmax. Turn-on supresses the tail exponetially below edge
     # continuous density, AD agrees with finite differences
     log_dndm_pisn: object = dataclasses.field(init=False)
@@ -639,13 +642,16 @@ class LogDNDM(object):
         self.fpl = jnp.exp(self.log_f_eff(jnp.asarray(self.mbhmax_at_z(zr)), zr, jnp.log1p(zr)))
 
     def setup_interp(self):
-        # If mpisndot is pinned to zero the PISN grid has no z dependence, so just build a slice
-        self._z_dependent = not _is_static_zero(self.mpisndot)
+        # PISN grid is z-independent if mpisndot is pinned to zero.
+        self._pisn_z_dependent = not _is_static_zero(self.mpisndot)
+        # The overall table is z-dependent if the PISN grid is, or the bump moves.
+        self._z_dependent = self._pisn_z_dependent or (
+            self.use_low_bump and not _is_static_zero(self.mlow_dot))
         n_z = int(self.n_z) if self._z_dependent else 1
 
         self.z_axis = _Log1pAxis(self.zmax, n_z)
         self.z_array = self.z_axis.grid
-        if self._z_dependent:
+        if self._pisn_z_dependent:
             mpisns = self.mpisn + self.mpisndot * (1 - 1 / (1 + self.z_array))
         else:
             mpisns = jnp.atleast_1d(self.mpisn)
@@ -673,7 +679,7 @@ class LogDNDM(object):
 
     def _interp_from_log(self, log_m, z, log1p_z):
         im0, fm = self.mbh_axis.cell_and_frac(log_m)
-        if not self._z_dependent:
+        if not self._pisn_z_dependent:
             return _gather_lerp1d(self.log_dndm_pisn_grid[0], im0, fm, self._n_mbh)
         iz0, fz = self._z_cell(z, log1p_z)
         return _gather_lerp2d(self.log_dndm_pisn_grid, im0, fm, iz0, fz, self._n_mbh, self._n_z)
@@ -683,17 +689,23 @@ class LogDNDM(object):
         return self._log_Z_from_z(z, jnp.log1p(z))
 
     def _log_Z_from_z(self, z, log1p_z):
-        if not self._z_dependent:
+        if not self._pisn_z_dependent:
             return self.log_Z_pisn_grid[0]
         iz0, fz = self._z_cell(z, log1p_z)
         return _gather_lerp1d(self.log_Z_pisn_grid, iz0, fz, self._n_z)
 
     # -- join point --------------------------------------------------------
     def mbhmax_at_z(self, z):
-        if not self._z_dependent:
+        if not self._pisn_z_dependent:
             return self.mpisn + self.dmbhmax
         return self.mpisn + self.mpisndot * (1 - 1 / (1 + z)) + self.dmbhmax
-
+    
+    def mp_low_at_z(self, z):
+        """Low-mass bump location at redshift z."""
+        if _is_static_zero(self.mlow_dot):
+            return self.mp_low
+        return self.mp_low + self.mlow_dot * (1 - 1 / (1 + z))
+                                              
     def log_mix_at_join(self, mj, z, log1p_z):
         """log continuum(+bump) height at the join point mj -- the power-law
         tail is always anchored against PISN+bump combined, not PISN alone."""
@@ -702,7 +714,8 @@ class LogDNDM(object):
         if not self.use_low_bump:
             return log_pisn
         return jnp.logaddexp(log_pisn,
-            safe_log(self.flow) + log_normalized_gaussian(mj, self.mp_low, self.msigma_low))
+            safe_log(self.flow) + log_normalized_gaussian(mj, self.mp_low_at_z(z), self.msigma_low))
+
 
     def log_f_eff(self, mj, z, log1p_z):
         """Simplex-equivalent tail weight for join-height ratio r (held in
@@ -755,7 +768,7 @@ class LogDNDM(object):
         f_pl = self.fpl
 
         if self.use_low_bump:
-            log_p_low = log_normalized_gaussian(m, self.mp_low, self.msigma_low)
+            log_p_low = log_normalized_gaussian(m, self.mp_low_at_z(z), self.msigma_low)
             log_denom = jnp.log1p(self.flow + f_pl)
             log_w_pisn = -log_denom
             log_w_low = safe_log(self.flow) - log_denom
@@ -860,6 +873,7 @@ class LogDNDMDQDV(object):
     log_dndv: object = dataclasses.field(init=False)
     use_low_bump: object = True
     smooth_tail_edge: bool = False
+    mlow_dot: object = 0.0
     # Pairing function: "mt" (total-mass) or "q" (LVK-style q^beta)
     pairing: str = "mt"
     log_qnorm: object = dataclasses.field(init=False)
@@ -873,7 +887,8 @@ class LogDNDMDQDV(object):
             self.fpl, mp_low=self.mp_low, msigma_low=self.msigma_low, flow=self.flow,
             mref=self.mref, zmax=self.zmax, zref=self.zref, mbh_min=self.mbh_min,
             delta_m=self.delta_m, mco_min=self.mco_min, mco_floor=self.mco_floor,
-            n_z=self.n_z, use_low_bump=self.use_low_bump, smooth_tail_edge=self.smooth_tail_edge,)
+            n_z=self.n_z, use_low_bump=self.use_low_bump, smooth_tail_edge=self.smooth_tail_edge,
+            mlow_dot=self.mlow_dot,)
         self.log_dndv = LogDNDV(self.lam, self.kappa, self.zp, self.zref, zmax=self.zmax)
         # The Zq(m1) table only exists in the q pairing mode
         self.log_qnorm = (LogQNorm(self.beta, self.mbh_min, self.delta_m)
@@ -1163,7 +1178,7 @@ def build_population_model(sample, use_low_bump=True, n_z=30, smooth_tail_edge=F
         fpl=sample['fpl'], beta=sample['beta'], lam=sample['lam'], kappa=sample['kappa'],
         zp=sample['zp'], zmax=sample['zmax'], mbh_min=sample['mbh_min'],
         delta_m=sample['delta_m'], mp_low=sample.get('mp_low', 1.0), msigma_low=sample.get('msigma_low', 1.0),
-        flow=sample.get('flow', 0.0), use_low_bump=use_low_bump, n_z=n_z,
+        flow=sample.get('flow', 0.0), mlow_dot=sample.get('mlow_dot', 0.0), use_low_bump=use_low_bump, n_z=n_z,
         smooth_tail_edge=smooth_tail_edge,
         mco_min=sample.get('mco_min', 4.0), mco_floor=sample.get('mco_floor', 6.0), pairing=pairing,)
 
@@ -1285,13 +1300,13 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         # -inf table entries (below mbh_min, above zmax) are floored
         def _build_mass_table(a_, b_, c_, mpisn_, mpisndot_, mbhmax_, sigma_,
                               fpl_, mp_low_, msigma_low_, flow_, mbh_min_,
-                              delta_m_, zmax_, mco_min_, mco_floor_):
+                              delta_m_, zmax_, mco_min_, mco_floor_, mlow_dot_):
             ld_ = LogDNDM(a_, b_, c_, mpisn_, mpisndot_, mbhmax_, sigma_, fpl_,
                           mp_low=mp_low_, msigma_low=msigma_low_, flow=flow_,
                           mco_min=mco_min_, mco_floor=mco_floor_,
                           mbh_min=mbh_min_, delta_m=delta_m_, zmax=zmax_,
                           mref=ld.mref, zref=ld.zref, n_z=ld.n_z, use_low_bump=ld.use_low_bump,
-                          smooth_tail_edge=ld.smooth_tail_edge)
+                          smooth_tail_edge=ld.smooth_tail_edge, mlow_dot=mlow_dot_)
             if ld_._z_dependent:
                 out = ld_.table_over_grid(m_axis.grid[None, :], ld_.z_array[:, None])
             else:
@@ -1305,8 +1320,8 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         _mass_params = (sample['a'], sample['b'], sample['c'], sample['mpisn'], sample['mpisndot'],
                         sample['mbhmax'], sample['sigma'], sample['fpl'], sample.get('mp_low', 1.0),
                         sample.get('msigma_low', 1.0), sample.get('flow', 0.0), sample['mbh_min'], sample['delta_m'],
-                        sample['zmax'], sample.get('mco_min', 4.0), sample.get('mco_floor', 6.0),)
-
+                         sample['zmax'], sample.get('mco_min', 4.0), sample.get('mco_floor', 6.0),
+                        sample.get('mlow_dot', 0.0),)
         # Fused dL table
         def _build_dl_table(Om_, w_, lam_, kappa_, zp_, zmax_):
             cos_ = FlatwCDMCosmology(1.0, Om_, w_, zmax=zmax_, ninterp=cosmo.ninterp, ndl=cosmo.ndl,

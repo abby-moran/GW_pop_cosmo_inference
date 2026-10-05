@@ -3,10 +3,11 @@
 #SBATCH --gpus=4
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
-#SBATCH --time=1-00
+#SBATCH --time=0-10
 #SBATCH --constraint=h100
 #SBATCH -J nb_cosmo
 #SBATCH --exclude=workergpu067
+#SBATCH --exclude=workergpu220
 
 set -euo pipefail
 

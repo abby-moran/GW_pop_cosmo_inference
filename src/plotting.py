@@ -313,58 +313,95 @@ def load_true_vals(filename):
 
     return tv
 
-def plot_corner(idatas, true_vals, axes_labels={'mpisn': r'$m_\mathrm{PISN}$', 'mbhmax': r'$m_\mathrm{BH,max}$', 'beta': 'beta','b': 'b'}, run_names=None):
+def plot_corner(idatas, true_vals, axes_labels={'mpisn': r'$m_\mathrm{PISN}$', 'mbhmax': r'$m_\mathrm{BH,max}$', 'beta': 'beta', 'b': 'b'}, run_names=None, save_fig=None, figsize=(12,12)):
     """
     idatas is an array of length n dataframes
     """
     sns.set_palette('colorblind')
     n=len(idatas)
     dfs_named=dict()
+
     for i in range(n):
-        dfs_named['df'+str(i)]=pd.DataFrame({axes_labels[k]: idatas[i].posterior[k].values.flatten() for k in axes_labels.keys()})
+        data={}
+        for k in axes_labels.keys():
+            if k in idatas[i].posterior:
+                data[axes_labels[k]]=idatas[i].posterior[k].values.flatten()
+            else:
+                print(f"Warning: '{k}' not found in dataset {i}; skipping this variable for that dataset.")
+                data[axes_labels[k]]=np.full(len(idatas[i].posterior[list(idatas[i].posterior.data_vars)[0]].values.flatten()), np.nan)
+        dfs_named['df'+str(i)]=pd.DataFrame(data)
         if run_names is not None:
-            dfs_named['df'+str(i)]['run']=run_names[i]
+            dfs_named['df'+str(i)]['Run']=run_names[i]
 
-    plot_vars = list(axes_labels.values())  # the actual parameters being plotted 
-
+    plot_vars=list(axes_labels.values())
     df_all=pd.concat(dfs_named, ignore_index=True)
+
     if run_names is not None:
-        pg = sns.PairGrid(df_all, diag_sharey=False, hue='run')
+        pg=sns.PairGrid(df_all, diag_sharey=False, hue='Run')
     else:
-        pg = sns.PairGrid(df_all, diag_sharey=False)
-    pg.map_diag(sns.kdeplot, common_norm=False, levels=[0.1, 0.5, 0.9])
-    if len(plot_vars) > 1:
-        pg.map_lower(sns.kdeplot, common_norm=False, levels=[0.1, 0.5, 0.9])
-    #pg.map_lower(sns.kdeplot, common_norm=False)
-    if len(axes_labels) == 1 and run_names is not None:
-        var = list(axes_labels.values())[0]
-        sns.kdeplot(data=df_all, x=var, hue="run", common_norm=False, levels=[0.1, 0.5, 0.9])
+        pg=sns.PairGrid(df_all, diag_sharey=False)
+
+    pg.figure.set_size_inches(figsize[0], figsize[1])
+
+    pg.map_diag(sns.kdeplot, lw=2, common_norm=False, levels=[0.1, 0.5, 0.9])
+    if len(plot_vars)>1:
+        pg.map_lower(sns.kdeplot, common_norm=False, linewidths=2, levels=[0.1, 0.5, 0.9])
+
+    if len(axes_labels)==1 and run_names is not None:
+        var=list(axes_labels.values())[0]
+        sns.kdeplot(data=df_all, x=var, hue="Run", common_norm=False, lw=2, levels=[0.1, 0.5, 0.9])
         if true_vals is not None:
             plt.axvline(true_vals[list(axes_labels.keys())[0]], color="red", ls="--")
         plt.tight_layout()
+        if save_fig is not None:
+            plt.savefig(save_fig, bbox_inches='tight')
         return
-    
-    for i, j in zip(*np.triu_indices_from(pg.axes, 1)):
-        pg.axes[i, j].set_visible(False)
-    if true_vals is not None: #common_norm=Flase?
-        for i, xvar in enumerate(plot_vars):
-            for j, yvar in enumerate(plot_vars):
-                ax = pg.axes[i, j]
+
+    for i,j in zip(*np.triu_indices_from(pg.axes,1)):
+        pg.axes[i,j].set_visible(False)
+
+    if true_vals is not None:
+        for i,xvar in enumerate(plot_vars):
+            for j,yvar in enumerate(plot_vars):
+                ax=pg.axes[i,j]
                 if ax is None:
                     continue
-                if i == j:
-                    val = true_vals[list(axes_labels.keys())[i]]
-                    ax.axvline(val, color='red', linestyle='--', lw=1.2)
-                elif i > j:
-                    xval = true_vals[list(axes_labels.keys())[j]]
-                    yval = true_vals[list(axes_labels.keys())[i]]
-                    ax.axvline(xval, color='red', linestyle='--', lw=1.0)
-                    ax.axhline(yval, color='red', linestyle='--', lw=1.0)
-    pg.add_legend(loc='upper center', fontsize=24)
-    
-    for i, row_axes in enumerate(pg.axes):
-        for j, ax in enumerate(row_axes):
+                if i==j:
+                    val=true_vals[list(axes_labels.keys())[i]]
+                    ax.axvline(val, color='red', linestyle='--', lw=1.8, alpha=0.7)
+                elif i>j:
+                    xval=true_vals[list(axes_labels.keys())[j]]
+                    yval=true_vals[list(axes_labels.keys())[i]]
+                    ax.axvline(xval, color='red', linestyle='--', lw=1.8, alpha=0.7)
+                    ax.axhline(yval, color='red', linestyle='--', lw=1.8, alpha=0.7)
+
+    for i,row_axes in enumerate(pg.axes):
+        for j,ax in enumerate(row_axes):
             if ax is not None:
-                ax.xaxis.label.set_size(20)  # x-axis label size
-                ax.yaxis.label.set_size(20) 
+                xvar=plot_vars[j]
+                yvar=plot_vars[i]
+                x=df_all[xvar].dropna()
+                xmin,xmax=x.min(),x.max()
+                xpad=0.05*(xmax-xmin)
+                ax.set_xlim(xmin-xpad,xmax+xpad)
+
+                if i!=j:
+                    y=df_all[yvar].dropna()
+                    ymin,ymax=y.min(),y.max()
+                    ypad=0.05*(ymax-ymin)
+                    ax.set_ylim(ymin-ypad,ymax+ypad)
+
+                ax.xaxis.label.set_size(28)
+                ax.yaxis.label.set_size(28)
+                ax.tick_params(axis='both', which='major', labelsize=25)
+
+    if run_names is not None:
+        pg.add_legend(loc='upper center')
+        pg._legend.get_title().set_fontsize(32)
+        for text in pg._legend.get_texts():
+            text.set_fontsize(32)
+
     plt.tight_layout()
+
+    if save_fig is not None:
+        plt.savefig(save_fig, bbox_inches='tight')

@@ -5,7 +5,7 @@
 #SBATCH --mem=64G
 #SBATCH --time=0-8
 #SBATCH --constraint=h100
-#SBATCH -J ne_nocosmo
+#SBATCH -J CE_nb
 #SBATCH --exclude=workergpu067
 
 set -euo pipefail
@@ -16,4 +16,4 @@ unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/asharp_ne.ini
+srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/CE_ne_nb.ini
