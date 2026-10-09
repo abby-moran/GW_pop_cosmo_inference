@@ -1,11 +1,11 @@
 #!/usr/bin/bash
 #SBATCH -p gpu
-#SBATCH --gpus=2
+#SBATCH --gpus=1
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
 #SBATCH --time=0-06
 #SBATCH --constraint=h100
-#SBATCH -J high_res_nb
+#SBATCH -J full_cosmo_CE
 #SBATCH --exclude=workergpu067
 
 module load cuda/12 cudnn
@@ -15,4 +15,4 @@ unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/mock_O5_hbump_ne_cosmo.ini
+srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/CE_ne_fullcosmo.ini

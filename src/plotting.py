@@ -313,7 +313,7 @@ def load_true_vals(filename):
 
     return tv
 
-def plot_corner(idatas, true_vals, axes_labels={'mpisn': r'$m_\mathrm{PISN}$', 'mbhmax': r'$m_\mathrm{BH,max}$', 'beta': 'beta', 'b': 'b'}, run_names=None, save_fig=None, figsize=(12,12)):
+def plot_corner(idatas, true_vals, axes_labels={'mpisn': r'$m_\mathrm{PISN}$', 'mbhmax': r'$m_\mathrm{BH,max}$', 'beta': 'beta', 'b': 'b'}, run_names=None, save_fig=None, figsize=(19,19)):
     """
     idatas is an array of length n dataframes
     """

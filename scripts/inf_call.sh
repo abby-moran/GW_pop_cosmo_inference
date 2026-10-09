@@ -3,7 +3,7 @@
 #SBATCH --gpus=2
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
-#SBATCH --time=0-10
+#SBATCH --time=0-06
 #SBATCH -J asharp
 #SBATCH --constraint=h100
 #SBATCH --exclude=workergpu067
@@ -15,4 +15,4 @@ unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/asharp_ne.ini
+srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/mock_O5_hbump_ne_cosmo.ini
