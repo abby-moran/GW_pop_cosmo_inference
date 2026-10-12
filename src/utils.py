@@ -402,6 +402,11 @@ def get_priors_from_file(filename):
     with open(filename, "r") as priorfile:
         lines = priorfile.read().splitlines()
     for line in lines:
+        # skip blanks and full-line comments (same convention as the
+        # pop-config parser in run_inf.py)
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
         param, func = parse_input_line(line)
         prior[param] = func
     return prior
