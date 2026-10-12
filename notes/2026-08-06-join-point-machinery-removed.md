@@ -1,5 +1,14 @@
 # Removal of the `join_point_terms` / `log_mix_at_join` machinery
 
+> **Partly superseded (2026-10-12).** `log_mix_at_join` is back in
+> `src/intensity_models_fast.py`, and the tail is again height-anchored --
+> but as a *parametrization of the simplex weight* `fpl` (the sampled
+> height ratio `r` is converted once, at `zref`, into a fixed weight), so
+> the unit-area mixture described below is unchanged and the normalization
+> drift that motivated `e7ad354` does not recur. The "abandoned" design
+> below is the old one in which the amplitude set the *density* directly.
+> See `notes/2026-10-12-ref-z-tail-anchoring.md`.
+
 *2026-08-06.  Applies to `src/intensity_models.py`, `src/intensity_models_fast.py`,
 and `src/intensity_models_coup.py`.*
 
