@@ -152,10 +152,12 @@ float32 there, independent of the selection-scalar fix.
   because legs with different constants differ by a real constant, not by
   roundoff.  Likewise the per-event baseline must be permuted together with
   the events in the jitter probe.
-- `recentering_baselines` warns if any event has (near-)zero likelihood at
-  the reference point: a dead reference event puts ~1e6 back into the sum
-  and defeats the recentering.  Initialization would fail at such a point
-  anyway.
+- `recentering_baselines` raises `RuntimeError` if any event has (near-)zero
+  likelihood at the reference point (or `log_mu_sel` is floored/non-finite):
+  a dead reference event puts ~1e6 back into the sum and defeats the
+  recentering.  Was a warning until 2026-08-31; see
+  `notes/2026-08-31-recentering-reference-fix.md` (Fix 3, `max_dead_events`,
+  `[ref_params]` ini section).
 - Reproduce: `uv run python test_float32_accuracy.py --recenter --stress`
   (both legs need `XLA_PYTHON_CLIENT_PREALLOCATE=false` at production scale,
   see the audit's gotchas).

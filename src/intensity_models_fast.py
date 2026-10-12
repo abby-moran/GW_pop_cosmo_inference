@@ -1517,13 +1517,32 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     _ = numpyro.deterministic('hz', cosmo.h * cosmo.E(coords['z_grid']))
 
 
-def recentering_baselines(model_args, ref_params, rng_seed=0, **model_kwargs):
+def _ref_point_summary(tr, max_items=40):
+    """Compact 'name=value' summary of the scalar sample sites in a trace, for
+    error messages about a bad recentering reference point."""
+    vals = []
+    for name, site in tr.items():
+        if site.get("type") != "sample" or site.get("is_observed", False):
+            continue
+        v = np.asarray(site["value"])
+        if v.ndim == 0:
+            vals.append(f"{name}={float(v):.4g}")
+        if len(vals) >= max_items:
+            break
+    return ", ".join(vals)
+
+
+def recentering_baselines(model_args, ref_params, rng_seed=0, max_dead_events=0,
+                          **model_kwargs):
     """Evaluate per-event log likelihoods and log_mu_sel once at a fixed ref point
     Baselines need to be near typical posterior values - so init point works
 
     - model_args: the positional arguments of pop_cosmo_model (data + prior).
     - ref_params: dict of parameter values to condition on (e.g. the init/truth point).
         Parameters not in the dict are drawn from the prior with `rng_seed`
+    - max_dead_events: raise RuntimeError if more than this many events have
+        (near-)zero likelihood at the reference point (default 0: any dead
+        event is fatal; healthy runs report none).
     - model_kwargs: forwarded to pop_cosmo_model, this always evaluates the physical (unscaled) model.
 
     Returns a dict meant to be splatted into pop_cosmo_model:
@@ -1547,15 +1566,29 @@ def recentering_baselines(model_args, ref_params, rng_seed=0, **model_kwargs):
 
     loglike_ref = np.asarray(tr["loglik_array_dim"]["value"], dtype=np.float64)
     log_mu_sel_phys = float(np.asarray(tr["log_mu_sel"]["value"]))
-    n_dead = int(np.sum(loglike_ref <= 0.5 * _LOG_ZERO_FLOOR))
-    if n_dead:
-        # A dead ref event carries a baseline of ~_LOG_ZERO_FLOOR, residual is 1e6
-        # => huge magnitude right back into the sum and defeats the recentering
-        import warnings
-        warnings.warn(
-            f"recentering_baselines: {n_dead} event(s) have (near-)zero "
-            f"likelihood at the reference point; recentering will not help "
-            f"until the reference point is moved inside the support.")
+    # A dead ref event carries a baseline of ~_LOG_ZERO_FLOOR, residual is 1e6
+    # => huge magnitude right back into the sum and defeats the recentering, so
+    # the float32 potential loses all resolution and NUTS stalls.  Hard error
+    # (was a warning: the realGWTC5_noevo_259ev_qpair_h run sailed past it and
+    # burned a full allocation frozen at max tree depth).
+    n_dead = int(np.sum(~(loglike_ref > 0.5 * _LOG_ZERO_FLOOR)))  # counts NaN too
+    if n_dead > max_dead_events:
+        raise RuntimeError(
+            f"recentering_baselines: {n_dead} of {loglike_ref.shape[0]} event(s) "
+            f"have (near-)zero likelihood at the recentering reference point "
+            f"(log L <= {0.5 * _LOG_ZERO_FLOOR:.3g}); float32 recentering would "
+            f"be useless and the sampler will stall.  Reference point: "
+            f"{_ref_point_summary(tr)}.  Provide an explicit reference via a "
+            f"[ref_params] section in the run-config ini (name = value lines "
+            f"for the SAMPLED prior parameters, e.g. posterior medians of a "
+            f"healthy run) instead of relying on the seed-{rng_seed} prior draw.")
+    if not np.isfinite(log_mu_sel_phys) or log_mu_sel_phys <= 0.5 * _LOG_ZERO_FLOOR:
+        raise RuntimeError(
+            f"recentering_baselines: log_mu_sel = {log_mu_sel_phys} at the "
+            f"recentering reference point is non-finite or floored; the "
+            f"selection integral has no support there.  Reference point: "
+            f"{_ref_point_summary(tr)}.  Provide an explicit reference via a "
+            f"[ref_params] section in the run-config ini.")
     nobs = loglike_ref.shape[0]
     return dict(loglike_ref=loglike_ref, log_pdraw_sel_scale=log_mu_sel_phys, log_mu_sel_ref=0.0,
         log_mu_sel_phys_ref=log_mu_sel_phys, offset=float(loglike_ref.sum() - nobs * log_mu_sel_phys),)
