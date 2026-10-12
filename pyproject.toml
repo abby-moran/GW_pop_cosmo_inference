@@ -9,7 +9,10 @@ description = "Bayesian hierarchical inference of GW population and cosmological
 requires-python = ">=3.11,<3.12"
 dependencies = [
     # Core inference stack
-    "jax[cuda12]>=0.4.25,<0.6.1",
+    # CUDA plugin wheels are Linux-only; elsewhere (e.g. macOS arm64) fall
+    # back to the CPU jaxlib so the env still resolves and installs.
+    "jax>=0.6.0,<0.6.1",
+    "jax[cuda12]>=0.6.0,<0.6.1; sys_platform == 'linux'",
     "numpyro",
     "arviz",
     # GW waveforms and signal processing
