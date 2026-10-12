@@ -102,10 +102,10 @@ ndevice=nchain
 numpyro.set_host_device_count(ndevice)
 use_low_bump=run.getboolean("use_low_bump", fallback=True)
 smooth_tail_edge=run.getboolean("smooth_tail_edge", fallback=True)
-# "q" (default, normalized q^beta pairing) or "mt" (total-mass pairing).
-# NB the default here is "q", which differs from the model-side default
-# (intensity_models_fast.LogDNDMDQDV.pairing = "mt"): an ini that omits
-# this key runs q^beta pairing. These two are the only accepted values.
+# "q" (default, normalized q^beta pairing) or "mt" (total-mass pairing);
+# these two are the only accepted values. Matches the model-side default
+# in intensity_models_fast, so an ini omitting this key and a direct
+# build_population_model() call agree.
 pairing=run.get("pairing", fallback="q")
 # Two-scale h-pivot reparametrization 
 h_pivot=run.getboolean("h_pivot", fallback=False)

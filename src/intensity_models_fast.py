@@ -874,8 +874,8 @@ class LogDNDMDQDV(object):
     use_low_bump: object = True
     smooth_tail_edge: bool = False
     mlow_dot: object = 0.0
-    # Pairing function: "mt" (total-mass) or "q" (LVK-style q^beta)
-    pairing: str = "mt"
+    # Pairing function: "q" (default, LVK-style q^beta) or "mt" (total-mass)
+    pairing: str = "q"
     log_qnorm: object = dataclasses.field(init=False)
 
     def __post_init__(self):
@@ -919,7 +919,7 @@ class LogDNDMDQDV(object):
                     - self.log_qnorm.log_Zq_from_log(log_m1)
                     + self.log_dndv.from_log1p(log1p_z) - self.log_norm)
 
-        # "mt" (default): the original total-mass pairing
+        # "mt": the original total-mass pairing
         m2 = m1 * jnp.exp(log_q)
         log_m2 = log_m1 + log_q
         mt = m1 + m2
@@ -1172,7 +1172,7 @@ def log_smooth_neff_boundary(values, criteria):
     scaled_x = (values - criteria) / (0.05 * criteria)
     return jnp.minimum(0.0, scaled_x)
 
-def build_population_model(sample, use_low_bump=True, n_z=30, smooth_tail_edge=False, pairing="mt"):
+def build_population_model(sample, use_low_bump=True, n_z=30, smooth_tail_edge=False, pairing="q"):
     return LogDNDMDQDV(a=sample['a'], b=sample['b'], c=sample['c'], mpisn=sample['mpisn'],
         mpisndot=sample['mpisndot'], mbhmax=sample['mbhmax'], sigma=sample['sigma'],
         fpl=sample['fpl'], beta=sample['beta'], lam=sample['lam'], kappa=sample['kappa'],
@@ -1213,7 +1213,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                     Ndraw, priors=None, use_low_bump=True, n_z=30, store_per_event=False, neff_criterion=None,
                     neff_penalty="mc_variance", mc_variance_budget=5.0, tabulate_mass_function=None, n_mass_table=8192,
                     tabulate_selection=None, scatter_free_tables=None, smooth_tail_edge=True,
-                    pairing="mt",  # mt or q
+                    pairing="q",  # q or mt
                     loglike_ref=None, log_mu_sel_ref=None, log_pdraw_sel_scale=0.0):
     """
     - Ndraw is # of events in the injection samples used to estimate the selection function
@@ -1382,7 +1382,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                         - log_dN.log_qnorm.log_Zq_from_log(log_m1s_)
                         + Jg - log_dN.log_norm - log_pdraw_)
 
-            # "mt" (default): total-mass pairing with two mass lookups
+            # "mt": total-mass pairing with two mass lookups
             if ld._z_dependent:
                 zs_ = jnp.expm1(log1p_zs_)
                 iz0, fz = ld.z_axis.cell_and_frac(zs_, log1p_zs_)
