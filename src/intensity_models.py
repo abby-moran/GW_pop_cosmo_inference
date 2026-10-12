@@ -427,7 +427,8 @@ def build_population_model(sample, use_low_bump=True):
         )
 #H_GRID = jnp.linspace(0.60, .8, 50)
     
-def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel, Ndraw, priors=None, use_low_bump=True):
+def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel, Ndraw, priors=None, use_low_bump=True,
+                    h_pivot=False, h_pivot_gammas=None):
     """
     Ndraw is # of events in the injection samples used to estimate the selection function
     """
@@ -440,7 +441,11 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
 
     nsel = m1s_det_sel.shape[0]
 
-    sample = sample_parameters_from_dict(priors)
+    # h_pivot, h_pivot_gammas: two-scale h-pivot reparametrization of the
+    # sampled mp_low / mpisn_ref sites; see utils.sample_parameters_from_dict
+    # and notes/2026-09-01-h-divergences-float32.md.
+    sample = sample_parameters_from_dict(priors, h_pivot=h_pivot,
+                                         h_pivot_gammas=h_pivot_gammas)
     deterministic_parameters = get_deterministic_parameters(sample, use_low_bump=use_low_bump)
     sample.update(deterministic_parameters, ) #sample from hyperparameters, set up cosmology (cosmo) and population model (dN)
 

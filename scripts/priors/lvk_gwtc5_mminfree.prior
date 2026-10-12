@@ -1,0 +1,45 @@
+# LVK GWTC-5 Default 'PowerLaw + 2 Peaks' mass model (arXiv 2605.27226),
+# no spins, with the low-mass cutoff mmin and smoothing width delta_m SAMPLED
+# (as in the LVK analysis) instead of fixed.  Run with run_inf_lvk.py.
+# Differences from the LVK release priors:
+#   - LVK samples TWO (mlow, delta_m) pairs (one per power-law segment,
+#     posteriors mlow_1/mlow_2 in [3, ~9] and delta_m_1/delta_m_2 in [0, 10]);
+#     our model has a single shared (mmin, delta_m) pair, with priors chosen
+#     to cover the LVK ranges (mmin upper bound 10: the mlow_1 posterior
+#     extends to 9.02, so the LVK prior upper bound is >= that).
+#   - delta_m lower bound is floored at 0.01 (LVK uses 0):
+#     mmin_log_smooth_turnon divides by delta_m, and a 0 bound risks inf
+#     gradients at the prior edge.
+# Cosmology fixed to Planck; free it by replacing the first three lines with
+# log_h / Omh2 / w prior lines (the model derives Om = Omh2/h^2).
+h = 0.674
+Om = 0.315
+w = -1
+# --- mass model: bounds transcribed from the LVK prior table (Abac et al.
+#     2025, arXiv:2508.18083, Table 6, which GWTC-5.0 adopts).  Release
+#     mapping: lam_0 = POWER-LAW fraction = 1 - f_peaks; lam_1 = f_peaks*f_p1.
+#     f_peaks = Beta(2,1) + f_p1 = Uniform(0,1) reproduces exactly the LVK
+#     Dirichlet(1,1,1) on the three mixture fractions (uniform stick-breaking
+#     would instead tilt the prior toward peak-poor mixtures).  sigpp_* keep a
+#     0.1 floor (LVK: 0; not binding, their posterior minima are > 0.12). ---
+alpha_1 = Uniform(-4.0, 12.0)
+alpha_2 = Uniform(-4.0, 12.0)
+mbreak = Uniform(20.0, 50.0)
+mpp_1 = Uniform(5.0, 20.0)
+sigpp_1 = Uniform(0.1, 10.0)
+mpp_2 = Uniform(25.0, 60.0)
+sigpp_2 = Uniform(0.1, 10.0)
+f_peaks = Beta(2.0, 1.0)
+f_p1 = Uniform(0.0, 1.0)
+beta = Uniform(-2.0, 7.0)
+# --- low-mass cutoff and smoothing: SAMPLED (see header); mmax stays fixed
+#     (fixed at 300 in the LVK release too).  The LogQNorm m1-axis bounds are
+#     static [2, 500], so traced mmin/delta_m trace cleanly. ---
+mmin = Uniform(3.0, 10.0)
+mmax = 300.0
+delta_m = Uniform(0.01, 10.0)
+# --- redshift evolution: identical to the real-data control pipeline ---
+lam = TruncatedNormal(2.7, 2.0, low=-1.3, high=6.7)
+dkappa = TruncatedNormal(2.9, 2.0, low=1, high=6.9)
+zp = TruncatedNormal(1.9, 1, low=0, high=3.9)
+zmax = 3.0

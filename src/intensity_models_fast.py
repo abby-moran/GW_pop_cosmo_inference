@@ -1214,6 +1214,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                     neff_penalty="mc_variance", mc_variance_budget=5.0, tabulate_mass_function=None, n_mass_table=8192,
                     tabulate_selection=None, scatter_free_tables=None, smooth_tail_edge=True,
                     pairing="q",  # q or mt
+                    h_pivot=False, h_pivot_gammas=None,
                     loglike_ref=None, log_mu_sel_ref=None, log_pdraw_sel_scale=0.0):
     """
     - Ndraw is # of events in the injection samples used to estimate the selection function
@@ -1234,6 +1235,10 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     - smooth_tail_edge: drop the hard zero of the power-law tail below m = mbhmax
         Makes the population density continuous at the edge
         Default True (set False for old behavior)
+    - h_pivot, h_pivot_gammas: two-scale h-pivot reparametrization of the
+        sampled mp_low / mpisn_ref sites (exact change of variables handled in
+        utils.sample_parameters_from_dict; posterior unchanged, ~2x ESS(h)).
+        See notes/2026-09-01-h-divergences-float32.md.
     - loglike_ref, log_mu_sel_ref: float32 recentering baselines
         Default None: no recentering, bit-identical to the previous behaviour.
     - log_pdraw_sel_scale: constant added to ``log(pdraw_sel)`` before the selection weights.
@@ -1268,7 +1273,8 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     log_qs_sel = jnp.log(qs_sel)
     log_dls_sel = jnp.log(dls_sel)
 
-    sample = sample_parameters_from_dict(priors)
+    sample = sample_parameters_from_dict(priors, h_pivot=h_pivot,
+                                         h_pivot_gammas=h_pivot_gammas)
     deterministic_parameters = get_deterministic_parameters(sample, use_low_bump=use_low_bump)
     sample.update(deterministic_parameters)
 

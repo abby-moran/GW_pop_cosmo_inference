@@ -107,7 +107,11 @@ smooth_tail_edge=run.getboolean("smooth_tail_edge", fallback=True)
 # in intensity_models_fast, so an ini omitting this key and a direct
 # build_population_model() call agree.
 pairing=run.get("pairing", fallback="q")
-# Two-scale h-pivot reparametrization 
+# Two-scale h-pivot reparametrization (`h_pivot = true`, default false):
+# samples flat u_mp_low / u_mpisn_ref and derives mp_low = u_mp_low * h**-g1,
+# mpisn_ref = u_mpisn_ref * h**-g2 with a factor restoring the original prior;
+# exact change of variables (posterior unchanged, ~2x ESS(h)); requires a
+# prior that samples h.  See notes/2026-09-01-h-divergences-float32.md.
 h_pivot=run.getboolean("h_pivot", fallback=False)
 h_pivot_gammas={"mp_low": run.getfloat("h_pivot_gamma_mp_low", fallback=0.14),
                 "mpisn_ref": run.getfloat("h_pivot_gamma_mpisn_ref", fallback=0.18)}
