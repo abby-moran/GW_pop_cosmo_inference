@@ -102,8 +102,10 @@ ndevice=nchain
 numpyro.set_host_device_count(ndevice)
 use_low_bump=run.getboolean("use_low_bump", fallback=True)
 smooth_tail_edge=run.getboolean("smooth_tail_edge", fallback=True)
-# "simplex" (default), "ref_z", or "per_z"; the r-modes need a prior sampling log_r
-# "mt" (default, total-mass pairing) or "lvk" (normalized q^beta pairing)
+# "q" (default, normalized q^beta pairing) or "mt" (total-mass pairing).
+# NB the default here is "q", which differs from the model-side default
+# (intensity_models_fast.LogDNDMDQDV.pairing = "mt"): an ini that omits
+# this key runs q^beta pairing. These two are the only accepted values.
 pairing=run.get("pairing", fallback="q")
 # Two-scale h-pivot reparametrization 
 h_pivot=run.getboolean("h_pivot", fallback=False)
