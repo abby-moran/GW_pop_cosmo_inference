@@ -83,28 +83,6 @@ def rate_z_for_one_draw(sample, m1_grid, q_grid, z_grid, pairing="q"):
     return dR_dz
 
 
-def pm1_at_z_for_one_draw(sample, m1_grid, q_grid, z0, pairing="q"):
-    """
-    Compute p(m1 | z=z0).
-    """
-
-    model = intensity_models.build_population_model(sample, pairing=pairing)
-
-    m1_grid = jnp.asarray(m1_grid)
-    q_grid = jnp.asarray(q_grid)
-
-    logvals = jax.vmap(lambda q: model(m1_grid, q, z0))(q_grid)
-
-    vals = jnp.exp(logvals)
-
-    # marginalize q
-    pm1 = jnp.trapezoid(vals, q_grid, axis=0)
-
-    # normalize
-    pm1 /= jnp.trapezoid(pm1, m1_grid)
-
-    return pm1
-
 def dR_dm1_at_z_for_one_draw(sample, m1_grid, q_grid, z0, pairing="q"):
     """
     Differential rate dR/dm1 at fixed z=z0, marginalizing over q only.
@@ -149,20 +127,6 @@ def downsample_per_event(arr, n=200, seed=0):
         else:
             out.append(row)
     return np.concatenate(out)
-
-def compute_pq_draws(params, m1_grid, q_grid, z_grid=None, n_draws=100, rng=None, pairing="q"):
-    rng = np.random.default_rng(rng)
-    N = len(next(iter(params.values())))
-    draw_idx = rng.choice(N, size=min(n_draws, N), replace=False)
-
-    pq_draws = []
-
-    for i in draw_idx:
-        sample = {k: v[i] for k, v in params.items()}
-        pq = pq_for_one_draw(sample, m1_grid, q_grid, z_grid=z_grid, pairing=pairing)
-        pq_draws.append(pq)
-
-    return np.array(pq_draws), draw_idx
 
 def pq_for_one_draw(sample, m1_grid, q_grid, z_grid=None, pairing="q"):
     """
