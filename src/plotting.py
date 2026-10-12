@@ -2,7 +2,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import arviz as az
 import os
-import intensity_models
+# The fast model is the one run_inf.py samples with; it is also the one whose
+# build_population_model takes the static `pairing` flag threaded below.
+import intensity_models_fast as intensity_models
 import pandas as pd
 import seaborn as sns
 import jax
@@ -30,6 +32,38 @@ def load_posterior_samples(nc_file, n_draws=None, seed=0):
         params = {k: v[idx] for k, v in params.items()}
 
     return params
+
+def canonical_params(params):
+    """Fill the physical keys build_population_model reads (mbhmax, kappa,
+    fpl, flow, Om) from whatever coordinates a saved chain carries -- the same
+    derivations as intensity_models_fast.get_deterministic_parameters, applied
+    to flat posterior arrays.  Keys already present are left alone."""
+    p = dict(params)
+    if "mpisn" not in p and "mpisn_ref" in p:
+        zp = p.get("zpivot", 0.75)
+        p["mpisn"] = p["mpisn_ref"] - p.get("mpisndot", 0.0) * zp / (1.0 + zp)
+    if "mbhmax" not in p and "mpisn" in p and "dmbhmax" in p:
+        p["mbhmax"] = p["mpisn"] + p["dmbhmax"]
+    if "kappa" not in p and "lam" in p and "dkappa" in p:
+        p["kappa"] = p["lam"] + p["dkappa"]
+    if "fpl" not in p:
+        # Tail height: always the join-height ratio r anchored at zref, under
+        # whichever name the prior sampled it.
+        if "r" in p:
+            p["fpl"] = p["r"]
+        elif "log_r" in p:
+            p["fpl"] = np.exp(p["log_r"])
+        elif "log_fpl" in p:
+            p["fpl"] = np.exp(p["log_fpl"])
+    if "flow" not in p:
+        if "log_flow" in p:
+            p["flow"] = np.exp(p["log_flow"])
+        elif "log_fpeak" in p and "msigma_low" in p:
+            p["flow"] = np.exp(p["log_fpeak"]) * p["msigma_low"]
+    if "Om" not in p and "Omh2" in p and "h" in p:
+        p["Om"] = p["Omh2"] / p["h"] ** 2
+    return p
+
 
 def pairing_from_nc(nc_file):
     """Pairing convention a saved run used, for threading into the draw
@@ -93,12 +127,11 @@ def dR_dm1_at_z_for_one_draw(sample, m1_grid, q_grid, z0, pairing="q"):
     q_grid = jnp.asarray(q_grid)
     z0 = jnp.asarray(z0)
 
-    def dR_at_m1(m1):
-        logvals_q = jax.vmap(lambda q: model(m1, q, z0))(q_grid)  # shape (nq,)
-        vals_q = jnp.exp(logvals_q)
-        return jnp.trapezoid(vals_q, q_grid)
-
-    return jax.vmap(dR_at_m1)(m1_grid)
+    # Broadcast evaluation on the (nm1, nq) plane rather than nested scalar
+    # vmaps: the fast model's __call__ derives its internal grid shapes from
+    # the argument shapes and does not vmap over scalar m1 / q.
+    logvals = model(m1_grid[:, None], q_grid[None, :], z0)   # (nm1, nq)
+    return jnp.trapezoid(jnp.exp(logvals), q_grid, axis=1)
 
 
 def pm1_at_z_for_one_draw(sample, m1_grid, q_grid, z0, pairing="q"):
@@ -199,14 +232,34 @@ def plot_band_with_data(ax, grid, arr, data=None, label=None):
 def make_ppd_plot(nc_file, pe_samples=None, m1s_det_sel=None, qs_sel=None, dls_sel=None, detected_ppd=None,
                   cache_file="ppd_cache.npz", ndraws=300):
 
-    params = load_posterior_samples(nc_file, n_draws=ndraws)
+    params = canonical_params(load_posterior_samples(nc_file, n_draws=ndraws))
+    pairing = pairing_from_nc(nc_file)
 
     m1_grid = np.linspace(5, 200, 200)
     q_grid  = np.linspace(0.2, 1.0, 200)
     z_grid  = np.linspace(0.01, 2.0, 200)
 
     def compute():
-        return compute_ppd_grids(params, m1_grid, q_grid, z_grid)
+        # Marginal (not fixed-slice) unit-area densities per posterior draw,
+        # through the per-draw helpers above, rebuilt with the pairing the
+        # chain was sampled under:
+        #   p_m1 = p(m1 | z=0.2)   (integrated over q)
+        #   p_q  = p(q)            (integrated over m1 and z)
+        #   p_z  = R(z)/int R(z)dz (dN/dVc dt, integrated over m1 and q)
+        n = len(next(iter(params.values())))
+        p_m1 = np.zeros((n, len(m1_grid)))
+        p_z = np.zeros((n, len(z_grid)))
+        for i in range(n):
+            sample = {k: v[i] for k, v in params.items()}
+            p_m1[i] = np.asarray(pm1_at_z_for_one_draw(
+                sample, m1_grid, q_grid, 0.2, pairing=pairing))
+            rz = np.asarray(rate_z_for_one_draw(
+                sample, m1_grid, q_grid, z_grid, pairing=pairing))
+            p_z[i] = rz / np.trapezoid(rz, z_grid)
+        p_q, idx = compute_pq_draws(params, m1_grid, q_grid, z_grid=z_grid,
+                                    n_draws=n, rng=0, pairing=pairing)
+        p_q = p_q[np.argsort(idx)]      # same draw order as p_m1 / p_z
+        return p_m1, p_q, p_z
 
     p_m1, p_q, p_z = compute_or_load_ppd(cache_file, compute)
     cosmo_ref = intensity_models.FlatwCDMCosmology(0.7, 0.3, -1.0, zmax=5.0)
