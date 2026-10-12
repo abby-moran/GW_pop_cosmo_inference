@@ -351,6 +351,7 @@ def parse_run_section(run):
         target_accept_prob=run.getfloat("target_accept_prob", fallback=0.8),
         use_low_bump=run.getboolean("use_low_bump", fallback=True),
         smooth_tail_edge=run.getboolean("smooth_tail_edge", fallback=True),
+        pairing=run.get("pairing", fallback="q"),
     )
     if out["pop_config_file"] and str(out["pop_config_file"]).lower() == "none":
         out["pop_config_file"] = None
@@ -874,7 +875,13 @@ def _canonical_pop_sample(base, post_med):
     return s
 
 
-def _sel_log_wts(sel, sample, use_low_bump=True):
+def _pairing_of(idata):
+    """Pairing the chain was sampled under, from its posterior attrs."""
+    from utils import pairing_from_attrs
+    return pairing_from_attrs(idata.posterior.attrs)
+
+
+def _sel_log_wts(sel, sample, use_low_bump=True, pairing="q"):
     """Per-row selection log-weights matching pop_cosmo_model's selection path."""
     import jax.numpy as jnp
     import intensity_models_fast as im
@@ -898,7 +905,7 @@ def _sel_log_wts(sel, sample, use_low_bump=True):
     cosmo = im.FlatwCDMCosmology(sample["h"], sample["Om"], sample["w"],
                                  zmax=sample["zmax"])
     log_dN = im.build_population_model(pop, use_low_bump=use_low_bump, n_z=30,
-                                       smooth_tail_edge=True)
+                                       smooth_tail_edge=True, pairing=pairing)
     m1d = jnp.asarray(sel["m1d"].values)
     q = jnp.asarray(sel["q"].values)
     dl = jnp.asarray(sel["dl"].values)
@@ -996,14 +1003,20 @@ def section_selection_tilt(rep, idata, free, truths, nobs, sel_file, ini):
 
     sel = sel_all
     n_use = len(sel)
+    from utils import pairing_from_attrs
+
     use_low_bump = (ini or {}).get("use_low_bump", True)
+    # Rebuild with the pairing the chain was sampled under, not the default.
+    pairing = (ini or {}).get("pairing",
+                              pairing_from_attrs(idata.posterior.attrs))
 
     post = idata.posterior
     post_med = _posterior_median_dict(post)
     base = _canonical_pop_sample(truths, post_med)
     try:
         # Probe once so a missing key fails with a clean NOTE, not mid-loop.
-        _ = _sel_log_wts(sel.iloc[:2], base, use_low_bump=use_low_bump)
+        _ = _sel_log_wts(sel.iloc[:2], base, use_low_bump=use_low_bump,
+                         pairing=pairing)
     except Exception as exc:
         rep.add("monte-carlo", "NOTE", "narrow-feature selection tilt",
                 "insufficient information: could not rebuild selection "
@@ -1029,8 +1042,10 @@ def section_selection_tilt(rep, idata, free, truths, nobs, sel_file, ini):
             if "mpisn" in s and "dmbhmax" in s:
                 s["mbhmax"] = float(s["mpisn"]) + float(s["dmbhmax"])
         try:
-            lw_lo = _sel_log_wts(sel, sample_lo, use_low_bump=use_low_bump)
-            lw_hi = _sel_log_wts(sel, sample_hi, use_low_bump=use_low_bump)
+            lw_lo = _sel_log_wts(sel, sample_lo, use_low_bump=use_low_bump,
+                                 pairing=pairing)
+            lw_hi = _sel_log_wts(sel, sample_hi, use_low_bump=use_low_bump,
+                                 pairing=pairing)
             delta, sd = _bootstrap_delta_log_mu(lw_lo, lw_hi)
         except Exception as exc:
             rep.add("monte-carlo", "NOTE", "narrow-feature selection tilt",
@@ -1273,13 +1288,15 @@ def run_float32_leg(spec_path):
     model_kwargs = dict(
         use_low_bump=bool(spec.get("use_low_bump", True)),
         smooth_tail_edge=bool(spec.get("smooth_tail_edge", True)),
+        pairing=str(spec.get("pairing", "q")),
     )
 
     baselines = spec.get("baselines")
     if spec.get("recenter") and baselines is None:
         baselines = im.recentering_baselines(
             model_args, point, use_low_bump=model_kwargs["use_low_bump"],
-            smooth_tail_edge=model_kwargs["smooth_tail_edge"])
+            smooth_tail_edge=model_kwargs["smooth_tail_edge"],
+            pairing=model_kwargs["pairing"])
         baselines = dict(
             loglike_ref=np.asarray(baselines["loglike_ref"]).tolist(),
             log_mu_sel_ref=float(baselines["log_mu_sel_ref"]),
@@ -1413,6 +1430,7 @@ def section_float32(rep, idata, truths, prior_path, pe_file, sel_file, ini, nobs
         evt_end=(ini or {}).get("evt_end"),
         use_low_bump=(ini or {}).get("use_low_bump", True),
         smooth_tail_edge=(ini or {}).get("smooth_tail_edge", True),
+        pairing=(ini or {}).get("pairing", _pairing_of(idata)),
         recenter=recenter,
     )
     print("float32 safety: compiling the model at %s in float32 then float64 "

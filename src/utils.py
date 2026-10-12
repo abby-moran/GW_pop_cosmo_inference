@@ -484,3 +484,46 @@ def log_expit(exponent):
     expres = jnp.exp(-exponent)
     result = -jnp.log1p(expres+epsilon)
     return result
+
+# Mapping between the "mass_model" attr run_inf.py stamps into the .nc and the
+# pairing convention the chain was actually run with.
+_MASS_MODEL_PAIRING = {"pisn": "mt", "pisn_lvkpair": "q"}
+
+
+def pairing_from_attrs(attrs):
+    """Recover the pairing convention a saved run used, from its posterior attrs.
+
+    Resolution order, most to least specific:
+
+    1. ``run_config_pairing`` -- the raw ini value, present only when the ini
+       set ``pairing`` explicitly.
+    2. ``mass_model`` -- stamped by run_inf.py from the *resolved* value, so it
+       is present even when the ini relied on the default.
+    3. Neither: the .nc predates the pairing option, so it is a total-mass run.
+       This matches run_inf.py's own comment that an absent attr means the
+       original PISN model.
+
+    Returning the recorded value rather than a default is the point: a chain
+    must be reconstructed with the pairing it was sampled under, whatever the
+    current default happens to be.
+    """
+    attrs = attrs or {}
+    explicit = attrs.get("run_config_pairing")
+    if explicit is not None:
+        pairing = str(explicit).strip()
+        if pairing not in ("mt", "q"):
+            raise ValueError(
+                "run_config_pairing = %r in the .nc attrs is not a known "
+                "pairing (known: 'mt', 'q')" % (explicit,))
+        return pairing
+
+    mass_model = attrs.get("mass_model")
+    if mass_model is not None:
+        try:
+            return _MASS_MODEL_PAIRING[str(mass_model).strip()]
+        except KeyError:
+            raise ValueError(
+                "mass_model = %r in the .nc attrs does not map to a pairing "
+                "(known: %s)" % (mass_model, sorted(_MASS_MODEL_PAIRING)))
+
+    return "mt"

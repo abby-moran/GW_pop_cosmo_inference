@@ -31,9 +31,16 @@ def load_posterior_samples(nc_file, n_draws=None, seed=0):
 
     return params
 
-def rate_m1_for_one_draw(sample, m1_grid, q_grid, z0):
+def pairing_from_nc(nc_file):
+    """Pairing convention a saved run used, for threading into the draw
+    functions below so they rebuild the model the chain was sampled under."""
+    from utils import pairing_from_attrs
+    return pairing_from_attrs(az.from_netcdf(nc_file).posterior.attrs)
 
-    model = intensity_models.build_population_model(sample)
+
+def rate_m1_for_one_draw(sample, m1_grid, q_grid, z0, pairing="q"):
+
+    model = intensity_models.build_population_model(sample, pairing=pairing)
 
     m1_grid = jnp.asarray(m1_grid)
     q_grid = jnp.asarray(q_grid)
@@ -51,12 +58,12 @@ def _eval_m1_q(model, m1_grid, q_grid, z0):
         lambda m1: jax.vmap(lambda q: model(m1, q, z0))(q_grid)
     )(m1_grid)
 
-def rate_z_for_one_draw(sample, m1_grid, q_grid, z_grid):
+def rate_z_for_one_draw(sample, m1_grid, q_grid, z_grid, pairing="q"):
     """
     Compute dR/dz by marginalizing over m1 and q.
     """
 
-    model = intensity_models.build_population_model(sample)
+    model = intensity_models.build_population_model(sample, pairing=pairing)
 
     m1_grid = jnp.asarray(m1_grid)
     q_grid = jnp.asarray(q_grid)
@@ -76,12 +83,12 @@ def rate_z_for_one_draw(sample, m1_grid, q_grid, z_grid):
     return dR_dz
 
 
-def pm1_at_z_for_one_draw(sample, m1_grid, q_grid, z0):
+def pm1_at_z_for_one_draw(sample, m1_grid, q_grid, z0, pairing="q"):
     """
     Compute p(m1 | z=z0).
     """
 
-    model = intensity_models.build_population_model(sample)
+    model = intensity_models.build_population_model(sample, pairing=pairing)
 
     m1_grid = jnp.asarray(m1_grid)
     q_grid = jnp.asarray(q_grid)
@@ -98,11 +105,11 @@ def pm1_at_z_for_one_draw(sample, m1_grid, q_grid, z0):
 
     return pm1
 
-def dR_dm1_at_z_for_one_draw(sample, m1_grid, q_grid, z0):
+def dR_dm1_at_z_for_one_draw(sample, m1_grid, q_grid, z0, pairing="q"):
     """
     Differential rate dR/dm1 at fixed z=z0, marginalizing over q only.
     """
-    model = intensity_models.build_population_model(sample)
+    model = intensity_models.build_population_model(sample, pairing=pairing)
 
     m1_grid = jnp.asarray(m1_grid)
     q_grid = jnp.asarray(q_grid)
@@ -116,11 +123,11 @@ def dR_dm1_at_z_for_one_draw(sample, m1_grid, q_grid, z0):
     return jax.vmap(dR_at_m1)(m1_grid)
 
 
-def pm1_at_z_for_one_draw(sample, m1_grid, q_grid, z0):
+def pm1_at_z_for_one_draw(sample, m1_grid, q_grid, z0, pairing="q"):
     """
     Normalized p(m1 | z=z0), proportional to dR/dm1 at fixed z0.
     """
-    dR_dm1 = dR_dm1_at_z_for_one_draw(sample, m1_grid, q_grid, z0)
+    dR_dm1 = dR_dm1_at_z_for_one_draw(sample, m1_grid, q_grid, z0, pairing=pairing)
     return dR_dm1 / jnp.trapezoid(dR_dm1, m1_grid)
 
 def compute_or_load_ppd(cache_file, compute_fn):
@@ -143,7 +150,7 @@ def downsample_per_event(arr, n=200, seed=0):
             out.append(row)
     return np.concatenate(out)
 
-def compute_pq_draws(params, m1_grid, q_grid, z_grid=None, n_draws=100, rng=None):
+def compute_pq_draws(params, m1_grid, q_grid, z_grid=None, n_draws=100, rng=None, pairing="q"):
     rng = np.random.default_rng(rng)
     N = len(next(iter(params.values())))
     draw_idx = rng.choice(N, size=min(n_draws, N), replace=False)
@@ -152,18 +159,18 @@ def compute_pq_draws(params, m1_grid, q_grid, z_grid=None, n_draws=100, rng=None
 
     for i in draw_idx:
         sample = {k: v[i] for k, v in params.items()}
-        pq = pq_for_one_draw(sample, m1_grid, q_grid, z_grid=z_grid)
+        pq = pq_for_one_draw(sample, m1_grid, q_grid, z_grid=z_grid, pairing=pairing)
         pq_draws.append(pq)
 
     return np.array(pq_draws), draw_idx
 
-def pq_for_one_draw(sample, m1_grid, q_grid, z_grid=None):
+def pq_for_one_draw(sample, m1_grid, q_grid, z_grid=None, pairing="q"):
     """
     Compute p(q) for one hyperposterior draw by marginalizing over m1
     and optionally over z.
     """
 
-    model = intensity_models.build_population_model(sample)
+    model = intensity_models.build_population_model(sample, pairing=pairing)
 
     m1_grid = jnp.asarray(m1_grid)
     q_grid  = jnp.asarray(q_grid)
@@ -201,7 +208,7 @@ def pq_for_one_draw(sample, m1_grid, q_grid, z_grid=None):
 
     return pq
 
-def compute_pq_draws(params, m1_grid, q_grid, z_grid=None, n_draws=100, rng=None):
+def compute_pq_draws(params, m1_grid, q_grid, z_grid=None, n_draws=100, rng=None, pairing="q"):
     rng = np.random.default_rng(rng)
     N = len(next(iter(params.values())))
     draw_idx = rng.choice(N, size=min(n_draws, N), replace=False)
@@ -210,7 +217,7 @@ def compute_pq_draws(params, m1_grid, q_grid, z_grid=None, n_draws=100, rng=None
 
     for i in draw_idx:
         sample = {k: v[i] for k, v in params.items()}
-        pq = pq_for_one_draw(sample, m1_grid, q_grid, z_grid=z_grid)
+        pq = pq_for_one_draw(sample, m1_grid, q_grid, z_grid=z_grid, pairing=pairing)
         pq_draws.append(pq)
 
     return np.array(pq_draws), draw_idx
