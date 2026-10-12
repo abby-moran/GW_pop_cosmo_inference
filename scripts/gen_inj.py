@@ -1,4 +1,3 @@
-from astropy.cosmology import Planck18
 import astropy.units as u
 import warnings
 warnings.filterwarnings("ignore", "Wswiglal-redir-stdio")
@@ -9,8 +8,7 @@ import numpy as np
 import pandas as pd
 import jax.numpy as jnp
 import weighting
-import scipy.integrate as sint
-import intensity_models
+import intensity_models_fast as intensity_models
 import scipy
 from scipy.interpolate import RegularGridInterpolator
 import configparser
@@ -94,67 +92,8 @@ detectors = population_parameters.pop('detectors', 'H1').split(',')
 custom_cosmo = intensity_models.FlatwCDMCosmology(population_parameters['h'], population_parameters['Om'], population_parameters['w'], population_parameters['zmax'])
 population_parameters['cosmo'] = custom_cosmo
 print("Using the following custom population_parameters: " + str(population_parameters))
-
-class ZPDF(object):
-    def __init__(self, lam, kappa, zp, zmax, cosmo):
-        self.lam = lam
-        self.kappa = kappa
-        self.zp = zp
-
-        self.zmax = zmax
-        self.cosmo = cosmo
-
-        self.zinterp = np.expm1(np.linspace(np.log(1), np.log(1+self.zmax), 1024))
-        self.norm = 1
-
-        unnorm_pdf = self(self.zinterp)
-        
-        self.norm = 1/np.trapz(unnorm_pdf, self.zinterp)
-        self.pdfinterp = unnorm_pdf * self.norm
-
-        self.cdfinterp = sint.cumtrapz(self.pdfinterp, self.zinterp, initial=0)
-
-    def __call__(self, z):
-        if self.cosmo == 'default':
-            return self.norm*(1+z)**self.lam / (1 + ((1+z)/(1+self.zp))**self.kappa) * Planck18.differential_comoving_volume(z).to(u.Gpc**3/u.sr).value / (1+z)
-        else:
-            return self.norm*(1+z)**self.lam / (1 + ((1+z)/(1+self.zp))**self.kappa) * (self.cosmo.dVCdz(z)) / (1+z)
-
-    def icdf(self, c):
-        return np.interp(c, self.cdfinterp, self.zinterp)
     
 
-class InterpolatedPDF(object):
-    def __init__(self, xs, cdfs):
-        self.xs = xs
-        self.cdfs = cdfs / cdfs[-1]
-        self.pdfs = np.diff(cdfs) / np.diff(xs)
-
-    def __call__(self, x):
-        x = np.atleast_1d(x)
-        i = np.searchsorted(self.xs, x)-1
-
-        return self.pdfs[i]
-    
-    def icdf(self, c):
-        return np.interp(c, self.cdfs, self.xs)
-
-class PowerLawPDF(object):
-    def __init__(self, alpha, a, b):
-        assert alpha > 1
-
-        self.alpha = alpha
-        self.a = a
-        self.b = b
-
-        self.norm = (self.a - (self.a/self.b)**self.alpha*self.b)/(self.a*(self.alpha-1))
-
-    def __call__(self, x):
-        return (self.a/x)**self.alpha/self.a/self.norm
-    
-    def icdf(self, c):
-        return ((self.a**self.alpha*self.b*c + self.a*self.b**self.alpha*(1-c))/(self.a*self.b)**self.alpha)**(1/(1-self.alpha))
-    
 if __name__ == "__main__":
     
     m1_grid  = grid["m1_grid"]
@@ -244,8 +183,8 @@ if __name__ == "__main__":
         
         # Build DataFrame
         df_pd = pd.DataFrame(df_np)
-        cosmo = intensity_models.FlatwCDMCosmology(population_parameters['h'], population_parameters['Om'],
-                                           population_parameters['w'], population_parameters['zmax'])
+        #cosmo = intensity_models.FlatwCDMCosmology(population_parameters['h'], population_parameters['Om'],
+        #                                   population_parameters['w'], population_parameters['zmax'])
         
         df_det = df_pd
         Fp = np.zeros(len(df_det))

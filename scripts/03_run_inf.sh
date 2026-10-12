@@ -1,9 +1,9 @@
 #!/usr/bin/bash
 #SBATCH -p gpu
-#SBATCH --gpus=2
+#SBATCH --gpus=1
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
-#SBATCH --time=0-8
+#SBATCH --time=0-06
 #SBATCH --constraint=h100
 #SBATCH -J CE_nb
 #SBATCH --exclude=workergpu067
@@ -16,4 +16,4 @@ unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/CE_ne_nb.ini
+srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/CE_ne_fullcosmo.ini

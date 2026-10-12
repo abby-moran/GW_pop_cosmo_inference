@@ -12,11 +12,10 @@ echo "submitted gen_inj:     ${jid1}"
 jid2=$(sbatch --parsable "${SCRIPT_DIR}/03_run_inf_cosmonb.sh")
 echo "submitted gen_inj:     ${jid2}"
 
-jid3=$(sbatch --parsable "${SCRIPT_DIR}/03_run_inf_cosmo_noevo.sh")
+jid3=$(sbatch --parsable "${SCRIPT_DIR}/03_run_inf_cosmo_2evo.sh")
 echo "submitted gen_inj:     ${jid1}"
 
  
 echo ""
-echo "Chain submitted. Track with:"
-echo "  squeue -u \$USER -j ${jid1},${jid2}"
+echo "Chain submitted."
 echo ""

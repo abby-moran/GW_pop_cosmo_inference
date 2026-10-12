@@ -225,7 +225,20 @@ if __name__ == "__main__":
 
     sel_samples = pd.read_hdf(sel_file, key='true_parameters')
     ndraw = sel_samples['ndraw'].iloc[0]
+    if len(sel_samples) > 100_000_000:
+        n_original = len(sel_samples)
+        sel_samples = sel_samples.iloc[:100_000_000]
+        ndraw *= len(sel_samples) / n_original
     print(f"selection set: {len(sel_samples)} rows, ndraw={ndraw}")
+
+    dl_c=230.02263275
+    sel_keep  = sel_samples['dl'] < dl_c          # events are rows 0:9000 of the sel file
+    ev_keep = jnp.mean(dls, axis=1) < dl_c
+    sel_samples=sel_samples.iloc[sel_keep]
+    m1s = m1s[ev_keep,:]
+    qs = qs[ev_keep,:]
+    dls = dls[ev_keep,:]
+    pdraws = pdraws[ev_keep,:]
 
     assert np.all(m1s > 0) 
     assert np.all(qs > 0) 
@@ -271,7 +284,7 @@ if __name__ == "__main__":
 
     print(f"NUTS: max_tree_depth={max_tree_depth} dense_mass={dense_mass} " f"target_accept_prob={target_accept_prob}")
     kernel = NUTS(intensity_models.pop_cosmo_model, init_strategy=init_strategy,
-                  max_tree_depth=max_tree_depth, dense_mass=dense_mass, target_accept_prob=target_accept_prob)
+                  max_tree_depth=max_tree_depth, dense_mass=dense_mass, target_accept_prob=target_accept_prob,)
     mcmc = MCMC(kernel, num_warmup=nmcmc, num_samples=nmcmc, num_chains=nchain, chain_method="parallel", progress_bar=True)
     # make sure we get sample stats to check the sampler health post run
     mcmc.run(jax.random.PRNGKey(random_seed), *model_args, use_low_bump=use_low_bump, smooth_tail_edge=smooth_tail_edge, pairing=pairing, **hp_kwargs, **sft_kwargs,

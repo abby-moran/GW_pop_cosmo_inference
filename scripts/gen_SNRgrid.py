@@ -3,25 +3,18 @@ import astropy.units as u
 import warnings
 warnings.filterwarnings("ignore", "Wswiglal-redir-stdio")
 import lal
-import lalsimulation as lalsim
 import numpy as np
-import os.path as op
 import sys
-import pandas as pd
 sys.path.append('../src/')
 import jax.numpy as jnp
 from tqdm import tqdm, trange
 import weighting
 import scipy.integrate as sint
-import intensity_models
-from inspect import getfullargspec
+import intensity_models_fast as intensity_models
 import scipy
 import fisher_snrs
 #import mock_injections
 #from mock_injections import *
-import matplotlib.pyplot as plt
-from scipy.interpolate import RegularGridInterpolator
-from scipy.interpolate import interp1d
 import scipy
 import jax
 import h5py

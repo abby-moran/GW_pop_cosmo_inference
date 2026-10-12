@@ -3,12 +3,11 @@ import astropy.units as u
 import dataclasses
 from dataclasses import dataclass
 import h5py
-import intensity_models
 import jax.numpy as jnp
 import numpy as np
 import os
 import re
-import intensity_models
+import intensity_models_fast as intensity_models
 from inspect import getfullargspec
 from utils import chi_effective_prior_from_isotropic_spins
 import pandas as pd

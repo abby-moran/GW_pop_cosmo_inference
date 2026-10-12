@@ -3,17 +3,17 @@
 #SBATCH --gpus=2
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
-#SBATCH --time=0-03
+#SBATCH --time=0-10
 #SBATCH --constraint=h100
-#SBATCH -J evo7_cosmo
+#SBATCH -J cosmo_noevo
 #SBATCH --exclude=workergpu067
 
+set -euo pipefail
 
 module load cuda/12 cudnn
-
 source /mnt/home/amoran/GW_pop_cosmo_inference/.venv/bin/activate
 unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/confg_realTC5_nocosmo_mt.ini
+srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/CE_ne_2evo.ini
