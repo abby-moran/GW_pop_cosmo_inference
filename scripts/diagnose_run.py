@@ -377,6 +377,9 @@ def truths_from_text(text):
     if "fpl" in tv:
         tv["log_fpl"] = np.log(tv["fpl"])
     tv["log_flow"] = np.log(tv["flow"]) if "flow" in tv else np.log(1e-5)
+    # Peak-height parametrization: log_fpeak = log_flow - log(msigma_low).
+    if "msigma_low" in tv:
+        tv["log_fpeak"] = tv["log_flow"] - np.log(tv["msigma_low"])
     if "Omh2" not in tv and "Om" in tv and "h" in tv:
         tv["Omh2"] = tv["Om"] * tv["h"] ** 2
     return tv
