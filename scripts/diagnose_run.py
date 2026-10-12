@@ -376,6 +376,10 @@ def truths_from_text(text):
         tv["dmbhmax"] = tv["mbhmax"] - tv["mpisn"]
     if "fpl" in tv:
         tv["log_fpl"] = np.log(tv["fpl"])
+        # The tail height is always the join-height ratio r anchored at zref
+        # (notes/2026-10-12-ref-z-tail-anchoring.md), whether the prior
+        # samples it as log_fpl or log_r: same truth in either coordinate.
+        tv["log_r"] = tv["log_fpl"]
     tv["log_flow"] = np.log(tv["flow"]) if "flow" in tv else np.log(1e-5)
     # Peak-height parametrization: log_fpeak = log_flow - log(msigma_low).
     if "msigma_low" in tv:
