@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import zlib
 
 import arviz as az
 import numpy as np
@@ -61,7 +62,7 @@ def _tilt_rows(sel, base, post, targets, nobs, lp_std, use_low_bump, nboot, seed
                                 pairing=pairing)
         # Fresh RNG stream per (fraction, param) but deterministic given seed.
         delta, sd = dr._bootstrap_delta_log_mu(
-            lw_lo, lw_hi, nboot=nboot, seed=seed + hash(name) % 10007)
+            lw_lo, lw_hi, nboot=nboot, seed=seed + zlib.crc32(name.encode()) % 10007)
         noise = nobs * sd
         tilt = nobs * abs(delta)
         ratio = (noise / lp_std) if (lp_std and lp_std > 0) else None
