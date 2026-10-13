@@ -351,7 +351,10 @@ def parse_run_section(run):
         target_accept_prob=run.getfloat("target_accept_prob", fallback=0.8),
         use_low_bump=run.getboolean("use_low_bump", fallback=True),
         smooth_tail_edge=run.getboolean("smooth_tail_edge", fallback=True),
-        pairing=run.get("pairing", fallback="q"),
+        # None when the ini has no key: the pairing is then whatever the .nc
+        # attrs record (see _pairing_of), never today's run_inf.py default,
+        # so a pre-option "mt" chain is not rebuilt as "q".
+        pairing=run.get("pairing", fallback=None),
     )
     if out["pop_config_file"] and str(out["pop_config_file"]).lower() == "none":
         out["pop_config_file"] = None
@@ -861,34 +864,48 @@ def _canonical_pop_sample(base, post_med):
     for k, v in (post_med or {}).items():
         s.setdefault(k, v)
 
-    # Pivot reparam: mpisn_ref at zpivot -> mpisn at z=0.
-    if "mpisn" not in s and "mpisn_ref" in s:
-        zp = float(s.get("zpivot", 0.75))
-        mdot = float(s.get("mpisndot", 0.0))
-        s["mpisn"] = float(s["mpisn_ref"]) - mdot * zp / (1.0 + zp)
-    if "mbhmax" not in s and "mpisn" in s and "dmbhmax" in s:
-        s["mbhmax"] = float(s["mpisn"]) + float(s["dmbhmax"])
-    if "kappa" not in s and "lam" in s and "dkappa" in s:
-        s["kappa"] = float(s["lam"]) + float(s["dkappa"])
-    if "fpl" not in s and "log_fpl" in s:
-        s["fpl"] = float(np.exp(s["log_fpl"]))
-    if "flow" not in s:
-        if "log_flow" in s:
-            s["flow"] = float(np.exp(s["log_flow"]))
-        elif "log_fpeak" in s and "msigma_low" in s:
-            s["flow"] = float(np.exp(s["log_fpeak"]) * s["msigma_low"])
-    if "Om" not in s and "Omh2" in s and "h" in s:
-        s["Om"] = float(s["Omh2"]) / float(s["h"]) ** 2
+    # Same derivations as intensity_models_fast.get_deterministic_parameters
+    # (mpisn from mpisn_ref, mbhmax, kappa, flow, Om, and the tail height
+    # `fpl` from whichever of r / log_r / log_fpl the prior sampled -- on main
+    # all of these are the join-height ratio r, so a log_r chain, which
+    # records r and log_r but no fpl deterministic, still fills the slot).
+    from plotting import canonical_params
+    before = set(s)
+    s = canonical_params(s)
+    # logit_fpl is the one coordinate canonical_params does not cover.
+    if "fpl" not in s and "logit_fpl" in s:
+        s["fpl"] = 1.0 / (1.0 + np.exp(-float(s["logit_fpl"])))
+    for k in set(s) - before:
+        s[k] = float(s[k])
     return s
 
 
-def _pairing_of(idata):
-    """Pairing the chain was sampled under, from its posterior attrs."""
+# mass_model attrs run_inf.py stamps (an absent attr predates the stamp and
+# is the original PISN model).  run_inf_lvk.py stamps lvk_pl2p / lvk_pl2p_mt,
+# whose chains cannot be rebuilt with the PISN model below.
+PISN_FAMILY_MASS_MODELS = ("pisn", "pisn_lvkpair")
+
+
+def _pisn_family(idata):
+    """True when the .nc was sampled with the PISN model (run_inf.py)."""
+    mm = idata.posterior.attrs.get("mass_model")
+    return mm is None or str(mm).strip() in PISN_FAMILY_MASS_MODELS
+
+
+def _pairing_of(idata, ini=None):
+    """Pairing the chain was sampled under: the ini's explicit value when it
+    has one, else what the .nc attrs record (utils.pairing_from_attrs: the
+    run_config_pairing / mass_model stamps, or "mt" for a chain that predates
+    the option).  Resolution is lazy so an LVK-family .nc, whose attrs do not
+    map to a PISN pairing, is not touched unless the ini is silent too."""
+    val = (ini or {}).get("pairing")
+    if val:
+        return str(val).strip()
     from utils import pairing_from_attrs
     return pairing_from_attrs(idata.posterior.attrs)
 
 
-def _sel_log_wts(sel, sample, use_low_bump=True, pairing="q"):
+def _sel_log_wts(sel, sample, use_low_bump=True, pairing=None):
     """Per-row selection log-weights matching pop_cosmo_model's selection path."""
     import jax.numpy as jnp
     import intensity_models_fast as im
@@ -899,6 +916,9 @@ def _sel_log_wts(sel, sample, use_low_bump=True, pairing="q"):
     missing = [k for k in required if k not in sample]
     if missing:
         raise KeyError("incomplete population sample, missing %s" % missing)
+    if pairing is None:
+        raise ValueError("pairing must be resolved (see _pairing_of) before "
+                         "rebuilding the selection weights")
 
     pop = {k: sample[k] for k in (
         "a", "b", "c", "mpisn", "mpisndot", "mbhmax", "sigma", "fpl", "beta",
@@ -979,6 +999,12 @@ def section_selection_tilt(rep, idata, free, truths, nobs, sel_file, ini):
     even when the hinge has comfortable headroom.  Calibrated on
     endO5_fullcosmo_evo7 (sigma truth below the posterior; hinge 2.0x OK).
     """
+    if not _pisn_family(idata):
+        rep.add("monte-carlo", "NOTE", "narrow-feature selection tilt",
+                "mass_model=%r is not a PISN-model chain; this check rebuilds "
+                "the PISN selection weights and is skipped"
+                % idata.posterior.attrs.get("mass_model"))
+        return
     targets = [p for p in NARROW_FEATURE_PARAMS if p in free]
     if not targets:
         rep.add("monte-carlo", "OK", "narrow-feature selection tilt",
@@ -1010,12 +1036,16 @@ def section_selection_tilt(rep, idata, free, truths, nobs, sel_file, ini):
 
     sel = sel_all
     n_use = len(sel)
-    from utils import pairing_from_attrs
 
     use_low_bump = (ini or {}).get("use_low_bump", True)
     # Rebuild with the pairing the chain was sampled under, not the default.
-    pairing = (ini or {}).get("pairing",
-                              pairing_from_attrs(idata.posterior.attrs))
+    try:
+        pairing = _pairing_of(idata, ini)
+    except ValueError as exc:
+        rep.add("monte-carlo", "NOTE", "narrow-feature selection tilt",
+                "insufficient information: cannot resolve the pairing the "
+                "chain was sampled under (%s)" % exc)
+        return
 
     post = idata.posterior
     post_med = _posterior_median_dict(post)
@@ -1228,6 +1258,14 @@ def _eval_point_from_spec(spec, prior, im):
         elif "flow" in sample:
             sample["log_fpeak"] = (float(np.log(sample["flow"]))
                                    - float(np.log(sample["msigma_low"])))
+    # Tail height: `fpl` is the join-height ratio r under every prior name.
+    if "fpl" in sample:
+        if "log_r" in prior and "log_r" not in sample:
+            sample["log_r"] = float(np.log(sample["fpl"]))
+        if "r" in prior and "r" not in sample:
+            sample["r"] = float(sample["fpl"])
+        if "log_fpl" in prior and "log_fpl" not in sample:
+            sample["log_fpl"] = float(np.log(sample["fpl"]))
     sample = im.map_truths_to_prior_coords(sample, prior)
     point = {}
     for k, v in sample.items():
@@ -1295,7 +1333,9 @@ def run_float32_leg(spec_path):
     model_kwargs = dict(
         use_low_bump=bool(spec.get("use_low_bump", True)),
         smooth_tail_edge=bool(spec.get("smooth_tail_edge", True)),
-        pairing=str(spec.get("pairing", "q")),
+        # Resolved by section_float32 (ini value, else the .nc attrs); a
+        # missing key is a bug upstream, not a reason to assume a default.
+        pairing=str(spec["pairing"]),
     )
 
     baselines = spec.get("baselines")
@@ -1418,6 +1458,12 @@ def section_float32(rep, idata, truths, prior_path, pe_file, sel_file, ini, nobs
         rep.add("monte-carlo", "NOTE", "float32 safety",
                 "insufficient information: selection HDF5 not found")
         return
+    if not _pisn_family(idata):
+        rep.add("monte-carlo", "NOTE", "float32 safety",
+                "mass_model=%r is not a PISN-model chain; this check rebuilds "
+                "pop_cosmo_model from intensity_models_fast and is skipped"
+                % idata.posterior.attrs.get("mass_model"))
+        return
 
     post_med = _posterior_median_dict(idata.posterior)
     if not truths and not post_med:
@@ -1427,6 +1473,13 @@ def section_float32(rep, idata, truths, prior_path, pe_file, sel_file, ini, nobs
         return
 
     recenter = "recentering_offset" in idata.posterior.attrs
+    try:
+        pairing = _pairing_of(idata, ini)
+    except ValueError as exc:
+        rep.add("monte-carlo", "NOTE", "float32 safety",
+                "insufficient information: cannot resolve the pairing the "
+                "chain was sampled under (%s)" % exc)
+        return
     spec = dict(
         pe_file=os.path.abspath(pe_file),
         sel_file=os.path.abspath(sel_file),
@@ -1437,7 +1490,7 @@ def section_float32(rep, idata, truths, prior_path, pe_file, sel_file, ini, nobs
         evt_end=(ini or {}).get("evt_end"),
         use_low_bump=(ini or {}).get("use_low_bump", True),
         smooth_tail_edge=(ini or {}).get("smooth_tail_edge", True),
-        pairing=(ini or {}).get("pairing", _pairing_of(idata)),
+        pairing=pairing,
         recenter=recenter,
     )
     print("float32 safety: compiling the model at %s in float32 then float64 "

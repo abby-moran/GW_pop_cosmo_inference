@@ -86,7 +86,14 @@ n_evt = run.getint("n_evt", fallback=10000)
 
 
 smooth_tail_edge=run.getboolean("smooth_tail_edge", fallback=True)
+# Pairing of the *true* population the mock catalog is drawn from.  This
+# script runs before any inference, so there is no .nc to consult: the only
+# authority is the ini, and an absent key must resolve exactly as run_inf.py
+# resolves it for the same ini (fallback "q" there), or the catalog and the
+# model fit to it would use different pairings.  Keep the two in lock-step.
 pairing=run.get("pairing", fallback="q")
+if pairing not in ("mt", "q"):
+    raise ValueError(f"unknown pairing: {pairing!r} (known: 'mt', 'q')")
 def get_mock_obs(df, out_file, cosmo, rho_fun, detection_threshold=8, 
                  jitter_SNR=True, ndet=1, append_tf=False, evt_offset=0,
                  detection_rng=None, mc_scale=None, q_scale=None, th_scale=None, m_min=5, delta_m=1):
