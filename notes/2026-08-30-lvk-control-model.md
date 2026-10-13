@@ -19,15 +19,23 @@ sampling, float32 recentering, output format) identical.
   PISN-only ini keys `use_low_bump` / `smooth_tail_edge` do not exist; the
   branch also had a `tail_anchor` key, which main dropped -- the tail is
   always anchored at zref).  Stamps `posterior.attrs["mass_model"] = "lvk_pl2p"`.
-- `scripts/priors/lvk_gwtc5_control.prior`, 
+- `scripts/priors/lvk_gwtc5_control.prior`,
   `scripts/run_configs/realGWTC5_lvk_control.ini`,
-  `scripts/call_inf_lvk_control.sh` -- real-data GWTC-5 control run (259
+  `scripts/call_inf_lvk_control.sh` (branch launcher, not ported to main;
+  run `uv run python run_inf_lvk.py --config run_configs/realGWTC5_lvk_control.ini`
+  directly from `scripts/`) -- real-data GWTC-5 control run (259
   events, cosmology fixed to Planck; same data symlinks as the
   `realGWTC5_noevo_259ev_*` runs).
 - `scripts/plot_ppd.py` -- dispatches on the `mass_model` attr via the
   `FAMILIES` registry (absent attr = PISN, unchanged behavior).  Both slice
   and `--marginal --lvk` modes work; `plot_trace.py` works unmodified.
-  `plot_corner.py` / `diagnose_run.py` are NOT yet LVK-aware.
+  `diagnose_run.py` detects LVK-family chains from the `mass_model` attr
+  (`_pisn_family`; `PISN_FAMILY_MASS_MODELS = ("pisn", "pisn_lvkpair")`)
+  and skips the PISN-only sections (the ones that rebuild the PISN selection
+  weights) with a NOTE finding instead of failing.  `plot_corner.py` runs on
+  any .nc but its `ORDER` list is PISN-oriented (h, Omh2, w, mpisndot, a, b,
+  c, mpisn, ...): LVK-only parameters (alpha_1/2, mbreak, mpp_*, sigpp_*,
+  f_peaks, ...) are not in it and are silently left out of the corner.
 - `scripts/testing_scripts/test_lvk_model.py` -- validation (float64
   reference for the mass pdf, Zq table accuracy, the selection-consistency
   identity, finite gradients incl. dead events, recentering exactness,
@@ -127,8 +135,10 @@ missing cell (PISN mass + q^beta pairing) exists:
   back to `mt`), forwarded to `recentering_baselines` and `mcmc.run`; stamps
   `posterior.attrs["mass_model"] = "pisn"` (mt) or `"pisn_lvkpair"` (q).
   Absent attr still means pisn downstream, so old .nc's are unaffected.
-- `plot_ppd.py`: FAMILIES entry `pisn_lvkpair` (fast module,
-  `{"pairing": "q"}`).
+- `plot_ppd.py`: FAMILIES entry `pisn_lvkpair` (fast module, pairing
+  `None`: like the `pisn` entry, the pairing is resolved from the .nc attrs
+  via `utils.pairing_from_attrs` in `family_build_kwargs`; only the LVK
+  entries hard-code `"lvk"` / `"mt"`).
 - `scripts/testing_scripts/test_pisn_qpair.py` -- validation (exact algebraic
   recomposition, bit-identity of the mt default, slow-vs-fast for lvk,
   tabulated-vs-direct + the selection identity in both modes, finite
@@ -142,7 +152,9 @@ lvk_control q-exponent prior), `scripts/run_configs/
 realGWTC5_noevo_259ev_qpair.ini` (clone of the refz ini + `pairing = q`;
 `pairing = lvk` on the branch),
 `runs/realGWTC5_noevo_259ev_qpair/` (same data symlinks),
-`scripts/call_inf_qpair.sh` + `scripts/call_plots_qpair.sh`.
+`scripts/call_inf_qpair.sh` + `scripts/call_plots_qpair.sh` (branch
+launchers, not ported to main; run `uv run python run_inf.py --config
+run_configs/realGWTC5_noevo_259ev_qpair.ini` directly from `scripts/`).
 
 The completed 2x2 comparison design:
 

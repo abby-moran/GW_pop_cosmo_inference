@@ -184,9 +184,11 @@ if __name__ == "__main__":
             print(f"h_pivot: remapped {context} {name} -> u_{name} = {u:.6g}")
         return out
 
-    if h_pivot:
+    if h_pivot and "h" in prior and not isinstance(prior["h"], float):
         # Make the support truncation visible: u is sampled with intersection
         # bounds, so at a given h only part of the prior box is reachable.
+        # (Skipped when h is absent or fixed: utils.sample_parameters_from_dict
+        # then raises its canonical "requires the prior to SAMPLE h" error.)
         _h_lo, _h_hi = utils._dist_support_bounds(prior["h"])
         _h_probe = [("h_lo", _h_lo), ("h_hi", _h_hi)]
         try:

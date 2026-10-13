@@ -1,6 +1,6 @@
 # h-free divergences are float32 potential roughness (2026-09-01)
 
-*Ported to main from lvk-powerlaw-z on 2026-10-12.*
+*Ported to main from `lvk-powerlaw-z` on 2026-10-12. Main implements only the ref_z tail anchoring (no `tail_anchor` ini key): the `tail_anchor = ref_z` below is main's only mode, and the branch's `pairing = lvk` is main's `pairing = q`. The h-pivot is exact only inside a truncated joint support; see the 'Support truncation' subsection.*
 
 *Experiments on the real-data h-free run `realGWTC5_noevo_259ev_qpair_h`
 (259 events, PISN + q^beta pairing, `tail_anchor = ref_z`).  Verdict: the
@@ -206,13 +206,21 @@ inside the unconstrained space, exactly the geometry NUTS handles worst
 keeps the potential smooth everywhere in u-space at the price of an explicit
 truncation.
 
-**Current posteriors are far from the truncated band**: mpisn_ref ~ 33 +- 2
-and mp_low ~ 9.9 on the real-data h-free run, against a reachable
-(22.2, 44.7) / (5.42, 13.94) at h = 0.674 and (24.4, 49.1) / (5.8, 15.0) at
-the worst edge h = 0.4 -- more than 4 sigma from either wall -- so the pivot
-and unpivoted posteriors agree (the <= 0.11 sigma comparison above).  Re-check
-the printed ranges whenever a pivoted scale's posterior approaches its prior
-edge or the h prior is widened.
+**The reference point lies inside the truncated band at every h.**  The
+two walls are worst at opposite h-edges: the LOWER reachable bound
+`m_lo (h_hi/h)**gamma` is highest at h = h_lo = 0.4 (mpisn_ref >= 24.37,
+mp_low >= 5.83), and the UPPER reachable bound `m_hi (h_lo/h)**gamma` is
+lowest at h = h_hi = 1.2 (mpisn_ref <= 40.29, mp_low <= 12.86); the table
+above gives both (recomputed from the prior file's bounds mpisn_ref in
+(20, 49.1), mp_low in (5, 15), h in (0.4, 1.2) with gamma = 0.18 / 0.14).
+The `[ref_params]` point of `scripts/run_configs/realGWTC5_noevo_259ev_qpair_h.ini`
+(mpisn_ref = 33.04, mp_low = 9.895, h = 0.674) lies inside every printed
+range, including both worst edges.  No posterior width for the pivoted
+scales is recorded in the repo, so how far the posterior sits from the
+walls is not quantified here; the only sampled evidence is the <= 0.11 sigma
+pivot-vs-unpivoted agreement above.  Re-check the printed ranges whenever a
+pivoted scale's posterior approaches its prior edge or the h prior is
+widened.
 
 ## Incidental warnings
 

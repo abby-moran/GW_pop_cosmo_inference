@@ -10,7 +10,10 @@
 
 # Real GWTC-5 catalog (259 events), LVK 'PowerLaw + 2 Peaks' mass model with a
 # PURE POWER-LAW redshift evolution dN/dV/dt ~ (1+z)^lam (run_inf_lvk.py),
-# cosmology fixed.  Identical data/sampler settings to call_inf_lvk_control.sh,
+# cosmology fixed.  Identical data/sampler settings to
+# run_configs/realGWTC5_lvk_control.ini (whose branch launcher
+# call_inf_lvk_control.sh was not ported to main; run it directly with
+# `uv run python run_inf_lvk.py --config run_configs/realGWTC5_lvk_control.ini`),
 # so that pair differs ONLY in the redshift sector (no kappa/dkappa, no zp).
 # 4 chains on 4 GPUs.
 

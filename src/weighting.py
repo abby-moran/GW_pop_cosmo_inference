@@ -136,27 +136,31 @@ def _check_gwtc45_analytic_prior(file, group_used):
     """Guard: the GWTC-4/5 prior formula above assumes UniformSourceFrame x
     uniform-in-components.  Verify against the file's declared analytic
     priors when present; otherwise warn that the assumption is unchecked."""
-    keys = ('luminosity_distance', 'chirp_mass', 'mass_ratio')
+    expected = (('luminosity_distance', 'UniformSourceFrame'),
+                ('chirp_mass', 'UniformInComponentsChirpMass'),
+                ('mass_ratio', 'UniformInComponentsMassRatio'))
     with h5py.File(file, 'r') as f:
         g = f[group_used]
         a = g['priors']['analytic'] if ('priors' in g and 'analytic' in g['priors']) else None
-        if a is not None and all(k in a for k in keys):
-            ld = _decode_h5_string(a['luminosity_distance'][()])
-            mc = _decode_h5_string(a['chirp_mass'][()])
-            mr = _decode_h5_string(a['mass_ratio'][()])
-            if ('UniformSourceFrame' not in ld
-                    or 'UniformInComponentsChirpMass' not in mc
-                    or 'UniformInComponentsMassRatio' not in mr):
+        missing = []
+        for key, want in expected:
+            if a is None or key not in a:
+                missing.append(key)
+                continue
+            # every key that IS declared gets validated on its own, so a
+            # block lacking e.g. mass_ratio still checks the other two
+            val = _decode_h5_string(a[key][()])
+            if want not in val:
                 raise ValueError(
                     f"Unexpected PE prior in {file} group {group_used!r}: "
-                    f"luminosity_distance = {ld!r}, chirp_mass = {mc!r}, "
-                    f"mass_ratio = {mr!r}. get_samples_from_event assumes "
-                    "UniformSourceFrame x UniformInComponentsChirpMass x "
-                    "UniformInComponentsMassRatio for GWTC-4/5 files.")
-        else:
+                    f"{key} = {val!r} (expected a {want} prior). "
+                    "get_samples_from_event assumes UniformSourceFrame x "
+                    "UniformInComponentsChirpMass x UniformInComponentsMassRatio "
+                    "for GWTC-4/5 files.")
+        if missing:
             what = ('no priors/analytic block' if a is None else
-                    f"priors/analytic lacks {[k for k in keys if k not in a]}")
-            print(f"WARNING: {os.path.basename(file)} group {group_used!r}: {what}; ASSUMING the bilby UniformSourceFrame(Planck15_LAL) x uniform-in-components PE prior.")
+                    f"priors/analytic lacks {missing}")
+            print(f"WARNING: {os.path.basename(file)} group {group_used!r}: {what}; ASSUMING the bilby UniformSourceFrame(Planck15_LAL) x uniform-in-components PE prior for {missing}.")
 
 
 
