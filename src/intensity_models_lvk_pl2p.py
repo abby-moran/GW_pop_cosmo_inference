@@ -118,7 +118,8 @@ def log_smoothed_mixture(m, log_m, alpha_1, alpha_2, mbreak, mpp_1, sigpp_1,
 
 
 # LogQNorm (the tabulated q-normalization Zq(m1)) moved to
-# intensity_models_fast, where the PISN model's pairing="lvk" mode also needs
+# intensity_models_fast, where the PISN model's pairing="q" mode (main's name
+# for the normalized q^beta pairing that this module calls "lvk") also needs
 # it; imported above so this module's API is unchanged.
 
 
@@ -170,7 +171,8 @@ class LogDNDMDQDV_LVK(object):
     """LVK PowerLaw + 2 Peaks intensity.
 
     Two pairing conventions, selected by the STATIC ``pairing`` flag (a plain
-    Python string, never traced -- like ``tail_anchor`` in the fast module):
+    Python string, never traced -- like ``pairing`` in the fast module, whose
+    PISN model names the same two conventions "q" and "mt"):
 
     pairing = "lvk" (default, the LVK convention):
         log dN/dm1 dq dV dt = log f(m1) + beta log q + log S(q m1)

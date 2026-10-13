@@ -1,5 +1,7 @@
 # LVK "PowerLaw + 2 Peaks" control model (2026-08-30)
 
+*Ported to main from `lvk-powerlaw-z` on 2026-10-12. On main the PISN model's q^beta pairing is named `pairing = q` (the branch's `lvk`), run_inf.py's fallback is `q`, and the LVK module lives in `src/intensity_models_lvk_pl2p.py`.*
+
 Infrastructure for control runs with an LVK-like mass model -- the GWTC-5
 Default "PowerLaw + 2 Peaks" (arXiv 2605.27226) ignoring spins -- swapped in
 for the PISN model, with everything else (cosmology inference, Madau-Dickinson
@@ -14,8 +16,9 @@ sampling, float32 recentering, output format) identical.
   machinery from `intensity_models_fast` unchanged; only the mass intensity is
   new.  Zero edits to `intensity_models_fast.py`.
 - `scripts/run_inf_lvk.py` -- entry point (light copy of `run_inf.py`; the
-  PISN-only ini keys `use_low_bump` / `smooth_tail_edge` / `tail_anchor` do
-  not exist).  Stamps `posterior.attrs["mass_model"] = "lvk_pl2p"`.
+  PISN-only ini keys `use_low_bump` / `smooth_tail_edge` do not exist; the
+  branch also had a `tail_anchor` key, which main dropped -- the tail is
+  always anchored at zref).  Stamps `posterior.attrs["mass_model"] = "lvk_pl2p"`.
 - `scripts/priors/lvk_gwtc5_control.prior`, 
   `scripts/run_configs/realGWTC5_lvk_control.ini`,
   `scripts/call_inf_lvk_control.sh` -- real-data GWTC-5 control run (259
@@ -106,34 +109,38 @@ missing cell (PISN mass + q^beta pairing) exists:
 
 - `intensity_models_fast.LogDNDMDQDV` / `intensity_models.LogDNDMDQDV`
   (slow twin), `build_population_model` and `pop_cosmo_model` take
-  `pairing = "mt"` (default, the original total-mass pairing, bit-identical
-  to before) or `"lvk"`:
+  `pairing = "mt"` (the original total-mass pairing, bit-identical to
+  before) or `"q"` (the normalized q^beta pairing; the branch named this
+  mode `"lvk"` and made `"mt"` the default -- on main the default is `"q"`):
   log_dN = log_dndm(m1,z) + beta log q + log S(q m1 | mbh_min, delta_m)
   - log Zq(m1) + log_dndv(z) - log_norm -- no second mass-function factor,
   no + log(m1) Jacobian; beta becomes the q exponent.  `LogQNorm` moved from
   `intensity_models_lvk_pl2p` into `intensity_models_fast` (the lvk module now
   imports it) so there is ONE Zq implementation; one instance per model
   object serves the event term, the selection term, `_normalize` and the PPD
-  slices alike.  In the tabulated path the "lvk" branch of the `_log_weights`
-  closure does ONE mass-table lookup (m1 only) plus the exact q terms; the
+  slices alike.  In the tabulated path the `_log_weights`
+  closure's `"q"` branch does ONE mass-table lookup (m1 only) plus the exact q terms; the
   closure serves events and selection, so the tabulated-selection-consistency
   invariant holds by construction (verified as an identity).  The Zq lookup
   stays on the plain replica-trick backward (not `_linearize_table`).
-- `run_inf.py`: ini key `pairing` (default mt), forwarded to
-  `recentering_baselines` and `mcmc.run`; stamps
-  `posterior.attrs["mass_model"] = "pisn"` (mt) or `"pisn_lvkpair"` (lvk).
+- `run_inf.py`: ini key `pairing` (fallback `q` on main; the branch fell
+  back to `mt`), forwarded to `recentering_baselines` and `mcmc.run`; stamps
+  `posterior.attrs["mass_model"] = "pisn"` (mt) or `"pisn_lvkpair"` (q).
   Absent attr still means pisn downstream, so old .nc's are unaffected.
 - `plot_ppd.py`: FAMILIES entry `pisn_lvkpair` (fast module,
-  `{"pairing": "lvk"}`).
+  `{"pairing": "q"}`).
 - `scripts/testing_scripts/test_pisn_qpair.py` -- validation (exact algebraic
   recomposition, bit-identity of the mt default, slow-vs-fast for lvk,
   tabulated-vs-direct + the selection identity in both modes, finite
-  potential/grads under all three tail_anchor modes).
+  potential/grads under all three of the branch's tail_anchor modes;
+  branch-historical -- main has only the zref anchoring and did not port
+  this test).
 
 Run definitions: `scripts/priors/real_dat_noevo_qpair_r.prior` (copy of
 `real_dat_noevo_fullsel_r.prior` with ONLY `beta = Uniform(-4, 7)`, the
 lvk_control q-exponent prior), `scripts/run_configs/
-realGWTC5_noevo_259ev_qpair.ini` (clone of the refz ini + `pairing = lvk`),
+realGWTC5_noevo_259ev_qpair.ini` (clone of the refz ini + `pairing = q`;
+`pairing = lvk` on the branch),
 `runs/realGWTC5_noevo_259ev_qpair/` (same data symlinks),
 `scripts/call_inf_qpair.sh` + `scripts/call_plots_qpair.sh`.
 

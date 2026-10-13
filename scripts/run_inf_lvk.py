@@ -1,9 +1,10 @@
 """LVK-control counterpart of run_inf.py: identical data handling, sampler
 setup, and output format, but with the GWTC-5 Default "PowerLaw + 2 Peaks"
 mass model (intensity_models_lvk_pl2p) instead of the PISN model.  The PISN-only
-options (use_low_bump, smooth_tail_edge, tail_anchor) do not exist here.
-The optional ini key `pairing` ("lvk" default, or "mt") selects the pairing
-convention: "mt" pairs the LVK mass function the way the PISN model does
+options (use_low_bump, smooth_tail_edge) do not exist here; the tail is
+always anchored at zref on main.  The optional ini key `pairing` ("lvk"
+default, or "mt") selects the pairing convention (this module's own names;
+the PISN model / run_inf.py call the same q^beta pairing "q"): "mt" pairs the LVK mass function the way the PISN model does
 (total-mass power law), for the mass-model vs pairing-function control."""
 import os
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'

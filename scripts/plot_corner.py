@@ -58,7 +58,7 @@ ORDER = [
 
 # Bump-amplitude coordinates that are alternatives for the same degree of
 # freedom.  Sampling log_fpeak makes the model record log_flow as a *varying*
-# deterministic (intensity_models_fast.py:1181), so both are present and
+# deterministic (intensity_models_fast.get_deterministic_parameters), so both are present and
 # non-constant in the posterior; plotting both would duplicate one parameter
 # and invent a perfect correlation.  When the sampled coordinate is present,
 # drop its aliases.  Same table as scripts/diagnose_run.py.

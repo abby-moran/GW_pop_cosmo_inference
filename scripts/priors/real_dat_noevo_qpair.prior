@@ -1,5 +1,5 @@
 # PISN mass function + LVK-style normalized q^beta pairing (run with
-# pairing = lvk in the run config).  Copy of real_dat_noevo_fullsel.prior
+# pairing = q in the run config; ini option -- the branch called this lvk).  Copy of real_dat_noevo_fullsel.prior
 # with ONLY the beta prior changed: beta is now the q exponent, not the
 # total-mass exponent, and gets the SAME Uniform(-4, 7) prior as the finished
 # realGWTC5_lvk_control run -- so the PISN+q^beta and LVK+q^beta runs differ

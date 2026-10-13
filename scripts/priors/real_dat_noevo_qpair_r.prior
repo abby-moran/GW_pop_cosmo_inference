@@ -1,5 +1,5 @@
 # PISN mass function + LVK-style normalized q^beta pairing (run with
-# pairing = lvk in the run config).  Copy of real_dat_noevo_fullsel_r.prior
+# pairing = q in the run config; ini option -- the branch called this lvk).  Copy of real_dat_noevo_fullsel_r.prior
 # with ONLY the beta prior changed: beta is now the q exponent, not the
 # total-mass exponent, and gets the SAME Uniform(-4, 7) prior as the finished
 # realGWTC5_lvk_control run -- so the PISN+q^beta and LVK+q^beta runs differ
@@ -29,8 +29,8 @@ delta_m = 1.6
 mp_low = TruncatedNormal(9.0, 2.0, low=5.0, high=15.0)
 msigma_low = TruncatedNormal(3.0, 2.0, low=0.5, high=5.0)
 log_fpeak = Uniform(np.log(1e-3), np.log(4))
-# Height-anchored tail (run with tail_anchor = ref_z or per_z): r is the
-# tail/continuum height ratio at the join, capped at r_max = 1; fpl becomes a
+# Height-anchored tail (anchored at zref -- main's only mode): log_r is the
+# join-height ratio r, the tail/continuum height ratio at the join, capped at r_max = 1; fpl becomes a
 # derived parameter.  See notes/2026-08-29-height-capped-tail-parametrization.md.
 log_r = Uniform(np.log(1e-2), 0.0)
 zpivot = 0.75
