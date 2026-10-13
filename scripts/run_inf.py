@@ -6,6 +6,7 @@ sys.path.append('../src/')
 import intensity_models_fast as intensity_models
 import numpy as np
 import pandas as pd
+import utils
 from utils import get_priors_from_file, warn_if_bump_too_broad, warn_log_flow_deprecated
 import arviz as az
 import configparser
@@ -109,9 +110,14 @@ smooth_tail_edge=run.getboolean("smooth_tail_edge", fallback=True)
 pairing=run.get("pairing", fallback="q")
 # Two-scale h-pivot reparametrization (`h_pivot = true`, default false):
 # samples flat u_mp_low / u_mpisn_ref and derives mp_low = u_mp_low * h**-g1,
-# mpisn_ref = u_mpisn_ref * h**-g2 with a factor restoring the original prior;
-# exact change of variables (posterior unchanged, ~2x ESS(h)); requires a
-# prior that samples h.  See notes/2026-09-01-h-divergences-float32.md.
+# mpisn_ref = u_mpisn_ref * h**-g2 with a factor restoring the original prior
+# (~2x ESS(h)); requires a prior that samples h.  CAVEAT: the change of
+# variables is exact only INSIDE a truncated joint (m, h) support -- the
+# u-bounds are the intersection over h of the mapped prior box, so at a given
+# h only m in [m_lo (h_hi/h)**g, m_hi (h_lo/h)**g] is reachable (shrinking
+# towards the h-prior edges; the effective ranges are printed below so the
+# truncation shows in every run log).  See
+# notes/2026-09-01-h-divergences-float32.md, "Support truncation".
 h_pivot=run.getboolean("h_pivot", fallback=False)
 h_pivot_gammas={"mp_low": run.getfloat("h_pivot_gamma_mp_low", fallback=0.14),
                 "mpisn_ref": run.getfloat("h_pivot_gamma_mpisn_ref", fallback=0.18)}
@@ -177,6 +183,29 @@ if __name__ == "__main__":
             out[f"u_{name}"] = jnp.asarray(u)
             print(f"h_pivot: remapped {context} {name} -> u_{name} = {u:.6g}")
         return out
+
+    if h_pivot:
+        # Make the support truncation visible: u is sampled with intersection
+        # bounds, so at a given h only part of the prior box is reachable.
+        _h_lo, _h_hi = utils._dist_support_bounds(prior["h"])
+        _h_probe = [("h_lo", _h_lo), ("h_hi", _h_hi)]
+        try:
+            _h_probe.insert(1, ("h median", float(prior["h"].icdf(0.5))))
+        except Exception:  # no icdf on this h distribution; skip the median
+            pass
+        for name, gamma in h_pivot_gammas.items():
+            if name not in prior or isinstance(prior[name], float):
+                continue
+            _u_lo, _u_hi = utils.h_pivot_u_bounds(prior[name], prior["h"],
+                                                  gamma, name=name)
+            _m_lo, _m_hi = utils._dist_support_bounds(prior[name])
+            print(f"h_pivot: u_{name} ~ Uniform({_u_lo:.4f}, {_u_hi:.4f}), "
+                  f"gamma = {gamma}; prior box {name} in ({_m_lo:g}, {_m_hi:g})")
+            for label, hval in _h_probe:
+                _lo, _hi = utils.h_pivot_effective_m_range(
+                    prior[name], prior["h"], gamma, hval)
+                print(f"h_pivot: effective {name} range at {label} = "
+                      f"{hval:.4f}: ({_lo:.3f}, {_hi:.3f})")
 
     if h_pivot and truth_params:
         truth_params = _h_pivot_remap(truth_params, "truth/init params")

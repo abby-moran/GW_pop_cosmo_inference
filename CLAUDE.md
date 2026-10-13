@@ -38,8 +38,10 @@ This file keeps agent-facing guidance brief. Project overview, science backgroun
   - `mp_low = u_mp_low * h^-0.14` and `mpisn_ref = u_mpisn_ref * h^-0.18`
     when the run ini sets `h_pivot = true` (ini-driven, NOT prior-driven:
     the prior file keeps its plain `mp_low`/`mpisn_ref` lines and the model
-    swaps them for flat `u_*` sites at runtime; exact reparametrization,
-    requires a sampled `h`.  See `notes/2026-09-01-h-divergences-float32.md`)
+    swaps them for flat `u_*` sites at runtime; requires a sampled `h`.
+    Exact change of variables inside a truncated joint support: `u` stays
+    in-bounds for every `h`, so the mass support shrinks near the h-prior
+    edges -- see `notes/2026-09-01-h-divergences-float32.md`)
 - Prefer sampling `Omh2 = Om*h^2` over `Om` whenever matter density is free:
   it is much less degenerate with `h`.
 - The low-mass Gaussian bump is for narrow features only: keep `msigma_low`

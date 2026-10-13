@@ -1236,8 +1236,10 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         Makes the population density continuous at the edge
         Default True (set False for old behavior)
     - h_pivot, h_pivot_gammas: two-scale h-pivot reparametrization of the
-        sampled mp_low / mpisn_ref sites (exact change of variables handled in
-        utils.sample_parameters_from_dict; posterior unchanged, ~2x ESS(h)).
+        sampled mp_low / mpisn_ref sites (change of variables handled in
+        utils.sample_parameters_from_dict; ~2x ESS(h)).  Exact only inside a
+        truncated joint (m, h) support: u keeps intersection bounds, so the
+        reachable mass range shrinks towards the h-prior edges.
         See notes/2026-09-01-h-divergences-float32.md.
     - loglike_ref, log_mu_sel_ref: float32 recentering baselines
         Default None: no recentering, bit-identical to the previous behaviour.

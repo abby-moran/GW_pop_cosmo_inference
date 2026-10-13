@@ -489,11 +489,25 @@ def _dist_support_bounds(d):
 def h_pivot_u_bounds(m_dist, h_dist, gamma, name=""):
     """Uniform bounds for the h-pivot auxiliary variable ``u = m * h**gamma``.
 
-    The derived value ``m = u * h**-gamma`` must stay inside the original
-    truncated support [m_lo, m_hi] for EVERY h in the h prior's support
-    [h_lo, h_hi]; with gamma > 0 that means
+    INTERSECTION bounds: the derived value ``m = u * h**-gamma`` must stay
+    inside the original truncated support [m_lo, m_hi] for EVERY h in the h
+    prior's support [h_lo, h_hi]; with gamma > 0 that means
     ``u_lo = m_lo * h_hi**gamma``, ``u_hi = m_hi * h_lo**gamma``.
     Computed at runtime from the actual prior objects, never hardcoded.
+
+    Consequence (deliberate, see notes/2026-09-01-h-divergences-float32.md,
+    "Support truncation"): because NUTS samples u through a bounded
+    transform, at a given h the reachable m is only
+    ``[m_lo * (h_hi/h)**gamma, m_hi * (h_lo/h)**gamma]`` (see
+    ``h_pivot_effective_m_range``), a strict subset of [m_lo, m_hi] that
+    coincides with it at no single h and shrinks towards the h-prior edges.
+    The joint (m, h) support is therefore TRUNCATED to the region where u
+    stays in-bounds for all h; inside that region the change of variables is
+    exact.  The alternative -- union bounds ``m_lo*h_lo**gamma``,
+    ``m_hi*h_hi**gamma`` -- would keep the full box but put hard -inf prior
+    walls (from ``prior[m].log_prob``) INSIDE the unconstrained u-space,
+    which is worse for NUTS; so the intersection is kept and the truncation
+    is made visible instead (run_inf.py prints the effective ranges).
     """
     gamma = float(gamma)
     if not gamma > 0:
@@ -519,25 +533,51 @@ def h_pivot_u_bounds(m_dist, h_dist, gamma, name=""):
     return u_lo, u_hi
 
 
+def h_pivot_effective_m_range(m_dist, h_dist, gamma, h):
+    """Reachable range of the pivoted mass scale m at a given h under the
+    intersection u-bounds of ``h_pivot_u_bounds``.
+
+    Returns ``(m_lo_eff, m_hi_eff) = (u_lo * h**-gamma, u_hi * h**-gamma)
+    = (m_lo * (h_hi/h)**gamma, m_hi * (h_lo/h)**gamma)``; pure numpy, for
+    run logs and tests.  ``h`` may be a scalar or an array.  The range equals
+    the prior box [m_lo, m_hi] at no h: its lower edge touches m_lo only at
+    h = h_hi and its upper edge touches m_hi only at h = h_lo.
+    """
+    u_lo, u_hi = h_pivot_u_bounds(m_dist, h_dist, gamma)
+    h = np.asarray(h, dtype=float)
+    return u_lo * h ** (-float(gamma)), u_hi * h ** (-float(gamma))
+
+
 def sample_parameters_from_dict(prior, grid_params=None, h_pivot=False,
                                 h_pivot_gammas=None):
     """
     grid_params: optional dict of {param_name: jnp.array of grid values}
     e.g. {'h': jnp.array([0.60, 0.65, 0.674, 0.70, 0.75])}
 
-    h_pivot: two-scale h-pivot reparametrization (exact change of variables;
-    see notes/2026-09-01-h-divergences-float32.md).  For each pivoted mass
+    h_pivot: two-scale h-pivot reparametrization (see
+    notes/2026-09-01-h-divergences-float32.md).  For each pivoted mass
     scale m in {mp_low, mpisn_ref} that the prior SAMPLES, replaces the
     m sample site with a flat auxiliary site ``u_m ~ Uniform(u_lo, u_hi)``
-    (bounds from ``h_pivot_u_bounds``), records
+    (intersection bounds from ``h_pivot_u_bounds``), records
     ``m = u_m * h**-gamma`` as a deterministic under the ORIGINAL name, and
     adds a ``numpyro.factor`` carrying the original prior log-density at the
     derived value plus the Jacobian, ``prior[m].log_prob(m) - gamma*log(h)``.
-    The flat u density is constant, so the joint posterior over
-    (h, mp_low, mpisn_ref, ...) is exactly the untransformed one; only the
-    sampling coordinates change (decorrelates the mass scales from h,
-    ~doubles ESS(h)).  Requires a sampled h; a pivoted name that is a fixed
-    float in the prior is skipped silently.
+    The flat u density is constant, so the change of variables is exact
+    and the joint posterior over (h, mp_low, mpisn_ref, ...) equals the
+    untransformed one INSIDE the region where u stays in-bounds for every h
+    -- and that is a truncation of the original joint support: at a given h
+    only ``m in [m_lo*(h_hi/h)**gamma, m_hi*(h_lo/h)**gamma]`` is reachable
+    (``h_pivot_effective_m_range``), a strict subset of the prior box
+    [m_lo, m_hi] that shrinks towards the h-prior edges (e.g. for the
+    qpair_h prior at h = 0.674: mpisn_ref in (22.2, 44.7) instead of
+    (20, 49.1), mp_low in (5.42, 13.94) instead of (5, 15)).  Posterior mass
+    the untransformed model would put outside that band is cut off, by
+    design (union bounds would put -inf walls inside the unconstrained
+    space); check the run log's "h_pivot: effective ... range" lines against
+    the posterior.  Only the sampling coordinates change otherwise
+    (decorrelates the mass scales from h, ~doubles ESS(h)).  Requires a
+    sampled h; a pivoted name that is a fixed float in the prior is skipped
+    silently.
 
     h_pivot_gammas: optional {name: gamma} overriding H_PIVOT_DEFAULT_GAMMAS.
     """

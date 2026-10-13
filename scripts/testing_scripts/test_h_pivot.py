@@ -22,11 +22,21 @@ Checks, in order:
      names, u_mp_low / u_mpisn_ref as the new sample sites.
   5. finite potential + gradients (incl. d/du_* and d/dh) at the remapped
      reference point with the pivot on (tail height anchored at zref)
+  6. SUPPORT TRUNCATION (documented property, not a surprise): the
+     intersection u-bounds make the reachable m at a given h
+     [m_lo (h_hi/h)^g, m_hi (h_lo/h)^g]; h_pivot_effective_m_range must
+     match that formula at h_lo / h_hi and the range over h_lo..h_hi must
+     be a subset of the prior box (touching m_lo only at h_hi and m_hi only
+     at h_lo).  Section 4's density identity cannot see this because
+     dist.Uniform.log_prob is finite outside its support without
+     validate_args.
 
 Run from scripts/:
     uv run python testing_scripts/test_h_pivot.py
 """
+import os
 import sys
+import tempfile
 
 sys.path.append("../src/")
 
@@ -40,7 +50,8 @@ from numpyro.infer.util import initialize_model, log_density
 
 import intensity_models as slow
 import intensity_models_fast as fast
-from utils import (H_PIVOT_DEFAULT_GAMMAS, get_priors_from_file,
+from utils import (H_PIVOT_DEFAULT_GAMMAS, _dist_support_bounds,
+                   get_priors_from_file, h_pivot_effective_m_range,
                    h_pivot_u_bounds, sample_parameters_from_dict)
 from bench_model import make_synthetic_data, build_prior, TRUTH
 
@@ -48,6 +59,7 @@ FAILURES = []
 G1 = H_PIVOT_DEFAULT_GAMMAS["mp_low"]
 G2 = H_PIVOT_DEFAULT_GAMMAS["mpisn_ref"]
 QPAIR_H_PRIOR = "priors/real_dat_noevo_qpair_h_r.prior"
+TMPDIR = tempfile.mkdtemp(prefix="h_pivot_test_")
 
 
 def check(name, ok, detail=""):
@@ -130,7 +142,7 @@ def _trace(model, model_args, kwargs, subs, seed=0):
 
 def test_default_bit_identity(data):
     print("\n=== 3. h_pivot=False is bit-identical to the default ===")
-    prior = build_prior(True, "/tmp/h_pivot_prior_default.prior")
+    prior = build_prior(True, os.path.join(TMPDIR, "h_pivot_prior_default.prior"))
     model_args = (data["m1s_det"], data["qs"], data["dls"], data["log_pdraw"],
                   data["m1s_det_sel"], data["qs_sel"], data["dls_sel"],
                   data["pdraw_sel"], data["Ndraw"], prior)
@@ -227,7 +239,7 @@ def test_density_identity_fast(data):
 
 def test_density_identity_slow(data):
     print("\n=== 4b. density identity: slow twin, bench prior (mp_low only) ===")
-    prior = build_prior(True, "/tmp/h_pivot_prior_slow.prior")
+    prior = build_prior(True, os.path.join(TMPDIR, "h_pivot_prior_slow.prior"))
     model_args = (data["m1s_det"], data["qs"], data["dls"], data["log_pdraw"],
                   data["m1s_det_sel"], data["qs_sel"], data["dls_sel"],
                   data["pdraw_sel"], data["Ndraw"], prior)
@@ -285,6 +297,44 @@ def test_gradients(data):
               f"|dU/dh| = {abs(float(grads['h'])):.3g}")
 
 
+def test_support_truncation():
+    print("\n=== 6. support truncation of the intersection u-bounds ===")
+    qh = get_priors_from_file(QPAIR_H_PRIOR)
+    h_d = qh["h"]
+    h_lo, h_hi = _dist_support_bounds(h_d)
+    hs = np.linspace(h_lo, h_hi, 101)
+    for name, gamma in (("mp_low", G1), ("mpisn_ref", G2)):
+        m_lo, m_hi = _dist_support_bounds(qh[name])
+        for label, h in (("h_lo", h_lo), ("h_hi", h_hi), ("h=0.674", 0.674)):
+            lo, hi = h_pivot_effective_m_range(qh[name], h_d, gamma, h)
+            exp_lo = m_lo * (h_hi / h) ** gamma
+            exp_hi = m_hi * (h_lo / h) ** gamma
+            check(f"{name}: effective range at {label} matches the formula",
+                  np.allclose([lo, hi], [exp_lo, exp_hi], rtol=1e-12),
+                  f"({lo:.3f}, {hi:.3f}) vs box ({m_lo:g}, {m_hi:g})")
+        lo, hi = h_pivot_effective_m_range(qh[name], h_d, gamma, hs)
+        check(f"{name}: reachable range over h_lo..h_hi is a subset of the "
+              f"prior box", bool(np.all(lo >= m_lo - 1e-9)
+                                 and np.all(hi <= m_hi + 1e-9)),
+              f"min lo {lo.min():.3f} >= {m_lo:g}, max hi {hi.max():.3f} <= {m_hi:g}")
+        check(f"{name}: the box is NOT fully reachable at any h (strict "
+              f"subset everywhere)",
+              bool(np.all((lo > m_lo + 1e-9) | (hi < m_hi - 1e-9))))
+        check(f"{name}: lower edge touches m_lo only at h_hi, upper edge "
+              f"touches m_hi only at h_lo",
+              np.isclose(lo[-1], m_lo) and np.all(lo[:-1] > m_lo)
+              and np.isclose(hi[0], m_hi) and np.all(hi[1:] < m_hi))
+    # the worked numbers quoted in the note / docstrings
+    lo, hi = h_pivot_effective_m_range(qh["mpisn_ref"], h_d, G2, 0.674)
+    check("mpisn_ref at h = 0.674 is (22.19, 44.70), not (20, 49.1)",
+          np.allclose([lo, hi], [22.19, 44.70], atol=5e-3),
+          f"got ({lo:.3f}, {hi:.3f})")
+    lo, hi = h_pivot_effective_m_range(qh["mp_low"], h_d, G1, 0.674)
+    check("mp_low at h = 0.674 is (5.42, 13.94), not (5, 15)",
+          np.allclose([lo, hi], [5.42, 13.94], atol=5e-3),
+          f"got ({lo:.3f}, {hi:.3f})")
+
+
 if __name__ == "__main__":
     test_u_bounds()
     test_config_errors()
@@ -293,6 +343,7 @@ if __name__ == "__main__":
     test_density_identity_fast(data)
     test_density_identity_slow(data)
     test_gradients(data)
+    test_support_truncation()
     print()
     if FAILURES:
         print(f"FAILED ({len(FAILURES)}):")

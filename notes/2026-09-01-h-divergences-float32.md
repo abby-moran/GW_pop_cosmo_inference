@@ -1,5 +1,7 @@
 # h-free divergences are float32 potential roughness (2026-09-01)
 
+*Ported to main from lvk-powerlaw-z on 2026-10-12.*
+
 *Experiments on the real-data h-free run `realGWTC5_noevo_259ev_qpair_h`
 (259 events, PISN + q^beta pairing, `tail_anchor = ref_z`).  Verdict: the
 ~2.9% divergence rate is caused by float32 roughness of the recentered
@@ -119,7 +121,9 @@ comparisons mislead.
 ## The two-scale h-pivot (verified; ESS lever only)
 
 Doubles ESS(h) per leapfrog at unchanged cost; adopt only if h-mixing ever
-becomes the bottleneck.  Exact spec, preserving the posterior *exactly*:
+becomes the bottleneck.  Exact spec, preserving the posterior *exactly*
+inside the truncated joint support described under "Support truncation"
+below:
 
 - Sample `u_mp_low ~ Uniform(5.1293, 13.1941)` and
   `u_mpisn_ref ~ Uniform(20.6672, 41.6344)` instead of `mp_low`,
@@ -159,6 +163,56 @@ names (posterior files unchanged apart from the new `u_*` sample sites), and
 `testing_scripts/test_h_pivot.py` (density identity re-verified at 2e-4
 spread across h in [0.45, 1.15] on synthetic data, both twins; runtime
 u-bounds; error paths; pivot-off bit-identity).
+
+### Support truncation (2026-10-12)
+
+The productionized pivot is NOT a posterior-preserving reparametrization
+over the whole prior box; it is exact only inside a truncated joint
+(m, h) support.  `utils.h_pivot_u_bounds` uses the INTERSECTION over h of
+the mapped support,
+
+    u_lo = m_lo * h_hi**gamma,   u_hi = m_hi * h_lo**gamma,
+
+so that `m = u * h**-gamma` stays inside `[m_lo, m_hi]` for every h in
+`[h_lo, h_hi]`.  NUTS samples u through a bounded transform, so at a given h
+the reachable m is
+
+    m in [ m_lo * (h_hi/h)**gamma ,  m_hi * (h_lo/h)**gamma ]
+
+(`utils.h_pivot_effective_m_range`), a strict subset of `[m_lo, m_hi]` that
+touches `m_lo` only at `h = h_hi` and `m_hi` only at `h = h_lo`.  Worked
+numbers for `scripts/priors/real_dat_noevo_qpair_h_r.prior`
+(h in [0.4, 1.2], gamma = 0.18 / 0.14):
+
+| h | mpisn_ref reachable (box (20, 49.1)) | mp_low reachable (box (5, 15)) |
+|---|---|---|
+| 0.4 (h_lo) | (24.37, 49.10) | (5.83, 15.00) |
+| 0.674 | (22.19, 44.70) | (5.42, 13.94) |
+| 1.2 (h_hi) | (20.00, 40.29) | (5.00, 12.86) |
+
+The "density identity verified to 2e-5" above is correct but only probes
+interior points: `dist.Uniform.log_prob` without `validate_args` is finite
+outside its support, so a log-density comparison cannot see the walls.  The
+truncation is now a documented, tested property (`test_h_pivot.py` section 6)
+and `run_inf.py` prints the effective ranges at h_lo, the h-prior median and
+h_hi in every `h_pivot = true` run log.
+
+**Why the intersection bounds were kept.**  Union bounds
+(`u_lo = m_lo*h_lo**gamma`, `u_hi = m_hi*h_hi**gamma`) would restore the
+full box, but then for most h part of the u-interval maps OUTSIDE
+`[m_lo, m_hi]`, where the `prior[m].log_prob` factor is -inf: hard walls
+inside the unconstrained space, exactly the geometry NUTS handles worst
+(divergences/rejections at the wall, no gradient signal).  The intersection
+keeps the potential smooth everywhere in u-space at the price of an explicit
+truncation.
+
+**Current posteriors are far from the truncated band**: mpisn_ref ~ 33 +- 2
+and mp_low ~ 9.9 on the real-data h-free run, against a reachable
+(22.2, 44.7) / (5.42, 13.94) at h = 0.674 and (24.4, 49.1) / (5.8, 15.0) at
+the worst edge h = 0.4 -- more than 4 sigma from either wall -- so the pivot
+and unpivoted posteriors agree (the <= 0.11 sigma comparison above).  Re-check
+the printed ranges whenever a pivoted scale's posterior approaches its prior
+edge or the h prior is widened.
 
 ## Incidental warnings
 

@@ -442,7 +442,9 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     nsel = m1s_det_sel.shape[0]
 
     # h_pivot, h_pivot_gammas: two-scale h-pivot reparametrization of the
-    # sampled mp_low / mpisn_ref sites; see utils.sample_parameters_from_dict
+    # sampled mp_low / mpisn_ref sites; exact only inside a truncated joint
+    # (m, h) support (intersection u-bounds: the reachable mass range shrinks
+    # towards the h-prior edges).  See utils.sample_parameters_from_dict
     # and notes/2026-09-01-h-divergences-float32.md.
     sample = sample_parameters_from_dict(priors, h_pivot=h_pivot,
                                          h_pivot_gammas=h_pivot_gammas)
