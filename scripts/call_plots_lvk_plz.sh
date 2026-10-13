@@ -1,5 +1,4 @@
 #!/usr/bin/bash
-# NOTE (main): plot_ppd.py does not exist on main (deliberately not ported); the last srun line will fail.
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G

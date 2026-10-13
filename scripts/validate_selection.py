@@ -12,10 +12,13 @@ Validates the fixed selection-normalization recipe:
 
 Usage (run from ``scripts/``)::
 
-    uv run python validate_selection.py
+    uv run python validate_selection.py [--mixture-file PATH] [--reference-nc PATH]
 
-Exits nonzero on any failed assertion.
+The defaults point at the cluster copy of the mixture file and at
+runs/realGWTC5_noevo_fullsel/realGWTC5_noevo_fullsel.nc; override them to
+run elsewhere.  Exits nonzero on any failed assertion.
 """
+import argparse
 import os
 import sys
 
@@ -60,9 +63,9 @@ EPOCH_RANGES = {
 }
 
 
-def check_detection_mask():
+def check_detection_mask(mixture_file=MIXTURE_FILE):
     """Recompute the detection mask directly and check per-epoch counts."""
-    with h5py.File(MIXTURE_FILE, 'r') as f:
+    with h5py.File(mixture_file, 'r') as f:
         searches = [s.decode() if isinstance(s, bytes) else s
                     for s in f.attrs['searches']]
         ev = f['events']
@@ -93,10 +96,10 @@ def check_detection_mask():
         f"total_generated {ndraw} != expected {EXPECTED_NDRAW}")
 
 
-def check_extract_selection_samples():
+def check_extract_selection_samples(mixture_file=MIXTURE_FILE):
     """Run the fixed extractor and check counts, ndraw, and sanity of pdraw."""
     (m1, q, z, a1, a2, ct1, ct2, pdraw, ndraw) = weighting.extract_selection_samples(
-        MIXTURE_FILE, nsamp=None, desired_pop_wt=None, mass_sel=2.5)
+        mixture_file, nsamp=None, desired_pop_wt=None, mass_sel=2.5)
 
     print(f"extract_selection_samples: {len(m1)} rows, ndraw = {ndraw[0]:.0f}")
     assert len(m1) == EXPECTED_ROWS_M2CUT, (
@@ -119,16 +122,29 @@ def check_extract_selection_samples():
     return df
 
 
-def check_mu_sel(sel_df):
+def check_mu_sel(sel_df, reference_nc=REFERENCE_NC):
     """Recompute mu_sel (float64) at the reference run's posterior median."""
     import arviz as az
     import diagnose_run as dr
 
-    idata = az.from_netcdf(REFERENCE_NC)
+    idata = az.from_netcdf(reference_nc)
     post_med = dr._posterior_median_dict(idata.posterior)
     sample = dr._canonical_pop_sample({}, post_med)
 
-    lw = dr._sel_log_wts(sel_df, sample, use_low_bump=True)
+    # EXPECTED_MU_SEL was derived from realGWTC5_noevo_fullsel, which was
+    # sampled under the total-mass ("mt") pairing (the lvk-powerlaw-z branch's
+    # run_inf.py fallback; main's fallback is "q").  Use the pairing recorded
+    # in the .nc attrs so the weights match the chain, and fall back to "mt"
+    # when the attrs carry no pairing information at all.
+    try:
+        pairing = dr._pairing_of(idata)
+    except Exception as exc:  # unreadable/unknown attrs: assume the mt run
+        print(f"warning: could not read pairing from {reference_nc} ({exc}); "
+              "assuming 'mt'")
+        pairing = "mt"
+    print(f"selection weights computed with pairing = {pairing!r}")
+
+    lw = dr._sel_log_wts(sel_df, sample, use_low_bump=True, pairing=pairing)
     assert np.all(np.isfinite(lw) | (lw < np.inf)), "NaN selection log-weights"
     lw = lw[np.isfinite(lw)]
     m = lw.max()
@@ -141,8 +157,24 @@ def check_mu_sel(sel_df):
         f"mu_sel = {mu:.3f} not within {MU_SEL_TOL} of {EXPECTED_MU_SEL}")
 
 
+def _parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Regression checks for weighting.extract_selection_samples "
+                    "on the GWTC-5 sensitivity mixture file.")
+    parser.add_argument(
+        "--mixture-file", default=MIXTURE_FILE,
+        help="GWTC-5 sensitivity mixture .hdf (Zenodo 19500052) "
+             "(default: %(default)s)")
+    parser.add_argument(
+        "--reference-nc", default=REFERENCE_NC,
+        help="ArviZ .nc of the reference run whose posterior median sets the "
+             "mu_sel check (default: %(default)s)")
+    return parser.parse_args(argv)
+
+
 if __name__ == '__main__':
-    check_detection_mask()
-    sel_df = check_extract_selection_samples()
-    check_mu_sel(sel_df)
+    args = _parse_args()
+    check_detection_mask(args.mixture_file)
+    sel_df = check_extract_selection_samples(args.mixture_file)
+    check_mu_sel(sel_df, args.reference_nc)
     print("\nAll selection-extraction regression checks passed.")
