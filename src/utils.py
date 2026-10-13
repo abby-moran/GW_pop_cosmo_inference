@@ -635,6 +635,51 @@ def log_expit(exponent):
 # Mapping between the "mass_model" attr run_inf.py stamps into the .nc and the
 # pairing convention the chain was actually run with.
 _MASS_MODEL_PAIRING = {"pisn": "mt", "pisn_lvkpair": "q"}
+PISN_PAIRINGS = ("mt", "q")
+# Branch-era alias: origin/lvk-powerlaw-z called the q^beta pairing "lvk", so
+# PISN chains sampled there embed run_config_pairing = "lvk".  The alias is
+# applied ONLY to PISN-family chains: the LVK PowerLaw+2Peaks module
+# (intensity_models_lvk_pl2p) uses "lvk"/"mt" as its own pairing names and
+# stamps mass_model "lvk_pl2p"/"lvk_pl2p_mt", where "lvk" is not a synonym.
+_PISN_PAIRING_ALIASES = {"lvk": "q"}
+
+
+def _is_pisn_family_mass_model(mass_model):
+    """True when ``mass_model`` (a .nc attr, or None) denotes a PISN chain."""
+    if mass_model is None:
+        return True
+    return str(mass_model).strip() in _MASS_MODEL_PAIRING
+
+
+def normalize_pairing(value, mass_model=None):
+    """Validate / normalize a raw pairing string for the PISN model.
+
+    ``value`` is a user-facing pairing name (an ini ``pairing`` value or the
+    ``run_config_pairing`` .nc attr); ``mass_model`` is the chain's
+    ``mass_model`` attr (None when absent).  Returns one of ``PISN_PAIRINGS``.
+
+    For a PISN-family chain (``mass_model`` absent, "pisn" or "pisn_lvkpair")
+    the branch-era alias "lvk" is normalized to "q".  For any other
+    ``mass_model`` (the LVK PowerLaw+2Peaks family "lvk_pl2p"/"lvk_pl2p_mt")
+    "lvk" is that module's own pairing name, not the PISN q^beta pairing, and
+    this resolver -- which exists to rebuild PISN chains -- raises.
+    """
+    pairing = str(value).strip()
+    pisn_family = _is_pisn_family_mass_model(mass_model)
+    if pisn_family and pairing in _PISN_PAIRING_ALIASES:
+        pairing = _PISN_PAIRING_ALIASES[pairing]
+    if pairing not in PISN_PAIRINGS:
+        if pairing in _PISN_PAIRING_ALIASES:
+            raise ValueError(
+                "pairing = %r with mass_model = %r: this chain is not a "
+                "PISN-family run, so %r is not an alias for the PISN %r "
+                "pairing (this resolver is for the PISN model only)"
+                % (value, mass_model, pairing, _PISN_PAIRING_ALIASES[pairing]))
+        raise ValueError(
+            "pairing = %r is not a known PISN pairing (known: %s; the "
+            "branch-era alias 'lvk' is accepted for PISN-family chains)"
+            % (value, ", ".join(repr(k) for k in PISN_PAIRINGS)))
+    return pairing
 
 
 def pairing_from_attrs(attrs):
@@ -643,7 +688,10 @@ def pairing_from_attrs(attrs):
     Resolution order, most to least specific:
 
     1. ``run_config_pairing`` -- the raw ini value, present only when the ini
-       set ``pairing`` explicitly.
+       set ``pairing`` explicitly.  It is passed through
+       :func:`normalize_pairing`, so a PISN-family chain sampled on the
+       lvk-powerlaw-z branch (which called the q^beta pairing "lvk") resolves
+       to "q"; "lvk" on an LVK-family ``mass_model`` raises.
     2. ``mass_model`` -- stamped by run_inf.py from the *resolved* value, so it
        is present even when the ini relied on the default.
     3. Neither: the .nc predates the pairing option, so it is a total-mass run.
@@ -655,16 +703,14 @@ def pairing_from_attrs(attrs):
     current default happens to be.
     """
     attrs = attrs or {}
+    mass_model = attrs.get("mass_model")
     explicit = attrs.get("run_config_pairing")
     if explicit is not None:
-        pairing = str(explicit).strip()
-        if pairing not in ("mt", "q"):
-            raise ValueError(
-                "run_config_pairing = %r in the .nc attrs is not a known "
-                "pairing (known: 'mt', 'q')" % (explicit,))
-        return pairing
+        try:
+            return normalize_pairing(explicit, mass_model)
+        except ValueError as exc:
+            raise ValueError("run_config_pairing in the .nc attrs: %s" % exc)
 
-    mass_model = attrs.get("mass_model")
     if mass_model is not None:
         try:
             return _MASS_MODEL_PAIRING[str(mass_model).strip()]

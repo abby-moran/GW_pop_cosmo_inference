@@ -516,28 +516,41 @@ def section_convergence(rep, idata, free, ini):
     worst_ess = summ.sort_values("ess_bulk")
     min_ess = float(worst_ess["ess_bulk"].iloc[0])
     min_ess_tail = float(summ["ess_tail"].min())
-    max_rhat = float(summ["r_hat"].max())
-    max_rhat_p = summ["r_hat"].idxmax()
-    rep.metrics.update(min_ess_bulk=min_ess, min_ess_tail=min_ess_tail,
-                       max_rhat=max_rhat, max_rhat_param=str(max_rhat_p))
+    # On a single-chain .nc arviz leaves r_hat all-NaN, and idxmax() on an
+    # all-NaN series raises; guard so the later sections still run.
+    rhat = summ["r_hat"].dropna()
+    if rhat.empty:
+        max_rhat, max_rhat_p = None, None
+        rep.metrics.update(min_ess_bulk=min_ess, min_ess_tail=min_ess_tail,
+                           max_rhat=None, max_rhat_param=None)
+        rep.add("convergence", "NOTE", "between-chain agreement (r-hat)",
+                ["r_hat undefined (single chain): %d chain(s); run >= 2 "
+                 "chains to measure between-chain agreement"
+                 % int(post.sizes["chain"])],
+                dict(max_rhat=None, param=None))
+    else:
+        max_rhat = float(rhat.max())
+        max_rhat_p = rhat.idxmax()
+        rep.metrics.update(min_ess_bulk=min_ess, min_ess_tail=min_ess_tail,
+                           max_rhat=max_rhat, max_rhat_param=str(max_rhat_p))
 
-    if max_rhat <= 1.01:
-        sev = "OK"
-    elif max_rhat <= 1.05:
-        sev = "NOTE"
-    elif max_rhat <= 1.10:
-        sev = "WARN"
-    else:
-        sev = "FAIL"
-    bad = summ[summ["r_hat"] > 1.01].sort_values("r_hat", ascending=False)
-    detail = ["max r-hat = %.3f (%s)" % (max_rhat, max_rhat_p)]
-    if len(bad):
-        detail.append("above 1.01: " + ", ".join(
-            "%s %.3f" % (i, r.r_hat) for i, r in bad.head(8).iterrows()))
-    else:
-        detail.append("every free parameter has r-hat <= 1.01")
-    rep.add("convergence", sev, "between-chain agreement (r-hat)", detail,
-            dict(max_rhat=max_rhat, param=str(max_rhat_p)))
+        if max_rhat <= 1.01:
+            sev = "OK"
+        elif max_rhat <= 1.05:
+            sev = "NOTE"
+        elif max_rhat <= 1.10:
+            sev = "WARN"
+        else:
+            sev = "FAIL"
+        bad = summ[summ["r_hat"] > 1.01].sort_values("r_hat", ascending=False)
+        detail = ["max r-hat = %.3f (%s)" % (max_rhat, max_rhat_p)]
+        if len(bad):
+            detail.append("above 1.01: " + ", ".join(
+                "%s %.3f" % (i, r.r_hat) for i, r in bad.head(8).iterrows()))
+        else:
+            detail.append("every free parameter has r-hat <= 1.01")
+        rep.add("convergence", sev, "between-chain agreement (r-hat)", detail,
+                dict(max_rhat=max_rhat, param=str(max_rhat_p)))
 
     if min_ess >= 200:
         sev = "OK"
@@ -896,13 +909,18 @@ def _pairing_of(idata, ini=None):
     """Pairing the chain was sampled under: the ini's explicit value when it
     has one, else what the .nc attrs record (utils.pairing_from_attrs: the
     run_config_pairing / mass_model stamps, or "mt" for a chain that predates
-    the option).  Resolution is lazy so an LVK-family .nc, whose attrs do not
+    the option).  Both routes go through utils.normalize_pairing, which maps
+    the branch-era alias "lvk" to "q" on a PISN-family chain and raises on an
+    unknown value.  Resolution is lazy so an LVK-family .nc, whose attrs do not
     map to a PISN pairing, is not touched unless the ini is silent too."""
+    from utils import normalize_pairing, pairing_from_attrs
+    attrs = idata.posterior.attrs
     val = (ini or {}).get("pairing")
     if val:
-        return str(val).strip()
-    from utils import pairing_from_attrs
-    return pairing_from_attrs(idata.posterior.attrs)
+        # Same validation / branch-era "lvk" -> "q" alias as the attrs path,
+        # so an ini value is never returned raw.
+        return normalize_pairing(val, attrs.get("mass_model"))
+    return pairing_from_attrs(attrs)
 
 
 def _sel_log_wts(sel, sample, use_low_bump=True, pairing=None):

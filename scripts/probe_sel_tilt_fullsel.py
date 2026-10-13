@@ -39,7 +39,8 @@ def _free_narrow(post, prior):
     return [p for p in dr.NARROW_FEATURE_PARAMS if p in free]
 
 
-def _tilt_rows(sel, base, post, targets, nobs, lp_std, use_low_bump, nboot, seed):
+def _tilt_rows(sel, base, post, targets, nobs, lp_std, use_low_bump, nboot, seed,
+               pairing):
     """One row per target: same math as diagnose_run.section_selection_tilt."""
     rows = []
     for name in targets:
@@ -54,8 +55,10 @@ def _tilt_rows(sel, base, post, targets, nobs, lp_std, use_low_bump, nboot, seed
         for s in (sample_lo, sample_hi):
             if "mpisn" in s and "dmbhmax" in s:
                 s["mbhmax"] = float(s["mpisn"]) + float(s["dmbhmax"])
-        lw_lo = dr._sel_log_wts(sel, sample_lo, use_low_bump=use_low_bump)
-        lw_hi = dr._sel_log_wts(sel, sample_hi, use_low_bump=use_low_bump)
+        lw_lo = dr._sel_log_wts(sel, sample_lo, use_low_bump=use_low_bump,
+                                pairing=pairing)
+        lw_hi = dr._sel_log_wts(sel, sample_hi, use_low_bump=use_low_bump,
+                                pairing=pairing)
         # Fresh RNG stream per (fraction, param) but deterministic given seed.
         delta, sd = dr._bootstrap_delta_log_mu(
             lw_lo, lw_hi, nboot=nboot, seed=seed + hash(name) % 10007)
@@ -179,13 +182,23 @@ def main():
     post_med = dr._posterior_median_dict(post)
     base = dr._canonical_pop_sample(truths, post_med)
     use_low_bump = ini.get("use_low_bump", True)
+    # Rebuild with the pairing the chain was sampled under (ini value, else
+    # the .nc attrs), as section_selection_tilt does; _sel_log_wts refuses
+    # to guess.
+    try:
+        pairing = dr._pairing_of(idata, ini)
+    except ValueError as exc:
+        print("ERROR: cannot resolve the pairing the chain was sampled under "
+              "(%s)" % exc, file=sys.stderr)
+        return 2
 
     sel_all = pd.read_hdf(sel_file, key="true_parameters")
     n_all = len(sel_all)
 
     # Validate weights once on a tiny slice.
     try:
-        dr._sel_log_wts(sel_all.iloc[:2], base, use_low_bump=use_low_bump)
+        dr._sel_log_wts(sel_all.iloc[:2], base, use_low_bump=use_low_bump,
+                        pairing=pairing)
     except Exception as exc:
         print("ERROR: cannot rebuild selection weights (%s)" % exc, file=sys.stderr)
         return 2
@@ -196,6 +209,7 @@ def main():
     print("nc         : %s" % nc_path)
     print("sel        : %s (%d rows)" % (sel_file, n_all))
     print("nobs       : %d" % nobs)
+    print("pairing    : %s" % pairing)
     print("lp_std     : %s" % ("%.3f nats" % lp_std if lp_std else "n/a"))
     print("targets    : %s" % ", ".join(targets))
     print("thresholds : FAIL if noise>=%.1f or noise/lp_std>=%.2f; "
@@ -213,7 +227,7 @@ def main():
         # Distinct seed offset per fraction so bootstraps aren't identical
         # when n_use changes only by padding (they're nested prefixes).
         rows = _tilt_rows(sel, base, post, targets, nobs, lp_std, use_low_bump,
-                          args.nboot, args.seed + int(frac * 1000))
+                          args.nboot, args.seed + int(frac * 1000), pairing)
         results[frac] = rows
         if abs(frac - 0.5) < 1e-9:
             half_rows = {r["name"]: r for r in rows}
