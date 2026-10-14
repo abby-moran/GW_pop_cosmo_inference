@@ -942,6 +942,7 @@ class FlatwCDMCosmology(object):
     # Size of auxiliary table used by z_and_log_jacobian, indexed by log(dL/dH) (not z).
     ndl: object = 2048
     zmin_table: object = 1e-5
+    zmax_table: object = 30.0
     zinterp: object = dataclasses.field(init=False)
     dcinterp: object = dataclasses.field(init=False)
     dlinterp: object = dataclasses.field(init=False)
@@ -950,7 +951,9 @@ class FlatwCDMCosmology(object):
     dvcinterp: object = dataclasses.field(init=False)
 
     def __post_init__(self):
-        self.zinterp = jnp.expm1(jnp.linspace(np.log(1), jnp.log(1 + self.zmax), self.ninterp))
+        self.zinterp = jnp.expm1(jnp.linspace(
+                np.log(1), np.log(1 + self.zmax_table), self.ninterp))
+        #self.zinterp = jnp.expm1(jnp.linspace(np.log(1), jnp.log(1 + self.zmax), self.ninterp))
         self.Einterp = self.E(self.zinterp)
         self.dcinterp = self.dH * jnp_cumtrapz(1 / self.Einterp, self.zinterp)
         self.dlinterp = self.dcinterp * (1 + self.zinterp)
@@ -1280,7 +1283,7 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
     deterministic_parameters = get_deterministic_parameters(sample, use_low_bump=use_low_bump)
     sample.update(deterministic_parameters)
 
-    cosmo = FlatwCDMCosmology(sample['h'], sample['Om'], sample['w'], zmax=sample['zmax'])
+    cosmo = FlatwCDMCosmology(sample['h'], sample['Om'], sample['w'], zmax=sample['zmax'], zmax_table=30)
     log_dN = build_population_model(sample, use_low_bump=use_low_bump, n_z=n_z,
                                     smooth_tail_edge=smooth_tail_edge, pairing=pairing)
     ld = log_dN.log_dndm
