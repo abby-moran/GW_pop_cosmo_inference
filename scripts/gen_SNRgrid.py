@@ -22,7 +22,7 @@ import jax.scipy.special as jss
 jax.config.update("jax_enable_x64", True)
 
 population_parameters = dict()
-config_file='pop_configs/mock_O5_ne_nb.txt'
+config_file='pop_configs/CE_peak_q.txt'
 #outfile = 'new_mock_inj_cut.h5'#'mock_injections_o3_zp1.h5'
 
 population_parameters = dict()
@@ -171,4 +171,4 @@ if __name__ == "__main__":
         'dm1sz_dm1ddl': jnp.ones(Ngrid),
     }
     SNRgrid=build_snr_grid(df_grid, m1_grid, q_grid, detectors, sensitivity)
-    np.savez("snr_grid_CE.npz", m1_grid=m1_grid, q_grid=q_grid, snr_grid=SNRgrid, dL_fid=1.0) # dL in Gpc
+    np.savez("snr_grid_CE_1013.npz", m1_grid=m1_grid, q_grid=q_grid, snr_grid=SNRgrid, dL_fid=1.0) # dL in Gpc

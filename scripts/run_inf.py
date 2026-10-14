@@ -44,6 +44,7 @@ nchain = run.getint("nchain")
 
 # Optional float64 mode
 x64 = run.getboolean("x64", fallback=False)
+
 scatter_free_tables = run.getboolean("scatter_free_tables", fallback=None)
 if x64:
     if scatter_free_tables:
@@ -262,20 +263,11 @@ if __name__ == "__main__":
 
     sel_samples = pd.read_hdf(sel_file, key='true_parameters')
     ndraw = sel_samples['ndraw'].iloc[0]
-    if len(sel_samples) > 100_000_000:
-        n_original = len(sel_samples)
-        sel_samples = sel_samples.iloc[:100_000_000]
-        ndraw *= len(sel_samples) / n_original
-    print(f"selection set: {len(sel_samples)} rows, ndraw={ndraw}")
-
-    dl_c=230.02263275
-    sel_keep  = sel_samples['dl'] < dl_c          # events are rows 0:9000 of the sel file
-    ev_keep = jnp.mean(dls, axis=1) < dl_c
-    sel_samples=sel_samples.iloc[sel_keep]
-    m1s = m1s[ev_keep,:]
-    qs = qs[ev_keep,:]
-    dls = dls[ev_keep,:]
-    pdraws = pdraws[ev_keep,:]
+    #if len(sel_samples) > 100_000_000:
+    #    n_original = len(sel_samples)
+    #    sel_samples = sel_samples.iloc[:100_000_000]
+    #    ndraw *= len(sel_samples) / n_original
+    #print(f"selection set: {len(sel_samples)} rows, ndraw={ndraw}")
 
     assert np.all(m1s > 0) 
     assert np.all(qs > 0) 

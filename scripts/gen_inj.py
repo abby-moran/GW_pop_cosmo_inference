@@ -100,7 +100,7 @@ if __name__ == "__main__":
     q_grid   = grid["q_grid"]
     snr_grid = grid["snr_grid"]
     dL_fid   = float(grid["dL_fid"])
-    
+    print(population_parameters)
     log_snr_interp = RegularGridInterpolator((m1_grid, q_grid), np.log(snr_grid), bounds_error=False, fill_value=-np.inf)
     # 1e7 draws per loop; configurable so short validation runs don't have to
     # generate the full 1.5e9 draws (reweight_res.py only reads the first

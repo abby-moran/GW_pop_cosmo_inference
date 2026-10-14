@@ -181,9 +181,10 @@ def get_mock_obs(df, out_file, cosmo, rho_fun, detection_threshold=8,
 
     # --- mass-cut acceptance (vectorized) ---
     u = noise_rng.random(n)
-    keep_mask = u <= p_keep
+    #keep_mask = np.asarray((u <= p_keep) & (np.asarray(inj_det['z']) < 20), dtype=bool)
+    keep_mask = (u <= p_keep)
 
-    inj_det = inj_det[keep_mask].copy()
+    inj_det = inj_det.iloc[keep_mask].copy()
     inj_det['log_mc_obs']   = log_mc_obs[keep_mask]
     inj_det['sigma_log_mc'] = slmc[keep_mask]
     inj_det['q_obs']        = q_obs[keep_mask]
@@ -258,7 +259,7 @@ def draw_samples_single_event_jax(key, log_mc_obs, sigma_log_mc, q_obs, sigma_q,
 
     # ── rho ──────────────────────────────────────────────────────────────
     a_rho = -rho_obs / scale
-    rhos_raw = _sample_truncnorm(k[5], rho_obs, scale, a_rho, jnp.array(30.0), (2*size,))
+    rhos_raw = _sample_truncnorm(k[5], rho_obs, scale, a_rho, jnp.inf, (2*size,))
     w_rho = jss.stats.norm.cdf(rho_obs/scale) / jss.stats.norm.cdf(rhos_raw/scale)
     w_rho = w_rho / w_rho.sum()
     cdf_rho = jnp.cumsum(w_rho)
