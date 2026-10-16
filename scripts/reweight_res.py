@@ -82,8 +82,7 @@ m_min=run.getfloat("m_min", fallback=0)
 delta_m_sel = run.getfloat("delta_m_sel", fallback=1.0)
 n_evt = run.getint("n_evt", fallback=10000)
 
-
-
+z_sel=run.get('z_sel', fallback=None)
 
 smooth_tail_edge=run.getboolean("smooth_tail_edge", fallback=True)
 # Pairing of the *true* population the mock catalog is drawn from.  This
@@ -96,7 +95,7 @@ if pairing not in ("mt", "q"):
     raise ValueError(f"unknown pairing: {pairing!r} (known: 'mt', 'q')")
 def get_mock_obs(df, out_file, cosmo, rho_fun, detection_threshold=8, 
                  jitter_SNR=True, ndet=1, append_tf=False, evt_offset=0,
-                 detection_rng=None, mc_scale=None, q_scale=None, th_scale=None, m_min=5, delta_m=1):
+                 detection_rng=None, mc_scale=None, q_scale=None, th_scale=None, m_min=5, delta_m=1, z_sel=None):
     """
     Vectorized version: takes in an event dataframe df and generates a file which will
     store the values we'd actually observe from the events.
@@ -181,8 +180,11 @@ def get_mock_obs(df, out_file, cosmo, rho_fun, detection_threshold=8,
 
     # --- mass-cut acceptance (vectorized) ---
     u = noise_rng.random(n)
-    #keep_mask = np.asarray((u <= p_keep) & (np.asarray(inj_det['z']) < 20), dtype=bool)
-    keep_mask = (u <= p_keep)
+    if z_sel is not None:
+        z_sel=float(z_sel)
+        keep_mask = np.asarray((u <= p_keep) & (np.asarray(z_obs < z_sel)), dtype=bool)
+    else:
+        keep_mask = (u <= p_keep)
 
     inj_det = inj_det.iloc[keep_mask].copy()
     inj_det['log_mc_obs']   = log_mc_obs[keep_mask]
@@ -222,7 +224,7 @@ def _sample_truncnorm(key, loc, scale, a, b, shape):
 def draw_samples_single_event_jax(key, log_mc_obs, sigma_log_mc, q_obs, sigma_q,
                                    theta_obs, sigma_theta, rho_obs,
                                    m1_grid, q_grid, log_snr_grid,
-                                   size_final, ndet, dl_fid=1.0, theta_fid=1.0, jitter=True):
+                                   size_final, ndet,max_dl, dl_fid=1.0, theta_fid=1.0, jitter=True):
     size  = 10 * size_final
     if jitter==False:
         scale=0
@@ -258,19 +260,37 @@ def draw_samples_single_event_jax(key, log_mc_obs, sigma_log_mc, q_obs, sigma_q,
     thetas = thetas_raw[idx_th]
 
     # ── rho ──────────────────────────────────────────────────────────────
-    a_rho = -rho_obs / scale
-    rhos_raw = _sample_truncnorm(k[5], rho_obs, scale, a_rho, jnp.inf, (2*size,))
-    w_rho = jss.stats.norm.cdf(rho_obs/scale) / jss.stats.norm.cdf(rhos_raw/scale)
-    w_rho = w_rho / w_rho.sum()
-    cdf_rho = jnp.cumsum(w_rho)
-    u_rho = jax.random.uniform(k[6], (size,))
-    idx_rho = jnp.searchsorted(cdf_rho, u_rho)
-    rhos  = rhos_raw[idx_rho]
+    #a_rho = -rho_obs / scale
+    #snr_fid = jnp.exp(jax_interp_log_snr(m1_grid, q_grid, log_snr_grid, np.max(m1s), 1))
+    
+    #rhos_raw = _sample_truncnorm(k[5], rho_obs, scale, a_rho, b_rho, (2*size,))
+    #w_rho = jss.stats.norm.cdf(rho_obs/scale) / jss.stats.norm.cdf(rhos_raw/scale)
+    #w_rho = w_rho / w_rho.sum()
+    #cdf_rho = jnp.cumsum(w_rho)
+    #u_rho = jax.random.uniform(k[6], (size,))
+    #idx_rho = jnp.searchsorted(cdf_rho, u_rho)
+    #rhos  = rhos_raw[idx_rho]
+
+    snr_fid = jnp.exp(jax_interp_log_snr(m1_grid, q_grid, log_snr_grid, m1s, qs))
+    C       = dl_fid * thetas / theta_fid * snr_fid * jnp.sqrt(jnp.maximum(ndet, 1.0))
+    rho_min = C / max_dl                       # dL <= max_dl  <=>  rho >= rho_min
+    lo      = jnp.maximum(rho_min, 0.0)
+
+    a_rho = (lo - rho_obs) / scale
+    cdf_a = jss.stats.norm.cdf(a_rho)
+    S     = 1.0 - cdf_a                        # = Phi((rho_obs - lo)/scale)
+
+    u    = jax.random.uniform(k[5], (size,), minval=1e-12, maxval=1 - 1e-12)
+    rhos = jss.stats.norm.ppf(cdf_a + u * S) * scale + rho_obs
+
+    dls      = C / rhos
+    w_rho    = S / jss.stats.norm.cdf(rhos / scale)
+    reweight = dls / rhos * m1s * jss.stats.beta.pdf(thetas, 2, 4) * w_rho
 
     # ── dL + final reweight ───────────────────────────────────────────────
-    snr_fid  = jnp.exp(jax_interp_log_snr(m1_grid, q_grid, log_snr_grid, m1s, qs))
-    dls      = dl_fid * thetas / theta_fid * snr_fid * jnp.sqrt(jnp.maximum(ndet, 1.0)) / rhos
-    reweight = dls / rhos * m1s * jss.stats.beta.pdf(thetas, 2, 4)
+    #snr_fid  = jnp.exp(jax_interp_log_snr(m1_grid, q_grid, log_snr_grid, m1s, qs))
+    #dls      = dl_fid * thetas / theta_fid * snr_fid * jnp.sqrt(jnp.maximum(ndet, 1.0)) / rhos
+    #reweight = dls / rhos * m1s * jss.stats.beta.pdf(thetas, 2, 4)
     reweight = jnp.nan_to_num(reweight, nan=0.0, posinf=0.0)
     reweight = reweight / reweight.sum()
     cdf_rw = jnp.cumsum(reweight)
@@ -278,14 +298,19 @@ def draw_samples_single_event_jax(key, log_mc_obs, sigma_log_mc, q_obs, sigma_q,
     idx = jnp.searchsorted(cdf_rw, u_rw)
     return m1s[idx], qs[idx], dls[idx]
 
-@partial(jax.jit, static_argnums=(11, 12, 13))
-def batched_draw(keys, log_mc_obs, sigma_log_mc, q_obs, sigma_q,
-                 theta_obs, sigma_theta, rho_obs,
-                 m1_grid, q_grid, log_snr_grid, size_final, ndet, jitter=True):
+@partial(jax.jit, static_argnums=(11, 12, 14))
+def batched_draw(
+    keys, log_mc_obs, sigma_log_mc, q_obs, sigma_q,
+    theta_obs, sigma_theta, rho_obs,
+    m1_grid, q_grid, log_snr_grid, size_final, ndet, max_dl, jitter=True
+):
     return jax.vmap(
         lambda key, lmc, slmc, q, sq, th, sth, rho:
-            draw_samples_single_event_jax(key, lmc, slmc, q, sq, th, sth, rho,
-                                          m1_grid, q_grid, log_snr_grid, size_final, ndet, jitter=jitter)
+            draw_samples_single_event_jax(
+                key, lmc, slmc, q, sq, th, sth, rho,
+                m1_grid, q_grid, log_snr_grid,
+                size_final, ndet, max_dl, jitter=jitter
+            )
     )(keys, log_mc_obs, sigma_log_mc, q_obs, sigma_q, theta_obs, sigma_theta, rho_obs)
 
 @jax.jit
@@ -469,7 +494,7 @@ if __name__ == "__main__":
                 df_det_chunk, obs_file, cosmo, log_snr_interp, ndet=ndet,
                 jitter_SNR=jitter, detection_threshold=detection_threshold,
                 append_tf=not first_chunk, evt_offset=evt_offset,
-                mc_scale=mc_scale, q_scale=q_scale, th_scale=th_scale, m_min=m_min, delta_m=delta_m_sel
+                mc_scale=mc_scale, q_scale=q_scale, th_scale=th_scale, m_min=m_min, delta_m=delta_m_sel, z_sel=z_sel
             )
 
             det_mask  = df_det_chunk.index.isin(detected_indices)
@@ -517,6 +542,8 @@ if __name__ == "__main__":
 
     batch_size = 32
 
+    max_dl = cosmo.dL(pop_params['zmax'])
+
     all_m1s = []
     all_qs = []
     all_dls = []
@@ -539,6 +566,7 @@ if __name__ == "__main__":
             log_snr_grid_jax,
             nsamples,
             ndet,
+            max_dl,
             jitter=jitter
         )
 

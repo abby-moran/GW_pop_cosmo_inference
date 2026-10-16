@@ -318,7 +318,7 @@ if __name__ == "__main__":
     # make sure we get sample stats to check the sampler health post run
     mcmc.run(jax.random.PRNGKey(random_seed), *model_args, use_low_bump=use_low_bump, smooth_tail_edge=smooth_tail_edge, pairing=pairing, **hp_kwargs, **sft_kwargs,
         **recenter_kwargs, extra_fields=("potential_energy", "energy", "num_steps", "accept_prob","adapt_state.step_size"))
-    samples = az.from_numpyro(mcmc, num_chains=nchain)
+    samples = az.from_numpyro(mcmc, num_chains=nchain, log_likelihood=False)
     # Model-family stamp for downstream scripts (plot_ppd FAMILIES): an absent
     # attr already means the original PISN model, so "pisn" is stamped only
     # for uniformity and "pisn_lvkpair" marks the q^beta-paired variant.
