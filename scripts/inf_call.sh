@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 #SBATCH -p gpu
-#SBATCH --gpus=4
+#SBATCH --gpus=2
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
 #SBATCH --time=0-06
-#SBATCH -J asharp
+#SBATCH -J spin_GWTC5
 #SBATCH --constraint=h100
 #SBATCH --exclude=workergpu067
 
@@ -15,4 +15,4 @@ unset LD_LIBRARY_PATH
 
 cd /mnt/home/amoran/GW_pop_cosmo_inference/scripts/
 
-srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/CE_ne.ini
+srun python run_inf.py --config /mnt/home/amoran/GW_pop_cosmo_inference/scripts/run_configs/confg_realTC5_mt_spins.ini

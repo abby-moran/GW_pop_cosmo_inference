@@ -171,7 +171,7 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
                         special_preference = ['C00:NRSur7dq4','C01:IMRPhenomXPHM',
                                 'C00:IMRPhenomXPHM-SpinTaylor','C01:IMRPhenomXPHM-SpinTaylor','C01:IMRPhenomPv2_NRTidal:HighSpin',
                                 'C01:Mixed','C00:Mixed',],
-                           group=None):
+                           group=None, spins=False, spin_a_max=1.0):
     """Load (m1_det, q, dl_Gpc, prior) PE samples from a single-event release file.
 
     :param group: If given, read ``f[group]['posterior_samples']`` directly,
@@ -231,8 +231,26 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
         prior = _gwtc45_pe_prior(m1_det, dLs)
     else:
         prior = dLs**2 * m1_det
-    
-    return m1_det, qs, dLs, prior
+    if not spins:
+        return m1_det, qs, dLs, prior
+
+    # Spins: a_1, a_2, tilt_1, tilt_2 are the usual release field names; check
+    # that they exist for every waveform group you fall back to.
+    for k in ('a_1', 'a_2'):
+        if k not in samples.dtype.names:
+            print(f"{event}: group {group_used!r} lacks spin field {k!r}")
+            return None
+    a1 = samples['a_1'][()][mask]
+    a2 = samples['a_2'][()][mask]
+    #cost1 = np.cos(samples['tilt_1'][()][mask])
+    #cost2 = np.cos(samples['tilt_2'][()][mask])
+
+    # PE spin prior in (a1, a2, cos1, cos2), phi marginalized:
+    # uniform magnitude on [0, a_max] x isotropic direction.
+    prior = prior / spin_a_max**2
+    spin = np.stack([a1, a2])                       # (2, nsamp)
+    return m1_det, qs, dLs, prior, spin
+    #return m1_det, qs, dLs, prior
 
 def finn_chernoff_theta(ra, dec, iota, gps_time):   
     Fp, Fx = det.antenna_pattern(ra, dec,0.0,gps_time)
@@ -268,7 +286,7 @@ def log_p_spin_vector(sx, sy, sz, sigma=0.5):
 
     return log_p_s + log_p_costau + log_p_phi + log_jacobian
 
-def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1, rng=None, mass_sel=2.5):
+def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1, rng=None, mass_sel=2.5, spins=False):
     """Return `(m1, q, z, pdraw, nsel)` to estimate selection effects.
 
     :param file: The injection file.
@@ -312,6 +330,8 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
     # --- load data ---
     if mode == 'hdf5_old':
         with h5py.File(file, 'r') as f:
+            if spins:
+                raise ValueError("spins=True but this injection file has no spin draw pdf")
             m1s_sel = np.array(f['injections/mass1_source'])
             qs_sel = np.array(f['injections/mass2_source'])/m1s_sel
             zs_sel = np.array(f['injections/redshift'])
@@ -324,8 +344,11 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
 
 
             pdraw_sel = np.array(f['injections/mass1_source_mass2_source_sampling_pdf'])*np.array(f['injections/redshift_sampling_pdf'])*m1s_sel
-
-            #pdraw_sel *= (np.array(f['injections/spin1x_spin1y_spin1z_sampling_pdf']) * np.array(f['injections/spin2x_spin2y_spin2z_sampling_pdf']) * (2 * np.pi * a1s_sel**2 * 2 * np.pi * a2s_sel**2))
+            if spins:
+                pdraw_sel *= (np.array(f['injections/spin1x_spin1y_spin1z_sampling_pdf'])
+                            * np.array(f['injections/spin2x_spin2y_spin2z_sampling_pdf'])
+                            * (4*np.pi*a1s_sel**2) * (4*np.pi*a2s_sel**2))
+                #pdraw_sel *= (np.array(f['injections/spin1x_spin1y_spin1z_sampling_pdf']) * np.array(f['injections/spin2x_spin2y_spin2z_sampling_pdf']) * (2 * np.pi * a1s_sel**2 * 2 * np.pi * a2s_sel**2))
             pycbc_far = np.array(f['injections/far_pycbc_hyperbank'])
             pycbc_bbh_far = np.array(f['injections/far_pycbc_bbh'])
             gstlal_far = np.array(f['injections/far_gstlal'])
@@ -408,9 +431,12 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
                     np.exp(np.array(f['lnpdraw_z']))*m1s_sel/np.array(f['weights'])
                 )
         except KeyError:
-            pdraw_sel = (np.exp(np.array(f['lnpdraw_mass1_source_mass2_source_redshift_spin1x_spin1y_spin1z_spin2x_spin2y_spin2z']))*
-                        m1s_sel/np.array(f['weights'])*
-                        (4*np.pi*a1s_sel**2)*(4*np.pi*a2s_sel**2))
+            pdraw_sel = (np.exp(np.array(f['lnpdraw_mass1_source_mass2_source_redshift_spin1x_spin1y_spin1z_spin2x_spin2y_spin2z']))
+                        * m1s_sel / np.array(f['weights'])
+                        * (4*np.pi*a1s_sel**2) * (4*np.pi*a2s_sel**2))
+            #pdraw_sel = (np.exp(np.array(f['lnpdraw_mass1_source_mass2_source_redshift_spin1x_spin1y_spin1z_spin2x_spin2y_spin2z']))*
+            #            m1s_sel/np.array(f['weights'])*
+            #            (4*np.pi*a1s_sel**2)*(4*np.pi*a2s_sel**2))
 
         # Detection: an injection is found if its semianalytic (O1/O2 epochs) SNR?10, or any search hits FAR threshold
         far_cols = np.vstack([np.array(f[f'{s}_far']) for s in searches])

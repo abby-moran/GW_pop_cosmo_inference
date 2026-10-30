@@ -41,6 +41,8 @@ prior = os.path.join(prior_dir, cfg["run"]["prior"])
 
 nmcmc = run.getint("nmcmc")
 nchain = run.getint("nchain")
+spins = cfg["run"].getboolean("spins", fallback=False)
+
 
 # Optional float64 mode
 x64 = run.getboolean("x64", fallback=False)
@@ -234,13 +236,17 @@ if __name__ == "__main__":
             ref_params = _h_pivot_remap(ref_params, "[ref_params]")
         print("recentering [ref_params] overrides:",
               {k: float(v) for k, v in ref_params.items()})
-
+    
+    SPIN_COLS = ["a1", "a2"]
+    spin_pe = None
     try:
         with h5py.File(pe_file, "r") as f:
             m1s = f["m1"][evt_start:evt_end]
             qs = f["q"][evt_start:evt_end]
             dls = f["dl"][evt_start:evt_end]
             pdraws = f["pdraw"][evt_start:evt_end]
+            if spins:
+                spin_pe = [f[c][evt_start:evt_end] for c in SPIN_COLS]
 
         print(f"Loaded new-format HDF5 file {pe_file},  events {evt_start} to {evt_end}")
 
@@ -252,6 +258,9 @@ if __name__ == "__main__":
         qs = np.asarray(pe_samples_mock["q"].to_list())
         dls = np.asarray(pe_samples_mock["dl"].to_list())
         pdraws = np.asarray(pe_samples_mock["pdraw"].to_list())
+        if spins:
+            spin_pe = [np.asarray(pe_samples_mock[c].to_list()) for c in SPIN_COLS]
+        
 
     if x64:
         # Guarantee float64 event arrays
@@ -283,6 +292,21 @@ if __name__ == "__main__":
     model_args = (m1s, qs, dls, pdraws, sel_samples['m1d'].to_list(),
                   sel_samples['q'].to_list(), sel_samples['dl'].to_list(),
                   sel_samples['pdraw_sel'].to_list(), ndraw, prior)
+    spin_kwargs = {}
+    if spins:
+        spin_sel = [sel_samples[c].to_numpy() for c in SPIN_COLS]
+        if x64:
+            spin_pe  = [np.asarray(a, dtype=np.float64) for a in spin_pe]
+            spin_sel = [np.asarray(a, dtype=np.float64) for a in spin_sel]
+        for name, arr in zip(SPIN_COLS, spin_pe):
+            assert np.all(np.isfinite(arr)), f"non-finite PE {name}"
+        for name, arr in zip(SPIN_COLS, spin_sel):
+            nbad = int((~np.isfinite(arr)).sum())
+            assert nbad == 0, f"{nbad} non-finite selection {name} (a=0 injections?)"
+        for arr in (spin_pe[0], spin_pe[1], spin_sel[0], spin_sel[1]):
+            assert arr.min() >= 0 and arr.max() <= 1, "spin magnitude outside [0,1]"
+        assert spin_pe[0].shape == m1s.shape, "spin arrays must match (nevents, nsamples)"
+        spin_kwargs = dict(spins=True, spin_data=tuple(spin_pe), spin_data_sel=tuple(spin_sel))
 
     # scatter_free_tables: only pass it when set (by an explicit ini key or by
     # x64 = true) so the default float32 path is bit-identical to before.
@@ -298,7 +322,7 @@ if __name__ == "__main__":
         baselines = intensity_models.recentering_baselines(
             model_args, ref_params, use_low_bump=use_low_bump,
             smooth_tail_edge=smooth_tail_edge,
-            pairing=pairing, **hp_kwargs, **sft_kwargs)
+            pairing=pairing, **spin_kwargs, **hp_kwargs, **sft_kwargs)
         recenter_kwargs = dict(
             loglike_ref=baselines['loglike_ref'],
             log_mu_sel_ref=baselines['log_mu_sel_ref'],
@@ -315,9 +339,11 @@ if __name__ == "__main__":
     kernel = NUTS(intensity_models.pop_cosmo_model, init_strategy=init_strategy,
                   max_tree_depth=max_tree_depth, dense_mass=dense_mass, target_accept_prob=target_accept_prob,)
     mcmc = MCMC(kernel, num_warmup=nmcmc, num_samples=nmcmc, num_chains=nchain, chain_method="parallel", progress_bar=True)
+    mcmc.run(jax.random.PRNGKey(random_seed), *model_args,
+         use_low_bump=use_low_bump, smooth_tail_edge=smooth_tail_edge,
+         pairing=pairing, **spin_kwargs, **hp_kwargs, **sft_kwargs,
+         **recenter_kwargs, extra_fields=("potential_energy", "energy", "num_steps", "accept_prob","adapt_state.step_size"))
     # make sure we get sample stats to check the sampler health post run
-    mcmc.run(jax.random.PRNGKey(random_seed), *model_args, use_low_bump=use_low_bump, smooth_tail_edge=smooth_tail_edge, pairing=pairing, **hp_kwargs, **sft_kwargs,
-        **recenter_kwargs, extra_fields=("potential_energy", "energy", "num_steps", "accept_prob","adapt_state.step_size"))
     samples = az.from_numpyro(mcmc, num_chains=nchain, log_likelihood=False)
     # Model-family stamp for downstream scripts (plot_ppd FAMILIES): an absent
     # attr already means the original PISN model, so "pisn" is stamped only

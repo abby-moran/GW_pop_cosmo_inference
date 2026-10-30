@@ -15,8 +15,8 @@ echo "submitted Cosmo_2_Evo:     ${jid1}"
 jid2=$(sbatch --parsable  "${SCRIPT_DIR}/inf_call.sh")
 echo "submitted Cosmo:     ${jid2}"
 
-jid3=$(sbatch --parsable  "${SCRIPT_DIR}/03_run_inf_cosmonb.sh")
-echo "submitted Cosmo_no_bump:     ${jid3}"
+#jid3=$(sbatch --parsable  "${SCRIPT_DIR}/03_run_inf_cosmonb.sh")
+#echo "submitted Cosmo_no_bump:     ${jid3}"
 
 jid4=$(sbatch --parsable  "${SCRIPT_DIR}/call_inf.sh")
 echo "submitted Full_cosmo:     ${jid4}"

@@ -43,6 +43,8 @@ data_paths = ast.literal_eval(cfg["run"]["data_paths"])
 
 PE_samps = cfg["run"].getint("PE_samps", fallback=1000)
 
+spins = cfg["run"].getboolean("spins", fallback=False)
+spin_a_max = cfg["run"].getfloat("spin_a_max", fallback=1.0)
 #copy the confg file, with the hash to the new directory
 try:
     git_hash = subprocess.check_output(
@@ -92,23 +94,27 @@ if __name__ == "__main__":
     # PE_dfs = []
     rows = []
     for file in filtered_files:
-        result = get_samples_from_event(file)
+        result = get_samples_from_event(file, spins=spins, spin_a_max=spin_a_max)
         if result is None:
             continue
-
-        m1, q, dl, pdraw = result
+        if spins:
+            m1, q, dl, pdraw, spin = result
+        else:
+            m1, q, dl, pdraw = result
+            spin = None
 
         n = len(m1)
         if n < PE_samps:
             print(f"Warning: {file} has only {n} samples (< {PE_samps}); "
-              f"duplicating samples to reach required count (reduced n_eff).")
-            # repeat arrays enough times to cover PE_samps, then trim
+                          f"duplicating samples to reach required count (reduced n_eff).")
             reps = int(np.ceil(PE_samps / n))
             m1 = np.tile(m1, reps)[:PE_samps]
             q = np.tile(q, reps)[:PE_samps]
             dl = np.tile(dl, reps)[:PE_samps]
             pdraw = np.tile(pdraw, reps)[:PE_samps]
-            idx = np.arange(PE_samps)  # no need to subsample further
+            if spins:
+                spin = np.tile(spin, (1, reps))[:, :PE_samps]
+            idx = np.arange(PE_samps)
         else:
             idx = np.random.choice(n, PE_samps, replace=False)
 
@@ -120,13 +126,13 @@ if __name__ == "__main__":
             break
         event_name = match.group(1)
 
-        rows.append({
-            "m1": m1[idx],
-            "q": q[idx],
-            "dl": dl[idx],
-            "pdraw": np.log(pdraw[idx]),
-            "evt": event_name
-        })
+        row = {"m1": m1[idx], "q": q[idx], "dl": dl[idx],
+                    "pdraw": np.log(pdraw[idx]), "evt": event_name}
+        if spins:
+            row["spin"] = spin[:, idx]
+        rows.append(row)
+        #rows.append({"m1": m1[idx], "q": q[idx], "dl": dl[idx],
+        #    "pdraw": np.log(pdraw[idx]),"evt": event_name})
 
         print(f"Done {event_name}")
 
@@ -136,20 +142,21 @@ if __name__ == "__main__":
     dl_arr = np.stack([r["dl"] for r in rows])
     pdraw_arr = np.stack([r["pdraw"] for r in rows])
     evt_arr = np.array([r["evt"] for r in rows])  # (nevents,)
-
-    final_df = pd.DataFrame({
-        "m1": list(m1_arr),
-        "q": list(q_arr),
-        "dl": list(dl_arr),
-        "pdraw": list(pdraw_arr),
-        "evt": evt_arr
-    })
+    cols = {"m1": list(m1_arr), "q": list(q_arr), "dl": list(dl_arr),
+            "pdraw": list(pdraw_arr), "evt": evt_arr}
+    if spins:
+        spin_arr = np.stack([r["spin"] for r in rows])   # (nev, 2, nsamp)
+        for j, name in enumerate(["a1", "a2"]):
+            cols[name] = list(spin_arr[:, j])
+    final_df = pd.DataFrame(cols)
+    #final_df = pd.DataFrame({"m1": list(m1_arr), "q": list(q_arr), "dl": list(dl_arr),
+    #    "pdraw": list(pdraw_arr), "evt": evt_arr})
 
     final_df.to_hdf(output_file_PE, key="samples", mode="w")
 
     # Now selection samples!
     (m1, q, z, a1, a2, cos_tilt1, cos_tilt2, pdraw, ndraw) = weighting.extract_selection_samples(
-                                                    sel_input,nsamp=None, desired_pop_wt=None, mass_sel=mass_sel)
+                                                    sel_input,nsamp=None, desired_pop_wt=None, mass_sel=mass_sel, spins=spins)
 
     df = pd.DataFrame({'m1': m1, 'q': q, 'z': z, 'a1': a1, 
                     'a2':a2, 'cos_tilt_1': cos_tilt1, 'cos_tilt_2': cos_tilt2, 

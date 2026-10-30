@@ -538,6 +538,39 @@ def safe_log(x, eps=None):
         eps = float(np.finfo(np.float32).tiny)
     return jnp.log(jnp.clip(x, eps, None))
 
+_SPIN_PARAMS = ("mu_spin", "sigma_spin")
+
+
+def log_spin_density(a1, a2,  mu_spin, sigma_spin):
+    """Log of the spin population density, independent of mass/redshift.
+
+    Magnitudes: independent Gaussians truncated to [0, 1].
+    Tilts: f_iso * isotropic + (1 - f_iso) * shared Gaussian truncated to [-1, 1]
+    on each cos(tilt).
+
+    The implicit (2 pi)^-2 azimuth factor is omitted: it multiplies the event
+    weights and the selection weights alike, so it cancels between loglike
+    and the -nobs * log_mu_sel selection factor.
+    """
+    # magnitudes
+    log_norm_a = jnp.log(jnp.maximum(
+        jss.ndtr((1.0 - mu_spin) / sigma_spin) - jss.ndtr((0.0 - mu_spin) / sigma_spin),
+        1e-30))
+    log_p_mag = (log_normalized_gaussian(a1, mu_spin, sigma_spin)
+                 + log_normalized_gaussian(a2, mu_spin, sigma_spin)
+                 - 2.0 * log_norm_a)
+
+    # tilts
+    #log_norm_t = jnp.log(jnp.maximum(
+    #    jss.ndtr((1.0 - mu_tilt) / sigma_tilt) - jss.ndtr((-1.0 - mu_tilt) / sigma_tilt),
+    #    1e-30))
+    #log_gauss = (log_normalized_gaussian(cost1, mu_tilt, sigma_tilt)
+    #             + log_normalized_gaussian(cost2, mu_tilt, sigma_tilt)
+    #             - 2.0 * log_norm_t)
+    #log_p_tilt = jnp.logaddexp(safe_log(f_iso) - jnp.log(4.0),
+    #                           safe_log(1.0 - f_iso) + log_gauss)
+
+    return log_p_mag #+ log_p_tilt
 
 # ---------------------------------------------------------------------------
 # PISN mass function grid
@@ -1217,7 +1250,9 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                     tabulate_selection=None, scatter_free_tables=None, smooth_tail_edge=True,
                     pairing="q",  # q or mt
                     h_pivot=False, h_pivot_gammas=None,
-                    loglike_ref=None, log_mu_sel_ref=None, log_pdraw_sel_scale=0.0):
+                    loglike_ref=None, log_mu_sel_ref=None, log_pdraw_sel_scale=0.0, 
+                    spins=False, spin_data=None, spin_data_sel=None):
+
     """
     - Ndraw is # of events in the injection samples used to estimate the selection function
     - store_per_event: record the per-event log-likelihood and n_eff arrays as deterministi
@@ -1247,6 +1282,12 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         Default None: no recentering, bit-identical to the previous behaviour.
     - log_pdraw_sel_scale: constant added to ``log(pdraw_sel)`` before the selection weights.
         Used to park the float32 ``log_mu_sel`` scalar near zero; Default 0: no scaling.
+        - spins: include the spin population model (independent of mass/z).  Requires
+        spin_data, spin_data_sel and spin priors (mu_spin, sigma_spin) in `priors`.
+    - spin_data: (a1, a2,), each shaped like m1s_det (nobs, nsamp)
+    - spin_data_sel: same four arrays for the injections, each shaped like m1s_det_sel (nsel,)
+      NOTE: log_pdraw / pdraw_sel must be the full sampling densities including
+      the spin dimensions (PE prior and injection draw density), or the weights are wrong.
     """
     # Static bounds for the tabulated mass axis, taken from the data *before* touched by jnp (don't want them as tracers)
     try:
@@ -1281,6 +1322,16 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
                                          h_pivot_gammas=h_pivot_gammas)
     deterministic_parameters = get_deterministic_parameters(sample, use_low_bump=use_low_bump)
     sample.update(deterministic_parameters)
+    if spins:
+        if spin_data is None or spin_data_sel is None:
+            raise ValueError("spins=True requires spin_data and spin_data_sel")
+        missing = [k for k in _SPIN_PARAMS if k not in sample]
+        if missing:
+            raise KeyError(f"spins=True but priors are missing: {missing}")
+        a1s, a2s = map(jnp.asarray, spin_data)
+        a1s_sel, a2s_sel = map(jnp.asarray, spin_data_sel)
+        if a1s.shape != m1s_det.shape or a1s_sel.shape != m1s_det_sel.shape:
+            raise ValueError("spin_data / spin_data_sel shapes must match the mass samples")
 
     cosmo = FlatwCDMCosmology(sample['h'], sample['Om'], sample['w'], zmax=sample['zmax'])
     log_dN = build_population_model(sample, use_low_bump=use_low_bump, n_z=n_z,
@@ -1443,7 +1494,12 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         log_m1s_sel = log_m1s_det_sel - log1p_zs_sel
 
         log_sel_wts = (log_dN.call_from_logs(m1s_sel, log_m1s_sel, log_qs_sel, zs_sel, log1p_zs_sel)- log_pdraw_sel + J_sel)
-
+    if spins:
+        _sp = tuple(sample[k] for k in _SPIN_PARAMS)
+        log_wts = log_wts + log_spin_density(a1s, a2s, *_sp)
+        log_sel_wts = log_sel_wts + log_spin_density(
+            a1s_sel, a2s_sel, *_sp)
+    
     lse1, lse2, neff = _logsumexp_and_neff(log_wts, axis=1)
     # lse1 is already floored and gradient-safe, so no nan_to_num,
     # change: don't map NaN to 0, gives LL of 1
