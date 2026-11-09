@@ -237,7 +237,7 @@ if __name__ == "__main__":
         print("recentering [ref_params] overrides:",
               {k: float(v) for k, v in ref_params.items()})
     
-    SPIN_COLS = ["a1", "a2"]
+    SPIN_COLS = ["a1", "a2", "cos_tilt_1", "cos_tilt_2"]
     spin_pe = None
     try:
         with h5py.File(pe_file, "r") as f:
@@ -305,6 +305,8 @@ if __name__ == "__main__":
             assert nbad == 0, f"{nbad} non-finite selection {name} (a=0 injections?)"
         for arr in (spin_pe[0], spin_pe[1], spin_sel[0], spin_sel[1]):
             assert arr.min() >= 0 and arr.max() <= 1, "spin magnitude outside [0,1]"
+        for arr in (spin_pe[2], spin_pe[3], spin_sel[2], spin_sel[3]):
+            assert np.abs(arr).max() <= 1 + 1e-6, "cos_tilt outside [-1,1]"
         assert spin_pe[0].shape == m1s.shape, "spin arrays must match (nevents, nsamples)"
         spin_kwargs = dict(spins=True, spin_data=tuple(spin_pe), spin_data_sel=tuple(spin_sel))
 

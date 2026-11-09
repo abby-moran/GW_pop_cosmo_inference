@@ -236,21 +236,20 @@ def get_samples_from_event(file, desired_pop_weight=None, far_threshold=1, zmax 
 
     # Spins: a_1, a_2, tilt_1, tilt_2 are the usual release field names; check
     # that they exist for every waveform group you fall back to.
-    for k in ('a_1', 'a_2'):
+    for k in ('a_1', 'a_2', 'tilt_1', 'tilt_2'):
         if k not in samples.dtype.names:
             print(f"{event}: group {group_used!r} lacks spin field {k!r}")
             return None
     a1 = samples['a_1'][()][mask]
     a2 = samples['a_2'][()][mask]
-    #cost1 = np.cos(samples['tilt_1'][()][mask])
-    #cost2 = np.cos(samples['tilt_2'][()][mask])
+    cost1 = np.cos(samples['tilt_1'][()][mask])
+    cost2 = np.cos(samples['tilt_2'][()][mask])
 
     # PE spin prior in (a1, a2, cos1, cos2), phi marginalized:
     # uniform magnitude on [0, a_max] x isotropic direction.
-    prior = prior / spin_a_max**2
-    spin = np.stack([a1, a2])                       # (2, nsamp)
+    prior = prior / (4.0 * spin_a_max**2)
+    spin = np.stack([a1, a2, cost1, cost2])        # (4, nsamp)
     return m1_det, qs, dLs, prior, spin
-    #return m1_det, qs, dLs, prior
 
 def finn_chernoff_theta(ra, dec, iota, gps_time):   
     Fp, Fx = det.antenna_pattern(ra, dec,0.0,gps_time)
@@ -330,8 +329,9 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
     # --- load data ---
     if mode == 'hdf5_old':
         with h5py.File(file, 'r') as f:
-            if spins:
-                raise ValueError("spins=True but this injection file has no spin draw pdf")
+            try:
+                if spins:
+                    raise ValueError("spins=True but this injection file has no spin draw pdf")
             m1s_sel = np.array(f['injections/mass1_source'])
             qs_sel = np.array(f['injections/mass2_source'])/m1s_sel
             zs_sel = np.array(f['injections/redshift'])
@@ -431,9 +431,12 @@ def extract_selection_samples(file, nsamp, desired_pop_wt=None, far_threshold=1,
                     np.exp(np.array(f['lnpdraw_z']))*m1s_sel/np.array(f['weights'])
                 )
         except KeyError:
+            if spins:
+                spin_jac = (2*np.pi*a1s_sel**2) * (2*np.pi*a2s_sel**2)
+            else:
+                spin_jac = (4*np.pi*a1s_sel**2) * (4*np.pi*a2s_sel**2)   # unchanged behavior
             pdraw_sel = (np.exp(np.array(f['lnpdraw_mass1_source_mass2_source_redshift_spin1x_spin1y_spin1z_spin2x_spin2y_spin2z']))
-                        * m1s_sel / np.array(f['weights'])
-                        * (4*np.pi*a1s_sel**2) * (4*np.pi*a2s_sel**2))
+                        * m1s_sel / np.array(f['weights']) * spin_jac)
             #pdraw_sel = (np.exp(np.array(f['lnpdraw_mass1_source_mass2_source_redshift_spin1x_spin1y_spin1z_spin2x_spin2y_spin2z']))*
             #            m1s_sel/np.array(f['weights'])*
             #            (4*np.pi*a1s_sel**2)*(4*np.pi*a2s_sel**2))

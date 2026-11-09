@@ -145,8 +145,8 @@ if __name__ == "__main__":
     cols = {"m1": list(m1_arr), "q": list(q_arr), "dl": list(dl_arr),
             "pdraw": list(pdraw_arr), "evt": evt_arr}
     if spins:
-        spin_arr = np.stack([r["spin"] for r in rows])   # (nev, 2, nsamp)
-        for j, name in enumerate(["a1", "a2"]):
+        spin_arr = np.stack([r["spin"] for r in rows])   # (nev, 4, nsamp)
+        for j, name in enumerate(["a1", "a2", "cos_tilt_1", "cos_tilt_2"]):
             cols[name] = list(spin_arr[:, j])
     final_df = pd.DataFrame(cols)
     #final_df = pd.DataFrame({"m1": list(m1_arr), "q": list(q_arr), "dl": list(dl_arr),

@@ -538,10 +538,11 @@ def safe_log(x, eps=None):
         eps = float(np.finfo(np.float32).tiny)
     return jnp.log(jnp.clip(x, eps, None))
 
-_SPIN_PARAMS = ("mu_spin", "sigma_spin")
+_SPIN_PARAMS = ("mu_spin", "sigma_spin", "f_iso", "mu_tilt", "sigma_tilt")
 
 
-def log_spin_density(a1, a2,  mu_spin, sigma_spin):
+def log_spin_density(a1, a2, cost1, cost2,
+                     mu_spin, sigma_spin, f_iso, mu_tilt, sigma_tilt):
     """Log of the spin population density, independent of mass/redshift.
 
     Magnitudes: independent Gaussians truncated to [0, 1].
@@ -561,16 +562,16 @@ def log_spin_density(a1, a2,  mu_spin, sigma_spin):
                  - 2.0 * log_norm_a)
 
     # tilts
-    #log_norm_t = jnp.log(jnp.maximum(
-    #    jss.ndtr((1.0 - mu_tilt) / sigma_tilt) - jss.ndtr((-1.0 - mu_tilt) / sigma_tilt),
-    #    1e-30))
-    #log_gauss = (log_normalized_gaussian(cost1, mu_tilt, sigma_tilt)
-    #             + log_normalized_gaussian(cost2, mu_tilt, sigma_tilt)
-    #             - 2.0 * log_norm_t)
-    #log_p_tilt = jnp.logaddexp(safe_log(f_iso) - jnp.log(4.0),
-    #                           safe_log(1.0 - f_iso) + log_gauss)
+    log_norm_t = jnp.log(jnp.maximum(
+        jss.ndtr((1.0 - mu_tilt) / sigma_tilt) - jss.ndtr((-1.0 - mu_tilt) / sigma_tilt),
+        1e-30))
+    log_gauss = (log_normalized_gaussian(cost1, mu_tilt, sigma_tilt)
+                 + log_normalized_gaussian(cost2, mu_tilt, sigma_tilt)
+                 - 2.0 * log_norm_t)
+    log_p_tilt = jnp.logaddexp(safe_log(f_iso) - jnp.log(4.0),
+                               safe_log(1.0 - f_iso) + log_gauss)
 
-    return log_p_mag #+ log_p_tilt
+    return log_p_mag + log_p_tilt
 
 # ---------------------------------------------------------------------------
 # PISN mass function grid
@@ -1328,8 +1329,8 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         missing = [k for k in _SPIN_PARAMS if k not in sample]
         if missing:
             raise KeyError(f"spins=True but priors are missing: {missing}")
-        a1s, a2s = map(jnp.asarray, spin_data)
-        a1s_sel, a2s_sel = map(jnp.asarray, spin_data_sel)
+        a1s, a2s, cost1s, cost2s = map(jnp.asarray, spin_data)
+        a1s_sel, a2s_sel, cost1s_sel, cost2s_sel = map(jnp.asarray, spin_data_sel)
         if a1s.shape != m1s_det.shape or a1s_sel.shape != m1s_det_sel.shape:
             raise ValueError("spin_data / spin_data_sel shapes must match the mass samples")
 
@@ -1496,9 +1497,9 @@ def pop_cosmo_model(m1s_det, qs, dls, log_pdraw, m1s_det_sel, qs_sel, dls_sel, p
         log_sel_wts = (log_dN.call_from_logs(m1s_sel, log_m1s_sel, log_qs_sel, zs_sel, log1p_zs_sel)- log_pdraw_sel + J_sel)
     if spins:
         _sp = tuple(sample[k] for k in _SPIN_PARAMS)
-        log_wts = log_wts + log_spin_density(a1s, a2s, *_sp)
+        log_wts = log_wts + log_spin_density(a1s, a2s, cost1s, cost2s, *_sp)
         log_sel_wts = log_sel_wts + log_spin_density(
-            a1s_sel, a2s_sel, *_sp)
+            a1s_sel, a2s_sel, cost1s_sel, cost2s_sel, *_sp)
     
     lse1, lse2, neff = _logsumexp_and_neff(log_wts, axis=1)
     # lse1 is already floored and gradient-safe, so no nan_to_num,
