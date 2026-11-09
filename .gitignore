@@ -24,3 +24,16 @@ scripts/popsummary_files
 abbys_runs
 runs/out_trash/*
 out_trash/*
+scripts/01_gen_inj.sh
+scripts/04_reweight.sh
+scripts/03_run_inf_cosmo_2evo.sh
+scripts/03_run_inf_cosmo.sh
+scripts/03_run_inf_cosmonb.sh
+scripts/03_run_inf.sh
+scripts/03a_run_inf_nb.sh
+scripts/bump_nobump_cosmo.sh
+scripts/bump_nobump.sh
+scripts/call_diag_nb.sh
+scripts/call_inf_lvk_plz.sh
+scripts/call_inf_realGWTC5_fullsel.sh
+scripts/call_inf_realGWTC5_fullsel2.sh
